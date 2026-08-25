@@ -79,6 +79,7 @@ jobs:
                   assert len(content) > 50, f'File too short or unreadable: {fpath}'
                   assert ('#include' in content or '#pragma once' in content or 'Copyright' in content), f'Invalid header structure: {fpath}'
                   assert 'ApplicationContextMask' not in content, f'Deprecated automation flag ApplicationContextMask found in {fpath}'
+                  assert 'CreateLambda' not in content, f'Invalid CreateLambda call on dynamic delegate found in {fpath}'
                   assert not re.search(r'TestEqual\([^)]*GetSampleRateForCurrentPlatform\(\),\s*\d+\s*\)', content), f'Ambiguous int literal in TestEqual found in {fpath}'
           print(f'Successfully verified {len(cpp_files)} C++ source and header files on {os.name}.')
           "

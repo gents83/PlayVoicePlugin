@@ -105,10 +105,10 @@ void UPlayVoiceBlueprintLibrary::GenerateVoiceSoundWave(
 	UPlayVoiceSubsystem* Subsystem = GameInstance->GetSubsystem<UPlayVoiceSubsystem>();
 	if (Subsystem)
 	{
-		Subsystem->SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, FOnVoiceSynthesized::CreateLambda([OnComplete](bool bSuccess, USoundWave* SoundWave)
+		Subsystem->SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, [OnComplete](bool bSuccess, USoundWave* SoundWave)
 		{
 			OnComplete.ExecuteIfBound(bSuccess, SoundWave);
-		}));
+		});
 	}
 	else
 	{
