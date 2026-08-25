@@ -10,7 +10,7 @@ USoundWave* UPlayVoiceAudioUtils::CreateSoundWaveFromPCM(const TArray<uint8>& PC
 		return nullptr;
 	}
 
-	// Parent to GetTransientPackage() to ensure the object is properly rooted until GC or asset caching
+	// Create standard USoundWave object allowing repeated zero-delay playback without buffer drainage
 	USoundWave* SoundWave = NewObject<USoundWave>(GetTransientPackage(), NAME_None, RF_Transient);
 	if (!SoundWave)
 	{

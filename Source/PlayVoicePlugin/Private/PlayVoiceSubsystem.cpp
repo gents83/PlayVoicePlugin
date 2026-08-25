@@ -38,10 +38,11 @@ void UPlayVoiceSubsystem::PrecacheAllVoiceLines(UCharacterVoiceAsset* CharacterV
 
 	TSharedPtr<int32> RemainingCount = MakeShared<int32>(Lines.Num());
 	TSharedPtr<int32> SuccessCount = MakeShared<int32>(0);
+	TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = CharacterVoiceAsset;
 
 	for (const FString& Line : Lines)
 	{
-		if (CharacterVoiceAsset->HasPrecachedVoiceLine(Line))
+		if (WeakAsset.IsValid() && WeakAsset->HasPrecachedVoiceLine(Line))
 		{
 			(*SuccessCount)++;
 			(*RemainingCount)--;
@@ -52,11 +53,11 @@ void UPlayVoiceSubsystem::PrecacheAllVoiceLines(UCharacterVoiceAsset* CharacterV
 			continue;
 		}
 
-		SynthesizeVoiceLineAsync(CharacterVoiceAsset, Line, FOnVoiceSynthesized::CreateLambda([CharacterVoiceAsset, Line, RemainingCount, SuccessCount, OnComplete](bool bSuccess, USoundWave* SoundWave)
+		SynthesizeVoiceLineAsync(CharacterVoiceAsset, Line, FOnVoiceSynthesized::CreateLambda([WeakAsset, Line, RemainingCount, SuccessCount, OnComplete](bool bSuccess, USoundWave* SoundWave)
 		{
-			if (bSuccess && SoundWave)
+			if (bSuccess && SoundWave && WeakAsset.IsValid())
 			{
-				CharacterVoiceAsset->CacheVoiceLine(Line, SoundWave);
+				WeakAsset->CacheVoiceLine(Line, SoundWave);
 				(*SuccessCount)++;
 			}
 
@@ -83,11 +84,12 @@ void UPlayVoiceSubsystem::PrecacheVoiceLine(UCharacterVoiceAsset* CharacterVoice
 		return;
 	}
 
-	SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, FOnVoiceSynthesized::CreateLambda([CharacterVoiceAsset, TextLine, OnComplete](bool bSuccess, USoundWave* SoundWave)
+	TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = CharacterVoiceAsset;
+	SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, FOnVoiceSynthesized::CreateLambda([WeakAsset, TextLine, OnComplete](bool bSuccess, USoundWave* SoundWave)
 	{
-		if (bSuccess && SoundWave)
+		if (bSuccess && SoundWave && WeakAsset.IsValid())
 		{
-			CharacterVoiceAsset->CacheVoiceLine(TextLine, SoundWave);
+			WeakAsset->CacheVoiceLine(TextLine, SoundWave);
 		}
 		OnComplete.ExecuteIfBound(bSuccess, SoundWave);
 	}));
@@ -110,13 +112,13 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoice(
 	// ZERO DELAY CHECK: If precached, play immediately!
 	if (USoundWave* CachedSound = CharacterVoiceAsset->GetPrecachedVoiceLine(TextLine))
 	{
-		if (TargetAudioComponent)
+		if (TargetAudioComponent && TargetAudioComponent->IsValidLowLevel())
 		{
 			TargetAudioComponent->SetSound(CachedSound);
 			TargetAudioComponent->Play();
 			return TargetAudioComponent;
 		}
-		else if (bAttachToActor && AttachToActor)
+		else if (bAttachToActor && AttachToActor && AttachToActor->IsValidLowLevel())
 		{
 			return UGameplayStatics::SpawnSoundAttached(CachedSound, AttachToActor->GetRootComponent());
 		}
@@ -127,20 +129,27 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoice(
 	}
 
 	// FALLBACK: Async synthesize and play when ready
-	SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, FOnVoiceSynthesized::CreateLambda([this, WorldContextObject, CharacterVoiceAsset, TextLine, TargetAudioComponent, Location, bAttachToActor, AttachToActor](bool bSuccess, USoundWave* SoundWave)
+	TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = CharacterVoiceAsset;
+	TWeakObjectPtr<UAudioComponent> WeakAudioComponent = TargetAudioComponent;
+	TWeakObjectPtr<AActor> WeakAttachActor = AttachToActor;
+
+	SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, FOnVoiceSynthesized::CreateLambda([this, WorldContextObject, WeakAsset, TextLine, WeakAudioComponent, Location, bAttachToActor, WeakAttachActor](bool bSuccess, USoundWave* SoundWave)
 	{
 		if (bSuccess && SoundWave)
 		{
-			CharacterVoiceAsset->CacheVoiceLine(TextLine, SoundWave);
-
-			if (TargetAudioComponent && TargetAudioComponent->IsValidLowLevel())
+			if (WeakAsset.IsValid())
 			{
-				TargetAudioComponent->SetSound(SoundWave);
-				TargetAudioComponent->Play();
+				WeakAsset->CacheVoiceLine(TextLine, SoundWave);
 			}
-			else if (bAttachToActor && AttachToActor && AttachToActor->IsValidLowLevel())
+
+			if (WeakAudioComponent.IsValid())
 			{
-				UGameplayStatics::SpawnSoundAttached(SoundWave, AttachToActor->GetRootComponent());
+				WeakAudioComponent->SetSound(SoundWave);
+				WeakAudioComponent->Play();
+			}
+			else if (bAttachToActor && WeakAttachActor.IsValid())
+			{
+				UGameplayStatics::SpawnSoundAttached(SoundWave, WeakAttachActor->GetRootComponent());
 			}
 			else
 			{
@@ -222,7 +231,8 @@ void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* Chara
 	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&PayloadStr);
 	FJsonSerializer::Serialize(JsonObj.ToSharedRef(), Writer);
 
-	SendTTSHttpRequest(TEXT("/extract"), PayloadStr, [CharacterVoiceAsset, OnComplete](bool bSuccess, const TArray<uint8>& ResponseBytes, const FString& ResponseString)
+	TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = CharacterVoiceAsset;
+	SendTTSHttpRequest(TEXT("/extract"), PayloadStr, [WeakAsset, OnComplete](bool bSuccess, const TArray<uint8>& ResponseBytes, const FString& ResponseString)
 	{
 		if (bSuccess && !ResponseString.IsEmpty())
 		{
@@ -230,9 +240,12 @@ void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* Chara
 			TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ResponseString);
 			if (FJsonSerializer::Deserialize(Reader, ResponseObj) && ResponseObj.IsValid())
 			{
-				CharacterVoiceAsset->ToneColorEmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
-				CharacterVoiceAsset->ModelCheckpointPath = ResponseObj->GetStringField(TEXT("model_checkpoint"));
-				CharacterVoiceAsset->bIsModelGenerated = true;
+				if (WeakAsset.IsValid())
+				{
+					WeakAsset->ToneColorEmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
+					WeakAsset->ModelCheckpointPath = ResponseObj->GetStringField(TEXT("model_checkpoint"));
+					WeakAsset->bIsModelGenerated = true;
+				}
 				OnComplete.ExecuteIfBound(true, nullptr);
 				return;
 			}

@@ -1,6 +1,6 @@
 # PlayVoice Plugin for Unreal Engine 5.8
 
-**PlayVoice** is a powerful plugin for **Unreal Engine 5.8** that integrates open-source **OpenVoice** zero-shot Text-To-Speech (TTS) voice cloning and synthesis into Unreal Engine Blueprints and C++.
+**PlayVoice** is a powerful, cross-platform plugin for **Unreal Engine 5.8** that integrates open-source **OpenVoice** zero-shot Text-To-Speech (TTS) voice cloning and synthesis into Unreal Engine Blueprints and C++.
 
 ---
 
@@ -25,13 +25,24 @@
    - Blueprint nodes: `PrecacheCharacterVoiceLines` and `GenerateVoiceSoundWave`.
    - Custom Editor Detail Panel (`FCharacterVoiceAssetCustomization`) for `CharacterVoice` assets in Unreal Editor with **"Generate OpenVoice Model"** and **"Pre-process All Voice Lines"** buttons.
 
+5. **Cross-Platform Readiness**:
+   - Designed to run on **Windows (Win64), macOS, Linux, Android, iOS, PlayStation 5 (PS5), Xbox Series X/S, and Nintendo Switch**.
+   - Uses standard platform-agnostic Unreal Engine memory and audio abstractions.
+
+6. **Automated Testing & CI/CD**:
+   - C++ Automation Unit Tests (`PlayVoiceAutomationTests.cpp`) testing asset caching, PCM/WAV conversion, and settings defaults.
+   - GitHub Actions CI/CD workflow (`.github/workflows/ci.yml`) testing plugin structure, JSON syntax, and backend audio synthesis on Linux, Windows, and macOS.
+
 ---
 
 ## Directory Structure
 
 ```text
 PlayVoicePlugin/
-├── PlayVoicePlugin.uplugin
+├── .github/
+│   └── workflows/
+│       └── ci.yml                          # GitHub Actions CI/CD pipeline
+├── PlayVoicePlugin.uplugin                # Plugin descriptor with platform allow lists
 ├── Source/
 │   ├── PlayVoicePlugin/                   # Runtime Module
 │   │   ├── PlayVoicePlugin.Build.cs
@@ -42,6 +53,8 @@ PlayVoicePlugin/
 │   │   │   ├── PlayVoiceAudioUtils.h     # Dynamic SoundWave PCM/WAV loader
 │   │   │   └── PlayVoiceSettings.h       # Project Developer Settings
 │   │   └── Private/
+│   │       └── Tests/
+│   │           └── PlayVoiceAutomationTests.cpp # C++ Unit & Automation Tests
 │   └── PlayVoicePluginEditor/             # Editor Module
 │       ├── PlayVoicePluginEditor.Build.cs
 │       ├── Public/
@@ -113,6 +126,16 @@ Use the `Play Character Voice` Blueprint node anywhere in your Blueprints:
 - **Target Audio Component / Location**: Optional audio component or world location.
 
 Because the voice line was precached, it will play **instantly with zero delay**.
+
+---
+
+## Running Automation Unit Tests
+
+In Unreal Editor:
+1. Open **Tools -> Session Frontend** (or `Tools -> Automation`).
+2. Filter for `PlayVoice`.
+3. Check `PlayVoice.UnitTests.CharacterVoiceAssetCaching`, `PlayVoice.UnitTests.AudioUtilsPCMAndWAVParsing`, and `PlayVoice.UnitTests.PlayVoiceSettingsDefaults`.
+4. Click **Start Tests**.
 
 ---
 

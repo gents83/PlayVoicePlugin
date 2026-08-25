@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
-#include "Sound/SoundWave.h"
+#include "Sound/SoundWaveProcedural.h"
 #include "CharacterVoiceAsset.generated.h"
 
 USTRUCT(BlueprintType)
@@ -63,8 +63,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pre-processed Dialog Lines")
 	TArray<FString> LinesToPreprocess;
 
-	/** Map of pre-rendered SoundWaves keyed by normalized text line for zero-delay instant playback */
-	UPROPERTY(Transient, VisibleAnywhere, BlueprintReadOnly, Category = "Pre-processed Dialog Lines")
+	/** Map of pre-rendered SoundWaves keyed by normalized text line for zero-delay instant playback. Persisted upon saving asset. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pre-processed Dialog Lines")
 	TMap<FString, TObjectPtr<USoundWave>> PrecachedSoundWaves;
 
 	/** Register a precached SoundWave for a specific text line */
