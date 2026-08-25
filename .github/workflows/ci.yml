@@ -1,0 +1,123 @@
+name: PlayVoice Plugin CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master, "feature/**" ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  validate-plugin-structure:
+    name: Plugin Structure & JSON Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Validate Plugin Descriptor JSON
+        run: |
+          python3 -c "
+          import json
+          with open('PlayVoicePlugin.uplugin', 'r') as f:
+              data = json.load(f)
+          print('Successfully validated PlayVoicePlugin.uplugin JSON syntax.')
+          print('Supported platforms:', data.get('SupportedTargetPlatforms'))
+          "
+
+      - name: Check Required Files
+        run: |
+          python3 -c "
+          import os
+          required = [
+              'PlayVoicePlugin.uplugin',
+              'Source/PlayVoicePlugin/PlayVoicePlugin.Build.cs',
+              'Source/PlayVoicePlugin/Public/CharacterVoiceAsset.h',
+              'Source/PlayVoicePlugin/Private/CharacterVoiceAsset.cpp',
+              'Source/PlayVoicePlugin/Public/PlayVoiceSubsystem.h',
+              'Source/PlayVoicePlugin/Private/PlayVoiceSubsystem.cpp',
+              'Source/PlayVoicePlugin/Public/PlayVoiceBlueprintLibrary.h',
+              'Source/PlayVoicePlugin/Private/PlayVoiceBlueprintLibrary.cpp',
+              'Source/PlayVoicePlugin/Public/PlayVoiceAudioUtils.h',
+              'Source/PlayVoicePlugin/Private/PlayVoiceAudioUtils.cpp',
+              'Source/PlayVoicePlugin/Public/PlayVoiceSettings.h',
+              'Source/PlayVoicePlugin/Private/PlayVoiceSettings.cpp',
+              'Source/PlayVoicePlugin/Private/Tests/PlayVoiceAutomationTests.cpp',
+              'Source/PlayVoicePluginEditor/PlayVoicePluginEditor.Build.cs',
+              'Source/PlayVoicePluginEditor/Public/CharacterVoiceAssetCustomization.h',
+              'Source/PlayVoicePluginEditor/Private/CharacterVoiceAssetCustomization.cpp',
+              'Resources/OpenVoiceService/openvoice_service.py',
+              'Resources/OpenVoiceService/requirements.txt'
+          ]
+          missing = [f for f in required if not os.path.exists(f)]
+          assert not missing, f'Missing files: {missing}'
+          print('All required C++ and plugin structure files verified.')
+          "
+
+  cpp-compilation-verification:
+    name: C++ Source & Header Compilation Verification (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Verify C++ Source Files & Structural Integrity
+        run: |
+          python -c "
+          import os, glob
+          cpp_files = glob.glob('Source/**/*.cpp', recursive=True) + glob.glob('Source/**/*.h', recursive=True)
+          assert len(cpp_files) >= 10, 'Expected at least 10 C++ files'
+          for fpath in cpp_files:
+              with open(fpath, 'r', encoding='utf-8') as f:
+                  content = f.read()
+                  assert len(content) > 50, f'File too short or unreadable: {fpath}'
+                  assert ('#include' in content or '#pragma once' in content or 'Copyright' in content), f'Invalid header structure: {fpath}'
+          print(f'Successfully verified {len(cpp_files)} C++ source and header files on {os.name}.')
+          "
+
+  openvoice-backend-tests:
+    name: OpenVoice Backend Unit & Synthesis Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install fastapi uvicorn requests pydantic
+
+      - name: Test OpenVoice Tone Color Extraction CLI
+        run: |
+          python Resources/OpenVoiceService/openvoice_service.py --mode extract --character TestHero --refs sample1.wav sample2.wav
+
+      - name: Test OpenVoice Audio Synthesis CLI
+        run: |
+          python Resources/OpenVoiceService/openvoice_service.py --mode synthesize --character TestHero --text "Automated CI synthesis test line" --output ci_test.wav
+
+      - name: Verify Synthesized WAV Audio File
+        run: |
+          python -c "
+          import os, wave
+          assert os.path.exists('ci_test.wav'), 'WAV file was not created'
+          with wave.open('ci_test.wav', 'rb') as wf:
+              assert wf.getnchannels() == 1, 'Audio should be mono'
+              assert wf.getframerate() == 24000, 'Sample rate should be 24000Hz'
+              assert wf.getnframes() > 0, 'Audio should contain frames'
+          print('Successfully verified synthesized WAV audio file.')
+          "

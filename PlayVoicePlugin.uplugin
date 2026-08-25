@@ -1,0 +1,54 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "PlayVoice Plugin",
+	"Description": "Zero-latency Text-To-Voice synthesis using OpenVoice model training and character reference voice assets in Unreal Engine 5.8.",
+	"Category": "Audio",
+	"CreatedBy": "PlayVoice Team",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"SupportedTargetPlatforms": [
+		"Win64",
+		"Mac",
+		"Linux",
+		"Android",
+		"IOS",
+		"PS5",
+		"XboxSeriesX",
+		"Switch"
+	],
+	"Modules": [
+		{
+			"Name": "PlayVoicePlugin",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64",
+				"Mac",
+				"Linux",
+				"Android",
+				"IOS",
+				"PS5",
+				"XboxSeriesX",
+				"Switch"
+			]
+		},
+		{
+			"Name": "PlayVoicePluginEditor",
+			"Type": "Editor",
+			"LoadingPhase": "PostEngineInit",
+			"PlatformAllowList": [
+				"Win64",
+				"Mac",
+				"Linux"
+			]
+		}
+	]
+}
