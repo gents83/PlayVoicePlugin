@@ -24,6 +24,7 @@
    - Simple Blueprint node: `PlayCharacterVoice` to play lines instantly.
    - Blueprint nodes: `PrecacheCharacterVoiceLines` and `GenerateVoiceSoundWave`.
    - Custom Editor Detail Panel (`FCharacterVoiceAssetCustomization`) for `CharacterVoice` assets in Unreal Editor with **"Generate OpenVoice Model"** and **"Pre-process All Voice Lines"** buttons.
+   - Custom Settings Details Panel (`FPlayVoiceSettingsCustomization`) in **Project Settings -> Engine -> PlayVoice Settings** with **"Check Requirements Status"** and **"Launch Setup / Install Requirements"** buttons.
 
 5. **Cross-Platform Readiness**:
    - Designed to run on **Windows (Win64), macOS, Linux, Android, iOS, PlayStation 5 (PS5), Xbox Series X/S, and Nintendo Switch**.
@@ -58,7 +59,8 @@ PlayVoicePlugin/
 │   └── PlayVoicePluginEditor/             # Editor Module
 │       ├── PlayVoicePluginEditor.Build.cs
 │       ├── Public/
-│       │   └── CharacterVoiceAssetCustomization.h # Editor Detail Panel Customization
+│       │   ├── CharacterVoiceAssetCustomization.h # Asset Editor Detail Panel Customization
+│       │   └── PlayVoiceSettingsCustomization.h   # Settings Editor Detail Panel Customization
 │       └── Private/
 └── Resources/
     └── OpenVoiceService/
@@ -79,22 +81,33 @@ We selected **OpenVoice** (developed by MyShell.ai) as the primary open-source T
 
 ## Setup Instructions
 
-### 1. Install Python Backend Dependencies
-Navigate to `Resources/OpenVoiceService` and install dependencies:
+### 1. In-Editor Requirements Setup & Verification (Recommended)
+1. Open your Unreal Engine 5.8 project containing the **PlayVoice** plugin.
+2. Go to **Project Settings -> Engine -> PlayVoice Settings**.
+3. Under **Requirements Setup**, customize your setup preferences if desired:
+   - **Python Executable Path**: Path to Python binary (default: `python`).
+   - **Requirements File Path**: Path to requirements file (default: `Resources/OpenVoiceService/requirements.txt`).
+   - **Target Installation Directory**: Optional custom installation folder (`--target` parameter).
+   - **Extra Pip Arguments**: Optional additional flags for `pip install` (e.g. `--upgrade`, `--no-cache-dir`).
+4. Click **Check Requirements Status** to verify if all required Python packages are installed.
+5. Click **Launch Setup / Install Requirements** to launch automated dependency installation.
+
+### 2. Manual Python Backend Setup (Alternative)
+Navigate to `Resources/OpenVoiceService` and install dependencies manually:
 
 ```bash
 cd Resources/OpenVoiceService
 pip install -r requirements.txt
 ```
 
-### 2. Start OpenVoice Service
+### 3. Start OpenVoice Service
 Run the OpenVoice REST service:
 
 ```bash
 python openvoice_service.py --mode server --host 127.0.0.1 --port 8000
 ```
 
-### 3. Unreal Engine Project Setup
+### 4. Unreal Engine Project Setup
 1. Copy `PlayVoicePlugin` into your project's `Plugins/` folder.
 2. Open your Unreal Engine 5.8 project.
 3. Enable **PlayVoice Plugin** in **Edit -> Plugins**.

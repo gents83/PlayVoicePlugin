@@ -4,6 +4,8 @@
 #include "PropertyEditorModule.h"
 #include "CharacterVoiceAsset.h"
 #include "CharacterVoiceAssetCustomization.h"
+#include "PlayVoiceSettings.h"
+#include "PlayVoiceSettingsCustomization.h"
 
 #define LOCTEXT_NAMESPACE "FPlayVoicePluginEditorModule"
 
@@ -24,6 +26,10 @@ void FPlayVoicePluginEditorModule::RegisterCustomizations()
 		UCharacterVoiceAsset::StaticClass()->GetFName(),
 		FOnGetDetailCustomizationInstance::CreateStatic(&FCharacterVoiceAssetCustomization::MakeInstance)
 	);
+	PropertyModule.RegisterCustomClassLayout(
+		UPlayVoiceSettings::StaticClass()->GetFName(),
+		FOnGetDetailCustomizationInstance::CreateStatic(&FPlayVoiceSettingsCustomization::MakeInstance)
+	);
 }
 
 void FPlayVoicePluginEditorModule::UnregisterCustomizations()
@@ -32,6 +38,7 @@ void FPlayVoicePluginEditorModule::UnregisterCustomizations()
 	{
 		FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 		PropertyModule.UnregisterCustomClassLayout(UCharacterVoiceAsset::StaticClass()->GetFName());
+		PropertyModule.UnregisterCustomClassLayout(UPlayVoiceSettings::StaticClass()->GetFName());
 	}
 }
 
