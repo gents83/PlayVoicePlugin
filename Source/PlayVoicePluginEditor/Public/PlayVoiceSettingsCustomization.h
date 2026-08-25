@@ -16,4 +16,5 @@ public:
 private:
 	FReply OnCheckRequirementsClicked();
 	FReply OnLaunchSetupClicked();
+	FReply OnStartServiceClicked();
 };
