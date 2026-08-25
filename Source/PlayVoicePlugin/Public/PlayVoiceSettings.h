@@ -22,6 +22,10 @@ public:
 	UPROPERTY(EditAnywhere, Config, Category = "Service Setup", meta = (DisplayName = "Python Script Path"))
 	FString PythonScriptPath;
 
+	/** Automatically start the OpenVoice REST service when Unreal Editor opens */
+	UPROPERTY(EditAnywhere, Config, Category = "Service Setup", meta = (DisplayName = "Auto Start Service On Editor Startup"))
+	bool bAutoStartServiceOnEditorStartup;
+
 	/** Path or name of the Python executable used for checking and installing requirements (e.g., python or python3) */
 	UPROPERTY(EditAnywhere, Config, Category = "Requirements Setup", meta = (DisplayName = "Python Executable Path"))
 	FString PythonExecutable;

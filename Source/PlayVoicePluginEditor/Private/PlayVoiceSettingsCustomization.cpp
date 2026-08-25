@@ -1,6 +1,7 @@
 // Copyright (c) 2025 PlayVoice Team. All Rights Reserved.
 
 #include "PlayVoiceSettingsCustomization.h"
+#include "PlayVoicePluginEditorModule.h"
 #include "PlayVoiceSettings.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
@@ -19,6 +20,23 @@ TSharedRef<IDetailCustomization> FPlayVoiceSettingsCustomization::MakeInstance()
 
 void FPlayVoiceSettingsCustomization::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 {
+	IDetailCategoryBuilder& ServiceCategory = DetailBuilder.EditCategory("Service Setup", FText::FromString("Service Setup"));
+
+	ServiceCategory.AddCustomRow(FText::FromString("Start OpenVoice Service"))
+	.NameContent()
+	[
+		SNew(STextBlock)
+		.Text(FText::FromString("Service Control"))
+		.Font(IDetailLayoutBuilder::GetDetailFont())
+	]
+	.ValueContent()
+	[
+		SNew(SButton)
+		.Text(FText::FromString("Start OpenVoice Service"))
+		.ToolTipText(FText::FromString("Launch the OpenVoice REST service backend process."))
+		.OnClicked(this, &FPlayVoiceSettingsCustomization::OnStartServiceClicked)
+	];
+
 	IDetailCategoryBuilder& RequirementsCategory = DetailBuilder.EditCategory("Requirements Setup", FText::FromString("Requirements Setup"));
 
 	RequirementsCategory.AddCustomRow(FText::FromString("Check Requirements"))
@@ -102,6 +120,23 @@ FReply FPlayVoiceSettingsCustomization::OnCheckRequirementsClicked()
 	{
 		FString ErrorMsg = FString::Printf(TEXT("Requirements check failed or missing dependencies found.\nDetails: %s\n%s"), *StdOut, *StdErr);
 		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(ErrorMsg));
+	}
+
+	return FReply::Handled();
+}
+
+FReply FPlayVoiceSettingsCustomization::OnStartServiceClicked()
+{
+	FProcHandle ProcHandle;
+	bool bStarted = FPlayVoicePluginEditorModule::StartOpenVoiceService(&ProcHandle);
+
+	if (bStarted)
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(TEXT("OpenVoice REST Service launched successfully!")));
+	}
+	else
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(TEXT("Failed to launch OpenVoice REST Service. Please verify Python executable and script settings.")));
 	}
 
 	return FReply::Handled();

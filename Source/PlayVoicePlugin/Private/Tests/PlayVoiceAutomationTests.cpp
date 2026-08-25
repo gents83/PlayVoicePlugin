@@ -77,6 +77,7 @@ bool FPlayVoiceSettingsTest::RunTest(const FString& Parameters)
 	if (Settings)
 	{
 		TestEqual(TEXT("Default service URL should be http://127.0.0.1:8000"), Settings->ServiceUrl, TEXT("http://127.0.0.1:8000"));
+		TestFalse(TEXT("Default bAutoStartServiceOnEditorStartup should be false"), Settings->bAutoStartServiceOnEditorStartup);
 		TestEqual(TEXT("Default sample rate should be 24000"), Settings->DefaultSampleRate, 24000);
 		TestTrue(TEXT("Default AutoPrecacheOnStartup should be true"), Settings->bAutoPrecacheOnStartup);
 		TestEqual(TEXT("Default PythonExecutable should be python"), Settings->PythonExecutable, TEXT("python"));

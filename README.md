@@ -24,7 +24,7 @@
    - Simple Blueprint node: `PlayCharacterVoice` to play lines instantly.
    - Blueprint nodes: `PrecacheCharacterVoiceLines` and `GenerateVoiceSoundWave`.
    - Custom Editor Detail Panel (`FCharacterVoiceAssetCustomization`) for `CharacterVoice` assets in Unreal Editor with **"Generate OpenVoice Model"** and **"Pre-process All Voice Lines"** buttons.
-   - Custom Settings Details Panel (`FPlayVoiceSettingsCustomization`) in **Project Settings -> Engine -> PlayVoice Settings** with **"Check Requirements Status"** and **"Launch Setup / Install Requirements"** buttons.
+   - Custom Settings Details Panel (`FPlayVoiceSettingsCustomization`) in **Project Settings -> Engine -> PlayVoice Settings** with **"Start OpenVoice Service"**, **"Check Requirements Status"**, and **"Launch Setup / Install Requirements"** buttons, plus an option to automatically start the REST service on editor startup (`bAutoStartServiceOnEditorStartup`).
 
 5. **Cross-Platform Readiness**:
    - Designed to run on **Windows (Win64), macOS, Linux, Android, iOS, PlayStation 5 (PS5), Xbox Series X/S, and Nintendo Switch**.
@@ -84,13 +84,16 @@ We selected **OpenVoice** (developed by MyShell.ai) as the primary open-source T
 ### 1. In-Editor Requirements Setup & Verification (Recommended)
 1. Open your Unreal Engine 5.8 project containing the **PlayVoice** plugin.
 2. Go to **Project Settings -> Engine -> PlayVoice Settings**.
-3. Under **Requirements Setup**, customize your setup preferences if desired:
+3. Under **Service Setup**:
+   - **Start OpenVoice Service**: Click this button to manually launch the local OpenVoice REST service backend from Unreal Editor.
+   - **Auto Start Service On Editor Startup**: Enable this option to automatically start the OpenVoice REST service whenever Unreal Editor opens.
+4. Under **Requirements Setup**, customize your setup preferences if desired:
    - **Python Executable Path**: Path to Python binary (default: `python`).
    - **Requirements File Path**: Path to requirements file (default: `Resources/OpenVoiceService/requirements.txt`).
    - **Target Installation Directory**: Optional custom installation folder (`--target` parameter).
    - **Extra Pip Arguments**: Optional additional flags for `pip install` (e.g. `--upgrade`, `--no-cache-dir`).
-4. Click **Check Requirements Status** to verify if all required Python packages are installed.
-5. Click **Launch Setup / Install Requirements** to launch automated dependency installation.
+5. Click **Check Requirements Status** to verify if all required Python packages are installed.
+6. Click **Launch Setup / Install Requirements** to launch automated dependency installation.
 
 ### 2. Manual Python Backend Setup (Alternative)
 Navigate to `Resources/OpenVoiceService` and install dependencies manually:
