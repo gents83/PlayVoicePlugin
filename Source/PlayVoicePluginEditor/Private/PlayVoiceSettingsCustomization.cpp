@@ -59,13 +59,13 @@ FReply FPlayVoiceSettingsCustomization::OnCheckRequirementsClicked()
 	FString ReqFile = Settings && !Settings->RequirementsFilePath.IsEmpty() ? Settings->RequirementsFilePath : TEXT("Resources/OpenVoiceService/requirements.txt");
 
 	FString ResolvedReqFile = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), ReqFile);
-	if (!IFileManager::Get().FileExists(ResolvedReqFile))
+	if (!IFileManager::Get().FileExists(*ResolvedReqFile))
 	{
 		ResolvedReqFile = FPaths::ConvertRelativePathToFull(FPaths::EngineDir(), ReqFile);
 	}
 
 	FString Args;
-	if (IFileManager::Get().FileExists(ResolvedReqFile))
+	if (IFileManager::Get().FileExists(*ResolvedReqFile))
 	{
 		Args = FString::Printf(
 			TEXT("-c \"import sys; ")
@@ -116,7 +116,7 @@ FReply FPlayVoiceSettingsCustomization::OnLaunchSetupClicked()
 	FString ExtraArgs = Settings ? Settings->ExtraPipArgs : TEXT("");
 
 	FString ResolvedReqFile = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), ReqFile);
-	if (!IFileManager::Get().FileExists(ResolvedReqFile))
+	if (!IFileManager::Get().FileExists(*ResolvedReqFile))
 	{
 		ResolvedReqFile = FPaths::ConvertRelativePathToFull(FPaths::EngineDir(), ReqFile);
 	}
