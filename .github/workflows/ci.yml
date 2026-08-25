@@ -70,7 +70,7 @@ jobs:
       - name: Verify C++ Source Files & Structural Integrity
         run: |
           python -c "
-          import os, glob
+          import os, glob, re
           cpp_files = glob.glob('Source/**/*.cpp', recursive=True) + glob.glob('Source/**/*.h', recursive=True)
           assert len(cpp_files) >= 10, 'Expected at least 10 C++ files'
           for fpath in cpp_files:
@@ -78,6 +78,8 @@ jobs:
                   content = f.read()
                   assert len(content) > 50, f'File too short or unreadable: {fpath}'
                   assert ('#include' in content or '#pragma once' in content or 'Copyright' in content), f'Invalid header structure: {fpath}'
+                  assert 'ApplicationContextMask' not in content, f'Deprecated automation flag ApplicationContextMask found in {fpath}'
+                  assert not re.search(r'TestEqual\([^)]*GetSampleRateForCurrentPlatform\(\),\s*\d+\s*\)', content), f'Ambiguous int literal in TestEqual found in {fpath}'
           print(f'Successfully verified {len(cpp_files)} C++ source and header files on {os.name}.')
           "
 
