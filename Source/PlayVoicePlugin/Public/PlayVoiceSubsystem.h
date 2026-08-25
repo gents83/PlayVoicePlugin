@@ -31,6 +31,7 @@ public:
 	/** Pre-generates and caches a single voice line asynchronously if not already cached */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	void PrecacheVoiceLine(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, FOnVoiceSynthesized OnComplete);
+	void PrecacheVoiceLine(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete);
 
 	/**
 	 * Plays a voice line using the reference CharacterVoiceAsset.
@@ -51,10 +52,12 @@ public:
 	/** Synthesizes voice line via OpenVoice backend service asynchronously */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	void SynthesizeVoiceLineAsync(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, FOnVoiceSynthesized OnComplete);
+	void SynthesizeVoiceLineAsync(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete);
 
 	/** Request OpenVoice model extraction for a CharacterVoiceAsset */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	void ExtractCharacterVoiceModel(UCharacterVoiceAsset* CharacterVoiceAsset, FOnVoiceSynthesized OnComplete);
+	void ExtractCharacterVoiceModel(UCharacterVoiceAsset* CharacterVoiceAsset, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete);
 
 private:
 	void SendTTSHttpRequest(const FString& Endpoint, const FString& JsonPayload, TFunction<void(bool bSuccess, const TArray<uint8>& ResponseBytes, const FString& ResponseString)> Callback);

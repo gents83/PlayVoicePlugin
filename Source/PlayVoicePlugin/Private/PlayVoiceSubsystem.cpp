@@ -53,7 +53,7 @@ void UPlayVoiceSubsystem::PrecacheAllVoiceLines(UCharacterVoiceAsset* CharacterV
 			continue;
 		}
 
-		SynthesizeVoiceLineAsync(CharacterVoiceAsset, Line, FOnVoiceSynthesized::CreateLambda([WeakAsset, Line, RemainingCount, SuccessCount, OnComplete](bool bSuccess, USoundWave* SoundWave)
+		SynthesizeVoiceLineAsync(CharacterVoiceAsset, Line, [WeakAsset, Line, RemainingCount, SuccessCount, OnComplete](bool bSuccess, USoundWave* SoundWave)
 		{
 			if (bSuccess && SoundWave && WeakAsset.IsValid())
 			{
@@ -66,33 +66,50 @@ void UPlayVoiceSubsystem::PrecacheAllVoiceLines(UCharacterVoiceAsset* CharacterV
 			{
 				OnComplete.ExecuteIfBound(*SuccessCount);
 			}
-		}));
+		});
 	}
 }
 
 void UPlayVoiceSubsystem::PrecacheVoiceLine(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, FOnVoiceSynthesized OnComplete)
 {
+	PrecacheVoiceLine(CharacterVoiceAsset, TextLine, [OnComplete](bool bSuccess, USoundWave* SoundWave)
+	{
+		OnComplete.ExecuteIfBound(bSuccess, SoundWave);
+	});
+}
+
+void UPlayVoiceSubsystem::PrecacheVoiceLine(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete)
+{
 	if (!CharacterVoiceAsset || TextLine.IsEmpty())
 	{
-		OnComplete.ExecuteIfBound(false, nullptr);
+		if (OnComplete)
+		{
+			OnComplete(false, nullptr);
+		}
 		return;
 	}
 
 	if (USoundWave* Existing = CharacterVoiceAsset->GetPrecachedVoiceLine(TextLine))
 	{
-		OnComplete.ExecuteIfBound(true, Existing);
+		if (OnComplete)
+		{
+			OnComplete(true, Existing);
+		}
 		return;
 	}
 
 	TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = CharacterVoiceAsset;
-	SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, FOnVoiceSynthesized::CreateLambda([WeakAsset, TextLine, OnComplete](bool bSuccess, USoundWave* SoundWave)
+	SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, [WeakAsset, TextLine, OnComplete](bool bSuccess, USoundWave* SoundWave)
 	{
 		if (bSuccess && SoundWave && WeakAsset.IsValid())
 		{
 			WeakAsset->CacheVoiceLine(TextLine, SoundWave);
 		}
-		OnComplete.ExecuteIfBound(bSuccess, SoundWave);
-	}));
+		if (OnComplete)
+		{
+			OnComplete(bSuccess, SoundWave);
+		}
+	});
 }
 
 UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoice(
@@ -133,7 +150,7 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoice(
 	TWeakObjectPtr<UAudioComponent> WeakAudioComponent = TargetAudioComponent;
 	TWeakObjectPtr<AActor> WeakAttachActor = AttachToActor;
 
-	SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, FOnVoiceSynthesized::CreateLambda([this, WorldContextObject, WeakAsset, TextLine, WeakAudioComponent, Location, bAttachToActor, WeakAttachActor](bool bSuccess, USoundWave* SoundWave)
+	SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, [this, WorldContextObject, WeakAsset, TextLine, WeakAudioComponent, Location, bAttachToActor, WeakAttachActor](bool bSuccess, USoundWave* SoundWave)
 	{
 		if (bSuccess && SoundWave)
 		{
@@ -160,16 +177,27 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoice(
 				}
 			}
 		}
-	}));
+	});
 
 	return nullptr;
 }
 
 void UPlayVoiceSubsystem::SynthesizeVoiceLineAsync(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, FOnVoiceSynthesized OnComplete)
 {
+	SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, [OnComplete](bool bSuccess, USoundWave* SoundWave)
+	{
+		OnComplete.ExecuteIfBound(bSuccess, SoundWave);
+	});
+}
+
+void UPlayVoiceSubsystem::SynthesizeVoiceLineAsync(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete)
+{
 	if (!CharacterVoiceAsset || TextLine.IsEmpty())
 	{
-		OnComplete.ExecuteIfBound(false, nullptr);
+		if (OnComplete)
+		{
+			OnComplete(false, nullptr);
+		}
 		return;
 	}
 
@@ -200,20 +228,37 @@ void UPlayVoiceSubsystem::SynthesizeVoiceLineAsync(UCharacterVoiceAsset* Charact
 	{
 		if (!bSuccess || ResponseBytes.Num() == 0)
 		{
-			OnComplete.ExecuteIfBound(false, nullptr);
+			if (OnComplete)
+			{
+				OnComplete(false, nullptr);
+			}
 			return;
 		}
 
 		USoundWave* SoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(ResponseBytes);
-		OnComplete.ExecuteIfBound(SoundWave != nullptr, SoundWave);
+		if (OnComplete)
+		{
+			OnComplete(SoundWave != nullptr, SoundWave);
+		}
 	});
 }
 
 void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* CharacterVoiceAsset, FOnVoiceSynthesized OnComplete)
 {
+	ExtractCharacterVoiceModel(CharacterVoiceAsset, [OnComplete](bool bSuccess, USoundWave* SoundWave)
+	{
+		OnComplete.ExecuteIfBound(bSuccess, SoundWave);
+	});
+}
+
+void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* CharacterVoiceAsset, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete)
+{
 	if (!CharacterVoiceAsset)
 	{
-		OnComplete.ExecuteIfBound(false, nullptr);
+		if (OnComplete)
+		{
+			OnComplete(false, nullptr);
+		}
 		return;
 	}
 
@@ -246,11 +291,17 @@ void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* Chara
 					WeakAsset->ModelCheckpointPath = ResponseObj->GetStringField(TEXT("model_checkpoint"));
 					WeakAsset->bIsModelGenerated = true;
 				}
-				OnComplete.ExecuteIfBound(true, nullptr);
+				if (OnComplete)
+				{
+					OnComplete(true, nullptr);
+				}
 				return;
 			}
 		}
-		OnComplete.ExecuteIfBound(false, nullptr);
+		if (OnComplete)
+		{
+			OnComplete(false, nullptr);
+		}
 	});
 }
 
