@@ -2,6 +2,7 @@
 
 #include "PlayVoiceAudioUtils.h"
 #include "Sound/SoundWave.h"
+#include "Memory/SharedBuffer.h"
 
 USoundWave* UPlayVoiceAudioUtils::CreateSoundWaveFromPCM(const TArray<uint8>& PCMData, int32 SampleRate, int32 NumChannels)
 {
@@ -25,10 +26,8 @@ USoundWave* UPlayVoiceAudioUtils::CreateSoundWaveFromPCM(const TArray<uint8>& PC
 	SoundWave->bStreaming = false;
 
 #if WITH_EDITORONLY_DATA
-	SoundWave->RawData.Lock(LOCK_READ_WRITE);
-	void* BufferData = SoundWave->RawData.Realloc(PCMData.Num());
-	FMemory::Memcpy(BufferData, PCMData.GetData(), PCMData.Num());
-	SoundWave->RawData.Unlock();
+	const FSharedBuffer UpdatedBuffer = FSharedBuffer::Clone(PCMData.GetData(), PCMData.Num());
+	SoundWave->RawData.UpdatePayload(UpdatedBuffer);
 #endif
 
 	// Populate RawPCMData for runtime sound wave playback
