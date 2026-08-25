@@ -45,6 +45,8 @@ jobs:
               'Source/PlayVoicePluginEditor/PlayVoicePluginEditor.Build.cs',
               'Source/PlayVoicePluginEditor/Public/CharacterVoiceAssetCustomization.h',
               'Source/PlayVoicePluginEditor/Private/CharacterVoiceAssetCustomization.cpp',
+              'Source/PlayVoicePluginEditor/Public/PlayVoiceSettingsCustomization.h',
+              'Source/PlayVoicePluginEditor/Private/PlayVoiceSettingsCustomization.cpp',
               'Resources/OpenVoiceService/openvoice_service.py',
               'Resources/OpenVoiceService/requirements.txt'
           ]

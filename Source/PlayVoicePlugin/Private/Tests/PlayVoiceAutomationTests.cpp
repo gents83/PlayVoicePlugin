@@ -79,6 +79,10 @@ bool FPlayVoiceSettingsTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Default service URL should be http://127.0.0.1:8000"), Settings->ServiceUrl, TEXT("http://127.0.0.1:8000"));
 		TestEqual(TEXT("Default sample rate should be 24000"), Settings->DefaultSampleRate, 24000);
 		TestTrue(TEXT("Default AutoPrecacheOnStartup should be true"), Settings->bAutoPrecacheOnStartup);
+		TestEqual(TEXT("Default PythonExecutable should be python"), Settings->PythonExecutable, TEXT("python"));
+		TestEqual(TEXT("Default RequirementsFilePath should be Resources/OpenVoiceService/requirements.txt"), Settings->RequirementsFilePath, TEXT("Resources/OpenVoiceService/requirements.txt"));
+		TestEqual(TEXT("Default TargetInstallDir should be empty"), Settings->TargetInstallDir, TEXT(""));
+		TestEqual(TEXT("Default ExtraPipArgs should be empty"), Settings->ExtraPipArgs, TEXT(""));
 	}
 
 	return true;

@@ -22,6 +22,22 @@ public:
 	UPROPERTY(EditAnywhere, Config, Category = "Service Setup", meta = (DisplayName = "Python Script Path"))
 	FString PythonScriptPath;
 
+	/** Path or name of the Python executable used for checking and installing requirements (e.g., python or python3) */
+	UPROPERTY(EditAnywhere, Config, Category = "Requirements Setup", meta = (DisplayName = "Python Executable Path"))
+	FString PythonExecutable;
+
+	/** Path to the requirements.txt file */
+	UPROPERTY(EditAnywhere, Config, Category = "Requirements Setup", meta = (DisplayName = "Requirements File Path"))
+	FString RequirementsFilePath;
+
+	/** Optional target installation directory for dependencies (--target flag for pip) */
+	UPROPERTY(EditAnywhere, Config, Category = "Requirements Setup", meta = (DisplayName = "Target Installation Directory"))
+	FString TargetInstallDir;
+
+	/** Optional extra command line flags for pip install (e.g. --upgrade, --no-cache-dir) */
+	UPROPERTY(EditAnywhere, Config, Category = "Requirements Setup", meta = (DisplayName = "Extra Pip Arguments"))
+	FString ExtraPipArgs;
+
 	/** Timeout in seconds for HTTP generation requests */
 	UPROPERTY(EditAnywhere, Config, Category = "Service Setup", meta = (DisplayName = "Request Timeout (Seconds)"))
 	float RequestTimeout;
