@@ -10,7 +10,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 // 1. Test UCharacterVoiceAsset caching & lookup functionality
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCharacterVoiceAssetCachingTest, "PlayVoice.UnitTests.CharacterVoiceAssetCaching", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCharacterVoiceAssetCachingTest, "PlayVoice.UnitTests.CharacterVoiceAssetCaching", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
 
 bool FCharacterVoiceAssetCachingTest::RunTest(const FString& Parameters)
 {
@@ -40,7 +40,7 @@ bool FCharacterVoiceAssetCachingTest::RunTest(const FString& Parameters)
 }
 
 // 2. Test UPlayVoiceAudioUtils PCM & WAV parser
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlayVoiceAudioUtilsTest, "PlayVoice.UnitTests.AudioUtilsPCMAndWAVParsing", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlayVoiceAudioUtilsTest, "PlayVoice.UnitTests.AudioUtilsPCMAndWAVParsing", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
 
 bool FPlayVoiceAudioUtilsTest::RunTest(const FString& Parameters)
 {
@@ -53,8 +53,8 @@ bool FPlayVoiceAudioUtilsTest::RunTest(const FString& Parameters)
 
 	if (PCMSoundWave)
 	{
-		TestEqual(TEXT("Sample rate should be 24000"), PCMSoundWave->GetSampleRateForCurrentPlatform(), 24000);
-		TestEqual(TEXT("Channels count should be 1"), PCMSoundWave->NumChannels, 1);
+		TestEqual(TEXT("Sample rate should be 24000"), PCMSoundWave->GetSampleRateForCurrentPlatform(), 24000.0f);
+		TestEqual(TEXT("Channels count should be 1"), static_cast<int32>(PCMSoundWave->NumChannels), 1);
 		TestNearlyEqual(TEXT("Duration should be approximately 0.1s"), PCMSoundWave->Duration, 0.1f, 0.01f);
 	}
 
@@ -67,7 +67,7 @@ bool FPlayVoiceAudioUtilsTest::RunTest(const FString& Parameters)
 }
 
 // 3. Test UPlayVoiceSettings default values
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlayVoiceSettingsTest, "PlayVoice.UnitTests.PlayVoiceSettingsDefaults", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlayVoiceSettingsTest, "PlayVoice.UnitTests.PlayVoiceSettingsDefaults", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
 
 bool FPlayVoiceSettingsTest::RunTest(const FString& Parameters)
 {
