@@ -3,7 +3,7 @@
 #include "PlayVoiceSettings.h"
 
 UPlayVoiceSettings::UPlayVoiceSettings()
-	: ServiceUrl(TEXT("http://127.0.0.1:8000"))
+	: ServiceUrl(TEXT("http://127.0.0.1:1983"))
 	, PythonScriptPath(TEXT(""))
 	, bAutoStartServiceOnEditorStartup(false)
 	, PythonExecutable(TEXT("python"))

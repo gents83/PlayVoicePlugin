@@ -223,7 +223,7 @@ def main():
     parser = argparse.ArgumentParser(description="PlayVoice OpenVoice Backend Service & CLI")
     parser.add_argument("--mode", choices=["server", "extract", "synthesize"], default="server", help="Mode of execution")
     parser.add_argument("--host", default="127.0.0.1", help="Server host")
-    parser.add_argument("--port", type=int, default=8000, help="Server port")
+    parser.add_argument("--port", type=int, default=1983, help="Server port")
     parser.add_argument("--character", default="Character1", help="Character name")
     parser.add_argument("--text", default="Hello world", help="Text line for synthesis")
     parser.add_argument("--output", default="output.wav", help="Output file path for CLI synthesis")

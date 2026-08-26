@@ -308,7 +308,7 @@ void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* Chara
 void UPlayVoiceSubsystem::SendTTSHttpRequest(const FString& Endpoint, const FString& JsonPayload, TFunction<void(bool bSuccess, const TArray<uint8>& ResponseBytes, const FString& ResponseString)> Callback)
 {
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
-	FString FullUrl = (Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:8000")) + Endpoint;
+	FString FullUrl = (Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983")) + Endpoint;
 
 	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest = FHttpModule::Get().CreateRequest();
 	HttpRequest->SetURL(FullUrl);

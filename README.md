@@ -107,14 +107,14 @@ pip install -r requirements.txt
 Run the OpenVoice REST service:
 
 ```bash
-python openvoice_service.py --mode server --host 127.0.0.1 --port 8000
+python openvoice_service.py --mode server --host 127.0.0.1 --port 1983
 ```
 
 ### 4. Unreal Engine Project Setup
 1. Copy `PlayVoicePlugin` into your project's `Plugins/` folder.
 2. Open your Unreal Engine 5.8 project.
 3. Enable **PlayVoice Plugin** in **Edit -> Plugins**.
-4. Configure service URL under **Project Settings -> Engine -> PlayVoice Settings** (default: `http://127.0.0.1:8000`).
+4. Configure service URL under **Project Settings -> Engine -> PlayVoice Settings** (default: `http://127.0.0.1:1983`).
 
 ---
 
