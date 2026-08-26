@@ -36,6 +36,10 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 	if (ObjectsBeingCustomized.Num() > 0)
 	{
 		TargetVoiceAsset = Cast<UCharacterVoiceAsset>(ObjectsBeingCustomized[0].Get());
+		if (TargetVoiceAsset.IsValid())
+		{
+			TargetVoiceAsset->AutoLinkPrecachedSoundWaves();
+		}
 	}
 
 	IDetailCategoryBuilder& OpenVoiceCategory = DetailBuilder.EditCategory("OpenVoice Model Actions", FText::FromString("OpenVoice Model Actions"));
@@ -51,7 +55,7 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 	[
 		SNew(SButton)
 		.Text(FText::FromString("Generate Model & Process All Lines"))
-		.ToolTipText(FText::FromString("One-click pipeline: Scans folder for reference tracks, trains model, auto-discovers Blueprint voice lines, transcribes, and stores all generated assets in the asset folder."))
+		.ToolTipText(FText::FromString("One-click pipeline: Auto-discovers Blueprint voice lines, extracts model embeddings for all configured languages, transcribes, synthesizes, and saves generated audio assets."))
 		.OnClicked(this, &FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked)
 	];
 
@@ -66,7 +70,7 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 	[
 		SNew(SButton)
 		.Text(FText::FromString("Generate OpenVoice Model"))
-		.ToolTipText(FText::FromString("Extract tone color embedding from the reference audio clips and save to model file."))
+		.ToolTipText(FText::FromString("Extract tone color embeddings for all configured languages from reference audio clips and folders."))
 		.OnClicked(this, &FCharacterVoiceAssetCustomization::OnGenerateModelClicked)
 	];
 
@@ -80,8 +84,8 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 	.ValueContent()
 	[
 		SNew(SButton)
-		.Text(FText::FromString("Pre-process All Voice Lines"))
-		.ToolTipText(FText::FromString("Synthesizes and caches all voice lines in advance to eliminate in-game latency."))
+		.Text(FText::FromString("Pre-process Blueprint Voice Lines"))
+		.ToolTipText(FText::FromString("Scans all Blueprint nodes for dialogue lines and pre-renders sound wave assets across all configured languages to eliminate in-game latency."))
 		.OnClicked(this, &FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked)
 	];
 }
@@ -131,7 +135,7 @@ TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProject
 				}
 
 				FString FuncName = TargetFunc->GetName();
-				if (FuncName == TEXT("PlayCharacterVoice") || FuncName == TEXT("GenerateVoiceSoundWave") || FuncName == TEXT("PrecacheCharacterVoiceLines"))
+				if (FuncName == TEXT("PlayCharacterVoice") || FuncName == TEXT("GenerateVoiceSoundWave") || FuncName == TEXT("PrecacheCharacterVoiceLines") || FuncName == TEXT("PrecacheVoiceLine"))
 				{
 					UEdGraphPin* AssetPin = CallNode->FindPin(TEXT("CharacterVoiceAsset"));
 					UEdGraphPin* TextPin = CallNode->FindPin(TEXT("TextLine"));
@@ -182,72 +186,31 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 	}
 
 	UCharacterVoiceAsset* Asset = TargetVoiceAsset.Get();
-	TArray<FString> RefAudioFiles = Asset->GetResolvedReferenceAudioFiles();
-	if (RefAudioFiles.Num() == 0)
+	if (Asset->Languages.Num() == 0)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Please specify reference audio files or set a valid Reference Audio Folder before running model generation & line processing."));
-		return FReply::Handled();
+		Asset->GetOrAddLanguageData(Asset->DefaultLanguage.IsEmpty() ? TEXT("EN") : Asset->DefaultLanguage);
 	}
 
-	// Retrieve dialogue lines from all project Blueprints
 	TArray<FString> DiscoveredBlueprintLines = RetrieveVoiceLinesFromProjectBlueprints(Asset);
-	for (const FString& Line : DiscoveredBlueprintLines)
-	{
-		Asset->LinesToPreprocess.AddUnique(Line);
-	}
 
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
 	FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
 
-	// Auto-transcribe reference tracks to extract text lines automatically
-	TSharedPtr<FJsonObject> TranscribeObj = MakeShared<FJsonObject>();
-	TArray<TSharedPtr<FJsonValue>> RefJsonValues;
-	for (const FString& RefPath : RefAudioFiles)
+	int32 TotalLangsProcessed = 0;
+	for (FCharacterLanguageData& LangData : Asset->Languages)
 	{
-		RefJsonValues.Add(MakeShared<FJsonValueString>(RefPath));
-	}
-	TranscribeObj->SetArrayField(TEXT("reference_audio_files"), RefJsonValues);
-
-	FString TranscribePayload;
-	TSharedRef<TJsonWriter<>> TranscribeWriter = TJsonWriterFactory<>::Create(&TranscribePayload);
-	FJsonSerializer::Serialize(TranscribeObj.ToSharedRef(), TranscribeWriter);
-
-	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> TranscribeReq = FHttpModule::Get().CreateRequest();
-	TranscribeReq->SetURL(BaseUrl + TEXT("/transcribe"));
-	TranscribeReq->SetVerb(TEXT("POST"));
-	TranscribeReq->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
-	TranscribeReq->SetContentAsString(TranscribePayload);
-
-	TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = TargetVoiceAsset;
-	TranscribeReq->OnProcessRequestComplete().BindLambda([WeakAsset, RefAudioFiles, BaseUrl](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
-	{
-		if (bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode()))
+		TArray<FString> RefAudioFiles = Asset->GetResolvedReferenceAudioFilesForLanguage(LangData.LanguageCode);
+		if (RefAudioFiles.Num() == 0)
 		{
-			TSharedPtr<FJsonObject> ResponseObj;
-			TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Response->GetContentAsString());
-			if (FJsonSerializer::Deserialize(Reader, ResponseObj) && ResponseObj.IsValid())
-			{
-				const TSharedPtr<FJsonObject>* TranscriptionsMap;
-				if (ResponseObj->TryGetObjectField(TEXT("transcriptions"), TranscriptionsMap))
-				{
-					for (auto& Pair : (*TranscriptionsMap)->Values)
-					{
-						FString Text = Pair.Value->AsString();
-						if (!Text.IsEmpty() && WeakAsset.IsValid())
-						{
-							WeakAsset->LinesToPreprocess.AddUnique(Text);
-						}
-					}
-				}
-			}
+			continue;
 		}
 
-		// Proceed to Model Extraction
+		TotalLangsProcessed++;
+
+		// Step 1: Extract model embeddings for this language
 		TSharedPtr<FJsonObject> ExtractObj = MakeShared<FJsonObject>();
-		if (WeakAsset.IsValid())
-		{
-			ExtractObj->SetStringField(TEXT("character_name"), WeakAsset->CharacterName.ToString());
-		}
+		ExtractObj->SetStringField(TEXT("character_name"), Asset->CharacterName.ToString());
+		ExtractObj->SetStringField(TEXT("language"), LangData.LanguageCode);
 
 		TArray<TSharedPtr<FJsonValue>> AudioPathValues;
 		for (const FString& Path : RefAudioFiles)
@@ -266,54 +229,54 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 		ExtractReq->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 		ExtractReq->SetContentAsString(ExtractPayload);
 
-		ExtractReq->OnProcessRequestComplete().BindLambda([WeakAsset, BaseUrl](FHttpRequestPtr Req, FHttpResponsePtr Res, bool bExtractSuccess)
+		TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = TargetVoiceAsset;
+		FString CurrentLangCode = LangData.LanguageCode;
+		float CurrentSpeed = LangData.Speed;
+
+		ExtractReq->OnProcessRequestComplete().BindLambda([WeakAsset, BaseUrl, CurrentLangCode, CurrentSpeed, DiscoveredBlueprintLines](FHttpRequestPtr Req, FHttpResponsePtr Res, bool bExtractSuccess)
 		{
-			if (bExtractSuccess && Res.IsValid() && EHttpResponseCodes::IsOk(Res->GetResponseCode()))
+			if (bExtractSuccess && Res.IsValid() && EHttpResponseCodes::IsOk(Res->GetResponseCode()) && WeakAsset.IsValid())
 			{
 				TSharedPtr<FJsonObject> ResObj;
 				TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Res->GetContentAsString());
-				if (FJsonSerializer::Deserialize(Reader, ResObj) && ResObj.IsValid() && WeakAsset.IsValid())
+				if (FJsonSerializer::Deserialize(Reader, ResObj) && ResObj.IsValid())
 				{
-					WeakAsset->ToneColorEmbeddingData = ResObj->GetStringField(TEXT("embedding_data"));
-					WeakAsset->bIsModelGenerated = !WeakAsset->ToneColorEmbeddingData.IsEmpty();
-					WeakAsset->SaveModelToFile(); // Saved directly in asset's folder
-					WeakAsset->MarkPackageDirty();
+					FCharacterLanguageData* TargetLangData = WeakAsset->FindLanguageData(CurrentLangCode);
+					if (TargetLangData)
+					{
+						TargetLangData->ToneColorEmbeddingData = ResObj->GetStringField(TEXT("embedding_data"));
+						TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
+						WeakAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
+						WeakAsset->MarkPackageDirty();
+					}
 				}
 			}
 
-			// Precache lines and save generated USoundWave assets in the asset's package folder
-			if (!WeakAsset.IsValid() || WeakAsset->LinesToPreprocess.Num() == 0)
+			if (!WeakAsset.IsValid() || DiscoveredBlueprintLines.Num() == 0)
 			{
-				FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Model generated successfully, but no dialogue lines were found to process."));
 				return;
 			}
 
 			UCharacterVoiceAsset* VoiceAsset = WeakAsset.Get();
-			TSharedPtr<int32> Remaining = MakeShared<int32>(VoiceAsset->LinesToPreprocess.Num());
-			TSharedPtr<int32> SuccessCount = MakeShared<int32>(0);
+			FCharacterLanguageData* TargetLangData = VoiceAsset->FindLanguageData(CurrentLangCode);
+			FString EmbeddingData = TargetLangData ? TargetLangData->ToneColorEmbeddingData : TEXT("");
 
 			UPackage* OuterPackage = VoiceAsset->GetOutermost();
 			FString AssetFolderPath = FPaths::GetPath(OuterPackage->GetName());
 
-			for (const FString& LineText : VoiceAsset->LinesToPreprocess)
+			for (const FString& LineText : DiscoveredBlueprintLines)
 			{
-				if (VoiceAsset->HasPrecachedVoiceLine(LineText))
+				if (VoiceAsset->HasPrecachedVoiceLine(LineText, CurrentLangCode))
 				{
-					(*SuccessCount)++;
-					(*Remaining)--;
-					if (*Remaining <= 0)
-					{
-						FMessageDialog::Open(EAppMsgType::Ok, FText::Format(FText::FromString("Full pipeline complete! Model generated and {0} voice lines precached and saved in asset folder!"), FText::AsNumber(*SuccessCount)));
-					}
 					continue;
 				}
 
 				TSharedPtr<FJsonObject> SynthObj = MakeShared<FJsonObject>();
 				SynthObj->SetStringField(TEXT("character_name"), VoiceAsset->CharacterName.ToString());
 				SynthObj->SetStringField(TEXT("text"), LineText);
-				SynthObj->SetStringField(TEXT("language"), VoiceAsset->Language);
-				SynthObj->SetNumberField(TEXT("speed"), VoiceAsset->Speed);
-				SynthObj->SetStringField(TEXT("embedding_data"), VoiceAsset->ToneColorEmbeddingData);
+				SynthObj->SetStringField(TEXT("language"), CurrentLangCode);
+				SynthObj->SetNumberField(TEXT("speed"), CurrentSpeed);
+				SynthObj->SetStringField(TEXT("embedding_data"), EmbeddingData);
 
 				FString SynthPayload;
 				TSharedRef<TJsonWriter<>> SynthWriter = TJsonWriterFactory<>::Create(&SynthPayload);
@@ -325,11 +288,11 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 				SynthReq->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 				SynthReq->SetContentAsString(SynthPayload);
 
-				SynthReq->OnProcessRequestComplete().BindLambda([WeakAsset, LineText, AssetFolderPath, Remaining, SuccessCount](FHttpRequestPtr SReq, FHttpResponsePtr SRes, bool bSynthSuccess)
+				SynthReq->OnProcessRequestComplete().BindLambda([WeakAsset, LineText, CurrentLangCode, AssetFolderPath](FHttpRequestPtr SReq, FHttpResponsePtr SRes, bool bSynthSuccess)
 				{
 					if (bSynthSuccess && SRes.IsValid() && EHttpResponseCodes::IsOk(SRes->GetResponseCode()) && WeakAsset.IsValid())
 					{
-						FString LineSanitized = FString::Printf(TEXT("SW_%s_%u"), *WeakAsset->CharacterName.ToString(), GetTypeHash(LineText));
+						FString LineSanitized = FString::Printf(TEXT("SW_%s_%s_%u"), *WeakAsset->CharacterName.ToString(), *CurrentLangCode, GetTypeHash(LineText));
 						FString SoundWavePackagePath = AssetFolderPath / LineSanitized;
 
 						UPackage* SoundWavePackage = CreatePackage(*SoundWavePackagePath);
@@ -337,7 +300,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 
 						if (SoundWave)
 						{
-							WeakAsset->CacheVoiceLine(LineText, SoundWave);
+							WeakAsset->CacheVoiceLine(LineText, SoundWave, CurrentLangCode);
 							SoundWave->MarkPackageDirty();
 							WeakAsset->MarkPackageDirty();
 
@@ -345,14 +308,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 							{
 								FAssetRegistryModule::AssetCreated(SoundWave);
 							}
-							(*SuccessCount)++;
 						}
-					}
-
-					(*Remaining)--;
-					if (*Remaining <= 0)
-					{
-						FMessageDialog::Open(EAppMsgType::Ok, FText::Format(FText::FromString("Full pipeline complete! Model generated and {0} voice lines precached and saved in asset folder!"), FText::AsNumber(*SuccessCount)));
 					}
 				});
 
@@ -361,9 +317,17 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 		});
 
 		ExtractReq->ProcessRequest();
-	});
+	}
 
-	TranscribeReq->ProcessRequest();
+	if (TotalLangsProcessed == 0)
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Please specify Reference Audio Files or Reference Audio Folder for at least one language before generating models."));
+	}
+	else
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, FText::Format(FText::FromString("Started model generation and voice line precaching for {0} languages and {1} discovered Blueprint dialogue lines."), FText::AsNumber(TotalLangsProcessed), FText::AsNumber(DiscoveredBlueprintLines.Num())));
+	}
+
 	return FReply::Handled();
 }
 
@@ -375,60 +339,84 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 	}
 
 	UCharacterVoiceAsset* Asset = TargetVoiceAsset.Get();
-	TArray<FString> RefAudioFiles = Asset->GetResolvedReferenceAudioFiles();
-	if (RefAudioFiles.Num() == 0)
+	if (Asset->Languages.Num() == 0)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Please specify at least one reference audio file before generating the model."));
-		return FReply::Handled();
+		Asset->GetOrAddLanguageData(Asset->DefaultLanguage.IsEmpty() ? TEXT("EN") : Asset->DefaultLanguage);
 	}
 
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
 	FString Url = (Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983")) + TEXT("/extract");
 
-	TSharedPtr<FJsonObject> JsonObj = MakeShared<FJsonObject>();
-	JsonObj->SetStringField(TEXT("character_name"), Asset->CharacterName.ToString());
-
-	TArray<TSharedPtr<FJsonValue>> AudioPathValues;
-	for (const FString& Path : RefAudioFiles)
+	int32 ProcessedLangs = 0;
+	for (FCharacterLanguageData& LangData : Asset->Languages)
 	{
-		AudioPathValues.Add(MakeShared<FJsonValueString>(Path));
-	}
-	JsonObj->SetArrayField(TEXT("reference_audio_files"), AudioPathValues);
-
-	FString PayloadStr;
-	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&PayloadStr);
-	FJsonSerializer::Serialize(JsonObj.ToSharedRef(), Writer);
-
-	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest = FHttpModule::Get().CreateRequest();
-	HttpRequest->SetURL(Url);
-	HttpRequest->SetVerb(TEXT("POST"));
-	HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
-	HttpRequest->SetContentAsString(PayloadStr);
-
-	TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = TargetVoiceAsset;
-	HttpRequest->OnProcessRequestComplete().BindLambda([WeakAsset](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
-	{
-		if (bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode()))
+		TArray<FString> RefAudioFiles = Asset->GetResolvedReferenceAudioFilesForLanguage(LangData.LanguageCode);
+		if (RefAudioFiles.Num() == 0)
 		{
-			TSharedPtr<FJsonObject> ResponseObj;
-			TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Response->GetContentAsString());
-			if (FJsonSerializer::Deserialize(Reader, ResponseObj) && ResponseObj.IsValid())
-			{
-				if (WeakAsset.IsValid())
-				{
-					WeakAsset->ToneColorEmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
-					WeakAsset->bIsModelGenerated = !WeakAsset->ToneColorEmbeddingData.IsEmpty();
-					WeakAsset->SaveModelToFile();
-					WeakAsset->MarkPackageDirty();
-				}
-				FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Successfully generated and saved OpenVoice model tone color embedding file!"));
-				return;
-			}
+			continue;
 		}
-		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Failed to generate OpenVoice model. Please check Python backend service status."));
-	});
 
-	HttpRequest->ProcessRequest();
+		ProcessedLangs++;
+
+		TSharedPtr<FJsonObject> JsonObj = MakeShared<FJsonObject>();
+		JsonObj->SetStringField(TEXT("character_name"), Asset->CharacterName.ToString());
+		JsonObj->SetStringField(TEXT("language"), LangData.LanguageCode);
+
+		TArray<TSharedPtr<FJsonValue>> AudioPathValues;
+		for (const FString& Path : RefAudioFiles)
+		{
+			AudioPathValues.Add(MakeShared<FJsonValueString>(Path));
+		}
+		JsonObj->SetArrayField(TEXT("reference_audio_files"), AudioPathValues);
+
+		FString PayloadStr;
+		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&PayloadStr);
+		FJsonSerializer::Serialize(JsonObj.ToSharedRef(), Writer);
+
+		TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest = FHttpModule::Get().CreateRequest();
+		HttpRequest->SetURL(Url);
+		HttpRequest->SetVerb(TEXT("POST"));
+		HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+		HttpRequest->SetContentAsString(PayloadStr);
+
+		TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = TargetVoiceAsset;
+		FString CurrentLangCode = LangData.LanguageCode;
+
+		HttpRequest->OnProcessRequestComplete().BindLambda([WeakAsset, CurrentLangCode](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
+		{
+			if (bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode()))
+			{
+				TSharedPtr<FJsonObject> ResponseObj;
+				TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Response->GetContentAsString());
+				if (FJsonSerializer::Deserialize(Reader, ResponseObj) && ResponseObj.IsValid())
+				{
+					if (WeakAsset.IsValid())
+					{
+						FCharacterLanguageData* TargetLangData = WeakAsset->FindLanguageData(CurrentLangCode);
+						if (TargetLangData)
+						{
+							TargetLangData->ToneColorEmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
+							TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
+							WeakAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
+							WeakAsset->MarkPackageDirty();
+						}
+					}
+				}
+			}
+		});
+
+		HttpRequest->ProcessRequest();
+	}
+
+	if (ProcessedLangs == 0)
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Please specify Reference Audio Files or Reference Audio Folder for at least one language."));
+	}
+	else
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, FText::Format(FText::FromString("Triggered model generation for {0} languages."), FText::AsNumber(ProcessedLangs)));
+	}
+
 	return FReply::Handled();
 }
 
@@ -440,71 +428,80 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 	}
 
 	UCharacterVoiceAsset* Asset = TargetVoiceAsset.Get();
-	if (Asset->LinesToPreprocess.Num() == 0)
+	TArray<FString> DiscoveredBlueprintLines = RetrieveVoiceLinesFromProjectBlueprints(Asset);
+
+	if (DiscoveredBlueprintLines.Num() == 0)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("No dialog lines listed in 'Lines To Preprocess'. Add text lines first."));
+		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("No dialogue lines found in Blueprint graph nodes referencing this asset."));
 		return FReply::Handled();
 	}
 
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
 	FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
 
-	TSharedPtr<int32> RemainingCount = MakeShared<int32>(Asset->LinesToPreprocess.Num());
-	TSharedPtr<int32> SuccessCount = MakeShared<int32>(0);
 	TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = TargetVoiceAsset;
+	UPackage* OuterPackage = Asset->GetOutermost();
+	FString AssetFolderPath = FPaths::GetPath(OuterPackage->GetName());
 
-	for (const FString& LineText : Asset->LinesToPreprocess)
+	for (const FCharacterLanguageData& LangData : Asset->Languages)
 	{
-		if (Asset->HasPrecachedVoiceLine(LineText))
+		FString CurrentLangCode = LangData.LanguageCode;
+		float CurrentSpeed = LangData.Speed;
+		FString EmbeddingData = LangData.ToneColorEmbeddingData;
+
+		for (const FString& LineText : DiscoveredBlueprintLines)
 		{
-			(*SuccessCount)++;
-			(*RemainingCount)--;
-			if (*RemainingCount <= 0)
+			if (Asset->HasPrecachedVoiceLine(LineText, CurrentLangCode))
 			{
-				FMessageDialog::Open(EAppMsgType::Ok, FText::Format(FText::FromString("Successfully precached {0} voice lines for zero-delay playback!"), FText::AsNumber(*SuccessCount)));
+				continue;
 			}
-			continue;
-		}
 
-		TSharedPtr<FJsonObject> JsonObj = MakeShared<FJsonObject>();
-		JsonObj->SetStringField(TEXT("character_name"), Asset->CharacterName.ToString());
-		JsonObj->SetStringField(TEXT("text"), LineText);
-		JsonObj->SetStringField(TEXT("language"), Asset->Language);
-		JsonObj->SetNumberField(TEXT("speed"), Asset->Speed);
-		JsonObj->SetStringField(TEXT("embedding_data"), Asset->ToneColorEmbeddingData);
+			TSharedPtr<FJsonObject> JsonObj = MakeShared<FJsonObject>();
+			JsonObj->SetStringField(TEXT("character_name"), Asset->CharacterName.ToString());
+			JsonObj->SetStringField(TEXT("text"), LineText);
+			JsonObj->SetStringField(TEXT("language"), CurrentLangCode);
+			JsonObj->SetNumberField(TEXT("speed"), CurrentSpeed);
+			JsonObj->SetStringField(TEXT("embedding_data"), EmbeddingData);
 
-		FString PayloadStr;
-		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&PayloadStr);
-		FJsonSerializer::Serialize(JsonObj.ToSharedRef(), Writer);
+			FString PayloadStr;
+			TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&PayloadStr);
+			FJsonSerializer::Serialize(JsonObj.ToSharedRef(), Writer);
 
-		TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest = FHttpModule::Get().CreateRequest();
-		HttpRequest->SetURL(BaseUrl + TEXT("/synthesize"));
-		HttpRequest->SetVerb(TEXT("POST"));
-		HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
-		HttpRequest->SetContentAsString(PayloadStr);
+			TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest = FHttpModule::Get().CreateRequest();
+			HttpRequest->SetURL(BaseUrl + TEXT("/synthesize"));
+			HttpRequest->SetVerb(TEXT("POST"));
+			HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+			HttpRequest->SetContentAsString(PayloadStr);
 
-		HttpRequest->OnProcessRequestComplete().BindLambda([WeakAsset, LineText, RemainingCount, SuccessCount](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
-		{
-			if (bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode()))
+			HttpRequest->OnProcessRequestComplete().BindLambda([WeakAsset, LineText, CurrentLangCode, AssetFolderPath](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
 			{
-				USoundWave* SoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(Response->GetContent());
-				if (SoundWave && WeakAsset.IsValid())
+				if (bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode()) && WeakAsset.IsValid())
 				{
-					WeakAsset->CacheVoiceLine(LineText, SoundWave);
-					WeakAsset->MarkPackageDirty();
-					(*SuccessCount)++;
+					FString LineSanitized = FString::Printf(TEXT("SW_%s_%s_%u"), *WeakAsset->CharacterName.ToString(), *CurrentLangCode, GetTypeHash(LineText));
+					FString SoundWavePackagePath = AssetFolderPath / LineSanitized;
+
+					UPackage* SoundWavePackage = CreatePackage(*SoundWavePackagePath);
+					USoundWave* SoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(Response->GetContent(), SoundWavePackage, FName(*LineSanitized));
+
+					if (SoundWave)
+					{
+						WeakAsset->CacheVoiceLine(LineText, SoundWave, CurrentLangCode);
+						SoundWave->MarkPackageDirty();
+						WeakAsset->MarkPackageDirty();
+
+						if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+						{
+							FAssetRegistryModule::AssetCreated(SoundWave);
+						}
+					}
 				}
-			}
+			});
 
-			(*RemainingCount)--;
-			if (*RemainingCount <= 0)
-			{
-				FMessageDialog::Open(EAppMsgType::Ok, FText::Format(FText::FromString("Successfully precached {0} voice lines for zero-delay playback!"), FText::AsNumber(*SuccessCount)));
-			}
-		});
-
-		HttpRequest->ProcessRequest();
+			HttpRequest->ProcessRequest();
+		}
 	}
+
+	FMessageDialog::Open(EAppMsgType::Ok, FText::Format(FText::FromString("Pre-rendering initiated for {0} discovered dialogue lines across {1} languages."), FText::AsNumber(DiscoveredBlueprintLines.Num()), FText::AsNumber(Asset->Languages.Num())));
 
 	return FReply::Handled();
 }

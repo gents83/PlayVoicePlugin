@@ -5,11 +5,14 @@
 #include "CharacterVoiceAsset.h"
 #include "PlayVoiceAudioUtils.h"
 #include "PlayVoiceSettings.h"
+#include "PlayVoiceBlueprintLibrary.h"
 #include "Sound/SoundWave.h"
+#include "HAL/FileManager.h"
+#include "Misc/Paths.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
-// 1. Test UCharacterVoiceAsset caching & lookup functionality
+// 1. Test UCharacterVoiceAsset caching & multi-language lookup functionality
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCharacterVoiceAssetCachingTest, "PlayVoice.UnitTests.CharacterVoiceAssetCaching", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
 
 bool FCharacterVoiceAssetCachingTest::RunTest(const FString& Parameters)
@@ -23,35 +26,133 @@ bool FCharacterVoiceAssetCachingTest::RunTest(const FString& Parameters)
 	}
 
 	FString TestLine = TEXT("Hello world, this is a test line.");
-	TestFalse(TEXT("Voice line should initially not be cached"), VoiceAsset->HasPrecachedVoiceLine(TestLine));
+	TestFalse(TEXT("Voice line should initially not be cached"), VoiceAsset->HasPrecachedVoiceLine(TestLine, TEXT("EN")));
 
 	// Create dynamic dummy sound wave
-	USoundWave* DummySoundWave = NewObject<USoundWave>();
-	VoiceAsset->CacheVoiceLine(TestLine, DummySoundWave);
+	USoundWave* DummySoundWaveEN = NewObject<USoundWave>();
+	VoiceAsset->CacheVoiceLine(TestLine, DummySoundWaveEN, TEXT("EN"));
 
-	TestTrue(TEXT("Voice line should be cached after CacheVoiceLine"), VoiceAsset->HasPrecachedVoiceLine(TestLine));
-	TestEqual(TEXT("Retrieved sound wave should match cached sound wave"), VoiceAsset->GetPrecachedVoiceLine(TestLine), DummySoundWave);
+	TestTrue(TEXT("Voice line should be cached for EN"), VoiceAsset->HasPrecachedVoiceLine(TestLine, TEXT("EN")));
+	TestEqual(TEXT("Retrieved sound wave for EN should match cached sound wave"), VoiceAsset->GetPrecachedVoiceLine(TestLine, TEXT("EN")), DummySoundWaveEN);
+
+	// Multi-language caching test
+	USoundWave* DummySoundWaveES = NewObject<USoundWave>();
+	VoiceAsset->CacheVoiceLine(TestLine, DummySoundWaveES, TEXT("ES"));
+
+	TestTrue(TEXT("Voice line should be cached for ES"), VoiceAsset->HasPrecachedVoiceLine(TestLine, TEXT("ES")));
+	TestEqual(TEXT("Retrieved sound wave for ES should match ES sound wave"), VoiceAsset->GetPrecachedVoiceLine(TestLine, TEXT("ES")), DummySoundWaveES);
 
 	// Case-insensitivity & whitespace trimming test
 	FString MessyLine = TEXT("  HELLO WORLD, THIS IS A TEST LINE.  ");
-	TestTrue(TEXT("Voice line lookup should be case and whitespace insensitive"), VoiceAsset->HasPrecachedVoiceLine(MessyLine));
+	TestTrue(TEXT("Voice line lookup should be case and whitespace insensitive"), VoiceAsset->HasPrecachedVoiceLine(MessyLine, TEXT("EN")));
 
-	// Test folder & resolved files helper
+	// AutoLink test
+	VoiceAsset->AutoLinkPrecachedSoundWaves();
+
+	// Disk folder helper test
 	FString AssetDiskFolder = VoiceAsset->GetAssetDiskFolder();
 	TestFalse(TEXT("GetAssetDiskFolder should return non-empty directory path"), AssetDiskFolder.IsEmpty());
-
-	TArray<FString> ResolvedFiles = VoiceAsset->GetResolvedReferenceAudioFiles();
-	TestEqual(TEXT("Resolved files should initially match valid ReferenceAudioFiles"), ResolvedFiles.Num(), 0);
 
 	return true;
 }
 
-// 2. Test UPlayVoiceAudioUtils PCM & WAV parser
+// 2. Test Multi-Language settings data structures in UCharacterVoiceAsset
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCharacterVoiceMultiLanguageTest, "PlayVoice.UnitTests.CharacterVoiceMultiLanguage", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FCharacterVoiceMultiLanguageTest::RunTest(const FString& Parameters)
+{
+	UCharacterVoiceAsset* VoiceAsset = NewObject<UCharacterVoiceAsset>();
+	TestNotNull(TEXT("VoiceAsset should be instantiated"), VoiceAsset);
+
+	if (!VoiceAsset)
+	{
+		return false;
+	}
+
+	// Verify default language
+	TestEqual(TEXT("Default language should be EN"), VoiceAsset->DefaultLanguage, TEXT("EN"));
+
+	FCharacterLanguageData* DefaultData = VoiceAsset->FindLanguageData(TEXT("EN"));
+	TestNotNull(TEXT("Default language data EN should exist"), DefaultData);
+
+	if (DefaultData)
+	{
+		TestEqual(TEXT("Default speed should be 1.0"), DefaultData->Speed, 1.0f);
+		TestFalse(TEXT("Model should initially not be generated"), DefaultData->bIsModelGenerated);
+	}
+
+	// Add Spanish language configuration
+	FCharacterLanguageData& SpanishData = VoiceAsset->GetOrAddLanguageData(TEXT("ES"));
+	SpanishData.Speed = 1.2f;
+	SpanishData.ToneColorEmbeddingData = TEXT("{\"dummy_emb\": 123}");
+	SpanishData.bIsModelGenerated = true;
+
+	FCharacterLanguageData* FoundSpanish = VoiceAsset->FindLanguageData(TEXT("ES"));
+	TestNotNull(TEXT("Spanish language data should be retrievable"), FoundSpanish);
+	if (FoundSpanish)
+	{
+		TestEqual(TEXT("Spanish speed should be 1.2"), FoundSpanish->Speed, 1.2f);
+		TestTrue(TEXT("Spanish model generated status should be true"), FoundSpanish->bIsModelGenerated);
+	}
+
+	// Add French language configuration
+	FCharacterLanguageData& FrenchData = VoiceAsset->GetOrAddLanguageData(TEXT("FR"));
+	FrenchData.Speed = 0.9f;
+
+	TestEqual(TEXT("Asset should now contain 3 language entries"), VoiceAsset->Languages.Num(), 3);
+
+	return true;
+}
+
+// 3. Test Folder Resolution & non-clearing multi-format audio search
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCharacterVoiceFolderResolutionTest, "PlayVoice.UnitTests.CharacterVoiceFolderResolution", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FCharacterVoiceFolderResolutionTest::RunTest(const FString& Parameters)
+{
+	// Test ResolveFolderPathToDisk
+	FString GameContentPath = TEXT("/Game/Audio/Voices");
+	FString DiskPath = UCharacterVoiceAsset::ResolveFolderPathToDisk(GameContentPath);
+	TestFalse(TEXT("Resolved disk path for /Game/ should not be empty"), DiskPath.IsEmpty());
+	TestTrue(TEXT("Resolved disk path should point to content directory"), DiskPath.Contains(TEXT("Content")));
+
+	FString RelContentPath = TEXT("Content/Audio/Voices");
+	FString DiskPathRel = UCharacterVoiceAsset::ResolveFolderPathToDisk(RelContentPath);
+	TestFalse(TEXT("Resolved disk path for Content/ should not be empty"), DiskPathRel.IsEmpty());
+
+	// Test ResolveAudioFilesFromFolderAndFiles with dummy files
+	FDirectoryPath TestFolder;
+	TestFolder.Path = FPaths::ProjectSavedDir() / TEXT("TestAudioFolder");
+	IFileManager::Get().MakeDirectory(*TestFolder.Path, true);
+
+	FString WavFile = TestFolder.Path / TEXT("clip1.wav");
+	FString Mp3File = TestFolder.Path / TEXT("clip2.mp3");
+	FString FlacFile = TestFolder.Path / TEXT("clip3.flac");
+
+	// Create dummy audio files
+	FFileHelper::SaveStringToFile(TEXT("dummy wav content"), *WavFile);
+	FFileHelper::SaveStringToFile(TEXT("dummy mp3 content"), *Mp3File);
+	FFileHelper::SaveStringToFile(TEXT("dummy flac content"), *FlacFile);
+
+	TArray<FFilePath> EmptyFiles;
+	TArray<FString> ResolvedAudioFiles = UCharacterVoiceAsset::ResolveAudioFilesFromFolderAndFiles(EmptyFiles, TestFolder);
+
+	TestEqual(TEXT("Resolved files should collect all 3 formats (.wav, .mp3, .flac) without clearing"), ResolvedAudioFiles.Num(), 3);
+
+	// Clean up temporary test files
+	IFileManager::Get().Delete(*WavFile);
+	IFileManager::Get().Delete(*Mp3File);
+	IFileManager::Get().Delete(*FlacFile);
+	IFileManager::Get().DeleteDirectory(*TestFolder.Path, false, true);
+
+	return true;
+}
+
+// 4. Test UPlayVoiceAudioUtils PCM & WAV parser
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlayVoiceAudioUtilsTest, "PlayVoice.UnitTests.AudioUtilsPCMAndWAVParsing", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
 
 bool FPlayVoiceAudioUtilsTest::RunTest(const FString& Parameters)
 {
-	// 2a. Test PCM creation
+	// 4a. Test PCM creation
 	TArray<uint8> PCMData;
 	PCMData.SetNumZeroed(4800); // 0.1s of 24kHz 16-bit mono PCM (4800 bytes)
 
@@ -60,24 +161,24 @@ bool FPlayVoiceAudioUtilsTest::RunTest(const FString& Parameters)
 
 	if (PCMSoundWave)
 	{
-		TestEqual(TEXT("Sample rate should be 24000"), PCMSoundWave->GetSampleRateForCurrentPlatform(), 24000.0f);
+		TestEqual(TEXT("Sample rate should be 24000"), static_cast<int32>(PCMSoundWave->GetSampleRateForCurrentPlatform()), 24000);
 		TestEqual(TEXT("Channels count should be 1"), static_cast<int32>(PCMSoundWave->NumChannels), 1);
 		TestNearlyEqual(TEXT("Duration should be approximately 0.1s"), PCMSoundWave->Duration, 0.1f, 0.01f);
 	}
 
-	// 2b. Test null/invalid input handling
+	// 4b. Test null/invalid input handling
 	TArray<uint8> EmptyData;
 	USoundWave* InvalidSoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromPCM(EmptyData, 24000, 1);
 	TestNull(TEXT("Empty PCM data should return null SoundWave"), InvalidSoundWave);
 
-	// 2c. Test SoundWave creation with Outer package
+	// 4c. Test SoundWave creation with Outer package
 	USoundWave* PersistentSoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromPCM(PCMData, 24000, 1, GetTransientPackage(), FName(TEXT("TestSW")));
 	TestNotNull(TEXT("SoundWave created with Outer should not be null"), PersistentSoundWave);
 
 	return true;
 }
 
-// 3. Test UPlayVoiceSettings default values
+// 5. Test UPlayVoiceSettings default values
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlayVoiceSettingsTest, "PlayVoice.UnitTests.PlayVoiceSettingsDefaults", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
 
 bool FPlayVoiceSettingsTest::RunTest(const FString& Parameters)
@@ -93,9 +194,33 @@ bool FPlayVoiceSettingsTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Default AutoPrecacheOnStartup should be true"), Settings->bAutoPrecacheOnStartup);
 		TestEqual(TEXT("Default PythonExecutable should be python"), Settings->PythonExecutable, TEXT("python"));
 		TestEqual(TEXT("Default RequirementsFilePath should be Resources/OpenVoiceService/requirements.txt"), Settings->RequirementsFilePath, TEXT("Resources/OpenVoiceService/requirements.txt"));
-		TestEqual(TEXT("Default TargetInstallDir should be empty"), Settings->TargetInstallDir, TEXT(""));
-		TestEqual(TEXT("Default ExtraPipArgs should be empty"), Settings->ExtraPipArgs, TEXT(""));
 	}
+
+	return true;
+}
+
+// 6. Test UPlayVoiceBlueprintLibrary functions
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlayVoiceBlueprintLibraryTest, "PlayVoice.UnitTests.PlayVoiceBlueprintLibrary", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FPlayVoiceBlueprintLibraryTest::RunTest(const FString& Parameters)
+{
+	UCharacterVoiceAsset* VoiceAsset = NewObject<UCharacterVoiceAsset>();
+	TestNotNull(TEXT("VoiceAsset should be instantiated"), VoiceAsset);
+
+	if (!VoiceAsset)
+	{
+		return false;
+	}
+
+	TestFalse(TEXT("IsCharacterVoiceModelGenerated should return false initially"), UPlayVoiceBlueprintLibrary::IsCharacterVoiceModelGenerated(VoiceAsset, TEXT("EN")));
+
+	FCharacterLanguageData* LangData = VoiceAsset->FindLanguageData(TEXT("EN"));
+	if (LangData)
+	{
+		LangData->bIsModelGenerated = true;
+	}
+
+	TestTrue(TEXT("IsCharacterVoiceModelGenerated should return true after model flag set"), UPlayVoiceBlueprintLibrary::IsCharacterVoiceModelGenerated(VoiceAsset, TEXT("EN")));
 
 	return true;
 }

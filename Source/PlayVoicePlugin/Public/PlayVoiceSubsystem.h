@@ -27,14 +27,14 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
-	/** Pre-generates and caches all lines in LinesToPreprocess for the given CharacterVoiceAsset ensuring ZERO-DELAY playback during gameplay */
+	/** Pre-generates and caches all lines for the given CharacterVoiceAsset and language ensuring ZERO-DELAY playback during gameplay */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
-	void PrecacheAllVoiceLines(UCharacterVoiceAsset* CharacterVoiceAsset, FOnPrecacheFinished OnComplete);
+	void PrecacheAllVoiceLines(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& LanguageCode, FOnPrecacheFinished OnComplete);
 
 	/** Pre-generates and caches a single voice line asynchronously if not already cached */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
-	void PrecacheVoiceLine(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, FOnVoiceSynthesized OnComplete);
-	void PrecacheVoiceLine(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete);
+	void PrecacheVoiceLine(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, const FString& LanguageCode, FOnVoiceSynthesized OnComplete);
+	void PrecacheVoiceLine(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, const FString& LanguageCode, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete);
 
 	/**
 	 * Plays a voice line using the reference CharacterVoiceAsset.
@@ -46,6 +46,7 @@ public:
 		const UObject* WorldContextObject,
 		UCharacterVoiceAsset* CharacterVoiceAsset,
 		const FString& TextLine,
+		const FString& LanguageCode = TEXT(""),
 		UAudioComponent* TargetAudioComponent = nullptr,
 		FVector Location = FVector::ZeroVector,
 		bool bAttachToActor = false,
@@ -54,13 +55,13 @@ public:
 
 	/** Synthesizes voice line via OpenVoice backend service asynchronously */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
-	void SynthesizeVoiceLineAsync(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, FOnVoiceSynthesized OnComplete);
-	void SynthesizeVoiceLineAsync(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete);
+	void SynthesizeVoiceLineAsync(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, const FString& LanguageCode, FOnVoiceSynthesized OnComplete);
+	void SynthesizeVoiceLineAsync(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, const FString& LanguageCode, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete);
 
-	/** Request OpenVoice model extraction for a CharacterVoiceAsset */
+	/** Request OpenVoice model extraction for a CharacterVoiceAsset and language */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
-	void ExtractCharacterVoiceModel(UCharacterVoiceAsset* CharacterVoiceAsset, FOnVoiceSynthesized OnComplete);
-	void ExtractCharacterVoiceModel(UCharacterVoiceAsset* CharacterVoiceAsset, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete);
+	void ExtractCharacterVoiceModel(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& LanguageCode, FOnVoiceSynthesized OnComplete);
+	void ExtractCharacterVoiceModel(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& LanguageCode, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete);
 
 private:
 	void SendTTSHttpRequest(const FString& Endpoint, const FString& JsonPayload, TFunction<void(bool bSuccess, const TArray<uint8>& ResponseBytes, const FString& ResponseString)> Callback);
