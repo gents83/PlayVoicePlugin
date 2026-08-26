@@ -34,6 +34,7 @@ public class PlayVoicePluginEditor : ModuleRules
 				"Slate",
 				"SlateCore",
 				"UnrealEd",
+				"AssetTools",
 				"DetailCustomizations",
 				"PropertyEditor",
 				"EditorSubsystem",
