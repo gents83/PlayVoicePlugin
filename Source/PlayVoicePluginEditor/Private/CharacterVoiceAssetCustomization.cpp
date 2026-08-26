@@ -4,6 +4,7 @@
 #include "CharacterVoiceAsset.h"
 #include "PlayVoiceSettings.h"
 #include "PlayVoiceAudioUtils.h"
+#include "PlayVoicePluginEditorModule.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
 #include "DetailCategoryBuilder.h"
@@ -198,6 +199,10 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
 	FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
 
+	// Ensure service is launched
+	FProcHandle ServiceHandle;
+	FPlayVoicePluginEditorModule::StartOpenVoiceService(&ServiceHandle);
+
 	int32 TotalLangsProcessed = 0;
 	TArray<FCharacterLanguageData*> ConfiguredLanguages;
 	for (FCharacterLanguageData& LangData : Asset->Languages)
@@ -246,14 +251,21 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 				if (*FailedTasks > 0)
 				{
 					NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
-					NotificationItem->SetText(FText::Format(FText::FromString("PlayVoice: Finished with {0} errors."), FText::AsNumber(*FailedTasks)));
+					if (*FailedTasks == TotalTasksCount)
+					{
+						NotificationItem->SetText(FText::FromString("PlayVoice: Failed to connect to OpenVoice REST Service. Please verify service status in Project Settings."));
+					}
+					else
+					{
+						NotificationItem->SetText(FText::Format(FText::FromString("PlayVoice: Finished with {0} errors. Verify OpenVoice REST Service is running."), FText::AsNumber(*FailedTasks)));
+					}
 				}
 				else
 				{
 					NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
 					NotificationItem->SetText(FText::FromString("PlayVoice: Full pipeline processing complete!"));
 				}
-				NotificationItem->SetExpireDuration(4.0f);
+				NotificationItem->SetExpireDuration(5.0f);
 				NotificationItem->ExpireAndFadeout();
 			}
 		}
@@ -296,6 +308,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 			if (!bSuccess)
 			{
 				(*FailedTasks)++;
+				UE_LOG(LogTemp, Warning, TEXT("PlayVoice: HTTP request to /extract failed. Please check if OpenVoice REST service is running."));
 			}
 
 			if (bSuccess && WeakAsset.IsValid())
@@ -360,6 +373,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 					if (!bSynthOk)
 					{
 						(*FailedTasks)++;
+						UE_LOG(LogTemp, Warning, TEXT("PlayVoice: HTTP request to /synthesize failed for text '%s'."), *LineText);
 					}
 
 					if (bSynthOk && WeakAsset.IsValid())
@@ -412,6 +426,10 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
 	FString Url = (Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983")) + TEXT("/extract");
 
+	// Ensure service is launched
+	FProcHandle ServiceHandle;
+	FPlayVoicePluginEditorModule::StartOpenVoiceService(&ServiceHandle);
+
 	int32 ProcessedLangs = 0;
 	TArray<FCharacterLanguageData*> ConfiguredLanguages;
 	for (FCharacterLanguageData& LangData : Asset->Languages)
@@ -460,14 +478,21 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 				if (*FailedTasks > 0)
 				{
 					NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
-					NotificationItem->SetText(FText::Format(FText::FromString("PlayVoice: Model extraction finished with {0} errors."), FText::AsNumber(*FailedTasks)));
+					if (*FailedTasks == TotalTasksCount)
+					{
+						NotificationItem->SetText(FText::FromString("PlayVoice: Failed to connect to OpenVoice REST Service. Please verify service status in Project Settings."));
+					}
+					else
+					{
+						NotificationItem->SetText(FText::Format(FText::FromString("PlayVoice: Model extraction finished with {0} errors. Verify OpenVoice REST Service is running."), FText::AsNumber(*FailedTasks)));
+					}
 				}
 				else
 				{
 					NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
 					NotificationItem->SetText(FText::FromString("PlayVoice: OpenVoice model extraction complete!"));
 				}
-				NotificationItem->SetExpireDuration(4.0f);
+				NotificationItem->SetExpireDuration(5.0f);
 				NotificationItem->ExpireAndFadeout();
 			}
 		}
@@ -508,6 +533,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 			if (!bSuccess)
 			{
 				(*FailedTasks)++;
+				UE_LOG(LogTemp, Warning, TEXT("PlayVoice: Model extraction HTTP request failed. Please check if OpenVoice REST service is running."));
 			}
 
 			if (bSuccess)
@@ -558,6 +584,10 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
 	FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
 
+	// Ensure service is launched
+	FProcHandle ServiceHandle;
+	FPlayVoicePluginEditorModule::StartOpenVoiceService(&ServiceHandle);
+
 	TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = TargetVoiceAsset;
 	UPackage* OuterPackage = Asset->GetOutermost();
 	FString AssetFolderPath = FPaths::GetPath(OuterPackage->GetName());
@@ -592,14 +622,21 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 				if (*FailedTasks > 0)
 				{
 					NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
-					NotificationItem->SetText(FText::Format(FText::FromString("PlayVoice: Voice line pre-processing finished with {0} errors."), FText::AsNumber(*FailedTasks)));
+					if (*FailedTasks == TotalTasksCount)
+					{
+						NotificationItem->SetText(FText::FromString("PlayVoice: Failed to connect to OpenVoice REST Service. Please verify service status in Project Settings."));
+					}
+					else
+					{
+						NotificationItem->SetText(FText::Format(FText::FromString("PlayVoice: Voice line pre-processing finished with {0} errors. Verify OpenVoice REST Service is running."), FText::AsNumber(*FailedTasks)));
+					}
 				}
 				else
 				{
 					NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
 					NotificationItem->SetText(FText::FromString("PlayVoice: Voice line pre-processing complete!"));
 				}
-				NotificationItem->SetExpireDuration(4.0f);
+				NotificationItem->SetExpireDuration(5.0f);
 				NotificationItem->ExpireAndFadeout();
 			}
 		}
@@ -642,6 +679,7 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 				if (!bSynthOk)
 				{
 					(*FailedTasks)++;
+					UE_LOG(LogTemp, Warning, TEXT("PlayVoice: Pre-processing HTTP request to /synthesize failed for line '%s'."), *LineText);
 				}
 
 				if (bSynthOk && WeakAsset.IsValid())
