@@ -3,6 +3,8 @@
 #include "CharacterVoiceAsset.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/PackageName.h"
+#include "UObject/Package.h"
 #include "HAL/FileManager.h"
 
 UCharacterVoiceAsset::UCharacterVoiceAsset()
@@ -38,14 +40,32 @@ bool UCharacterVoiceAsset::HasPrecachedVoiceLine(const FString& TextLine) const
 	return PrecachedSoundWaves.Contains(NormalizedKey);
 }
 
+FString UCharacterVoiceAsset::GetAssetDiskFolder() const
+{
+	UPackage* Package = GetOutermost();
+	if (Package && Package != GetTransientPackage())
+	{
+		FString PackagePath = Package->GetName();
+		FString AssetFolder = FPaths::GetPath(PackagePath);
+		FString DiskFolder = FPaths::ConvertRelativePathToFull(FPackageName::LongPackageNameToFilename(AssetFolder, TEXT("")));
+		if (!DiskFolder.IsEmpty())
+		{
+			IFileManager::Get().MakeDirectory(*DiskFolder, true);
+			return DiskFolder;
+		}
+	}
+	FString SavedDir = FPaths::ProjectSavedDir() / TEXT("PlayVoice");
+	IFileManager::Get().MakeDirectory(*SavedDir, true);
+	return SavedDir;
+}
+
 bool UCharacterVoiceAsset::SaveModelToFile(const FString& InFilePath)
 {
 	FString TargetPath = InFilePath;
 	if (TargetPath.IsEmpty())
 	{
-		FString SavedDir = FPaths::ProjectSavedDir() / TEXT("PlayVoice");
-		IFileManager::Get().MakeDirectory(*SavedDir, true);
-		TargetPath = SavedDir / FString::Printf(TEXT("%s_se.json"), *CharacterName.ToString());
+		FString TargetDir = GetAssetDiskFolder();
+		TargetPath = TargetDir / FString::Printf(TEXT("%s_se.json"), *CharacterName.ToString());
 	}
 
 	if (FFileHelper::SaveStringToFile(ToneColorEmbeddingData, *TargetPath))
@@ -54,6 +74,39 @@ bool UCharacterVoiceAsset::SaveModelToFile(const FString& InFilePath)
 		return true;
 	}
 	return false;
+}
+
+TArray<FString> UCharacterVoiceAsset::GetResolvedReferenceAudioFiles() const
+{
+	TArray<FString> ResolvedFiles;
+	for (const FFilePath& FilePath : ReferenceAudioFiles)
+	{
+		if (!FilePath.FilePath.IsEmpty() && FPaths::FileExists(FilePath.FilePath))
+		{
+			ResolvedFiles.AddUnique(FilePath.FilePath);
+		}
+	}
+
+	if (!ReferenceAudioFolder.Path.IsEmpty())
+	{
+		FString FolderFullPath = ReferenceAudioFolder.Path;
+		if (FPaths::IsRelative(FolderFullPath))
+		{
+			FolderFullPath = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), FolderFullPath);
+		}
+
+		TArray<FString> FoundFiles;
+		IFileManager::Get().FindFilesRecursive(FoundFiles, *FolderFullPath, TEXT("*.wav"), true, false);
+		IFileManager::Get().FindFilesRecursive(FoundFiles, *FolderFullPath, TEXT("*.mp3"), true, false);
+		IFileManager::Get().FindFilesRecursive(FoundFiles, *FolderFullPath, TEXT("*.flac"), true, false);
+
+		for (const FString& FoundFile : FoundFiles)
+		{
+			ResolvedFiles.AddUnique(FoundFile);
+		}
+	}
+
+	return ResolvedFiles;
 }
 
 bool UCharacterVoiceAsset::LoadModelFromFile(const FString& InFilePath)

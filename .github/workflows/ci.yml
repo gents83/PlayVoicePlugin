@@ -115,6 +115,10 @@ jobs:
         run: |
           python Resources/OpenVoiceService/openvoice_service.py --mode synthesize --character TestHero --text "Automated CI synthesis test line" --output ci_test.wav
 
+      - name: Test OpenVoice Audio Transcription CLI
+        run: |
+          python Resources/OpenVoiceService/openvoice_service.py --mode transcribe --refs ci_test.wav
+
       - name: Verify Synthesized WAV Audio File
         run: |
           python -c "

@@ -39,6 +39,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice", meta = (FilePathFilter = "wav,mp3,flac"))
 	TArray<FFilePath> ReferenceAudioFiles;
 
+	/** Folder path containing reference audio tracks (WAV/MP3/FLAC) to automatically include without specifying one by one */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice", meta = (ContentDir))
+	FDirectoryPath ReferenceAudioFolder;
+
 	/** Target language for TTS synthesis (e.g., "EN", "ES", "FR", "ZH", "JP") */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	FString Language;
@@ -86,4 +90,12 @@ public:
 	/** Load extracted model embedding data from a file on disk */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	bool LoadModelFromFile(const FString& FilePath = TEXT(""));
+
+	/** Retrieves all resolved reference audio file paths from ReferenceAudioFiles and recursively from ReferenceAudioFolder */
+	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
+	TArray<FString> GetResolvedReferenceAudioFiles() const;
+
+	/** Gets the absolute folder path on disk where this asset is saved */
+	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
+	FString GetAssetDiskFolder() const;
 };

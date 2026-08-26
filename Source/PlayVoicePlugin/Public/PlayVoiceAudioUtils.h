@@ -14,14 +14,16 @@ class PLAYVOICEPLUGIN_API UPlayVoiceAudioUtils : public UBlueprintFunctionLibrar
 
 public:
 	/**
-	 * Creates a USoundWave in-memory object from raw PCM 16-bit audio buffer.
+	 * Creates a USoundWave object from raw PCM 16-bit audio buffer.
+	 * If Outer is specified, the SoundWave will be created in that Outer package/object.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
-	static USoundWave* CreateSoundWaveFromPCM(const TArray<uint8>& PCMData, int32 SampleRate = 24000, int32 NumChannels = 1);
+	static USoundWave* CreateSoundWaveFromPCM(const TArray<uint8>& PCMData, int32 SampleRate = 24000, int32 NumChannels = 1, UObject* Outer = nullptr, FName Name = NAME_None);
 
 	/**
-	 * Creates a USoundWave in-memory object from full WAV file binary buffer.
+	 * Creates a USoundWave object from full WAV file binary buffer.
+	 * If Outer is specified, the SoundWave will be created in that Outer package/object.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
-	static USoundWave* CreateSoundWaveFromWAVBuffer(const TArray<uint8>& WAVData);
+	static USoundWave* CreateSoundWaveFromWAVBuffer(const TArray<uint8>& WAVData, UObject* Outer = nullptr, FName Name = NAME_None);
 };
