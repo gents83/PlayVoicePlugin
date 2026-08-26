@@ -9,6 +9,7 @@ UAudioComponent* UPlayVoiceBlueprintLibrary::PlayCharacterVoice(
 	const UObject* WorldContextObject,
 	UCharacterVoiceAsset* CharacterVoiceAsset,
 	FString TextLine,
+	FString LanguageCode,
 	UAudioComponent* TargetAudioComponent,
 	FVector Location,
 	bool bAttachToActor,
@@ -41,6 +42,7 @@ UAudioComponent* UPlayVoiceBlueprintLibrary::PlayCharacterVoice(
 		WorldContextObject,
 		CharacterVoiceAsset,
 		TextLine,
+		LanguageCode,
 		TargetAudioComponent,
 		Location,
 		bAttachToActor,
@@ -50,7 +52,8 @@ UAudioComponent* UPlayVoiceBlueprintLibrary::PlayCharacterVoice(
 
 void UPlayVoiceBlueprintLibrary::PrecacheCharacterVoiceLines(
 	const UObject* WorldContextObject,
-	UCharacterVoiceAsset* CharacterVoiceAsset)
+	UCharacterVoiceAsset* CharacterVoiceAsset,
+	FString LanguageCode)
 {
 	if (!WorldContextObject || !CharacterVoiceAsset)
 	{
@@ -72,7 +75,7 @@ void UPlayVoiceBlueprintLibrary::PrecacheCharacterVoiceLines(
 	UPlayVoiceSubsystem* Subsystem = GameInstance->GetSubsystem<UPlayVoiceSubsystem>();
 	if (Subsystem)
 	{
-		Subsystem->PrecacheAllVoiceLines(CharacterVoiceAsset, FOnPrecacheFinished());
+		Subsystem->PrecacheAllVoiceLines(CharacterVoiceAsset, LanguageCode, FOnPrecacheFinished());
 	}
 }
 
@@ -80,6 +83,7 @@ void UPlayVoiceBlueprintLibrary::GenerateVoiceSoundWave(
 	const UObject* WorldContextObject,
 	UCharacterVoiceAsset* CharacterVoiceAsset,
 	FString TextLine,
+	FString LanguageCode,
 	FOnPlayVoiceGenerated OnComplete)
 {
 	if (!WorldContextObject || !CharacterVoiceAsset)
@@ -105,7 +109,7 @@ void UPlayVoiceBlueprintLibrary::GenerateVoiceSoundWave(
 	UPlayVoiceSubsystem* Subsystem = GameInstance->GetSubsystem<UPlayVoiceSubsystem>();
 	if (Subsystem)
 	{
-		Subsystem->SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, [OnComplete](bool bSuccess, USoundWave* SoundWave)
+		Subsystem->SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, LanguageCode, [OnComplete](bool bSuccess, USoundWave* SoundWave)
 		{
 			OnComplete.ExecuteIfBound(bSuccess, SoundWave);
 		});
@@ -116,7 +120,11 @@ void UPlayVoiceBlueprintLibrary::GenerateVoiceSoundWave(
 	}
 }
 
-bool UPlayVoiceBlueprintLibrary::IsCharacterVoiceModelGenerated(const UCharacterVoiceAsset* CharacterVoiceAsset)
+bool UPlayVoiceBlueprintLibrary::IsCharacterVoiceModelGenerated(const UCharacterVoiceAsset* CharacterVoiceAsset, FString LanguageCode)
 {
-	return CharacterVoiceAsset ? CharacterVoiceAsset->bIsModelGenerated : false;
+	if (!CharacterVoiceAsset)
+	{
+		return false;
+	}
+	return CharacterVoiceAsset->IsModelGenerated(LanguageCode);
 }

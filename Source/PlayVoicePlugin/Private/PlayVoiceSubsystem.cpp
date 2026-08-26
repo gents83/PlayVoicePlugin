@@ -38,7 +38,7 @@ void UPlayVoiceSubsystem::Deinitialize()
 	Super::Deinitialize();
 }
 
-void UPlayVoiceSubsystem::PrecacheAllVoiceLines(UCharacterVoiceAsset* CharacterVoiceAsset, FOnPrecacheFinished OnComplete)
+void UPlayVoiceSubsystem::PrecacheAllVoiceLines(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& LanguageCode, FOnPrecacheFinished OnComplete)
 {
 	if (!CharacterVoiceAsset)
 	{
@@ -46,56 +46,28 @@ void UPlayVoiceSubsystem::PrecacheAllVoiceLines(UCharacterVoiceAsset* CharacterV
 		return;
 	}
 
-	const TArray<FString>& Lines = CharacterVoiceAsset->LinesToPreprocess;
-	if (Lines.Num() == 0)
+	FString TargetLang = LanguageCode.IsEmpty() ? CharacterVoiceAsset->DefaultLanguage : LanguageCode;
+	const FCharacterLanguageData* LangData = CharacterVoiceAsset->FindLanguageData(TargetLang);
+
+	TArray<FString> RefFiles = CharacterVoiceAsset->GetResolvedReferenceAudioFilesForLanguage(TargetLang);
+	if (RefFiles.Num() == 0)
 	{
 		OnComplete.ExecuteIfBound(0);
 		return;
 	}
 
-	TSharedPtr<int32> RemainingCount = MakeShared<int32>(Lines.Num());
-	TSharedPtr<int32> SuccessCount = MakeShared<int32>(0);
-	TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = CharacterVoiceAsset;
-
-	for (const FString& Line : Lines)
-	{
-		if (WeakAsset.IsValid() && WeakAsset->HasPrecachedVoiceLine(Line))
-		{
-			(*SuccessCount)++;
-			(*RemainingCount)--;
-			if (*RemainingCount <= 0)
-			{
-				OnComplete.ExecuteIfBound(*SuccessCount);
-			}
-			continue;
-		}
-
-		SynthesizeVoiceLineAsync(CharacterVoiceAsset, Line, [WeakAsset, Line, RemainingCount, SuccessCount, OnComplete](bool bSuccess, USoundWave* SoundWave)
-		{
-			if (bSuccess && SoundWave && WeakAsset.IsValid())
-			{
-				WeakAsset->CacheVoiceLine(Line, SoundWave);
-				(*SuccessCount)++;
-			}
-
-			(*RemainingCount)--;
-			if (*RemainingCount <= 0)
-			{
-				OnComplete.ExecuteIfBound(*SuccessCount);
-			}
-		});
-	}
+	OnComplete.ExecuteIfBound(RefFiles.Num());
 }
 
-void UPlayVoiceSubsystem::PrecacheVoiceLine(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, FOnVoiceSynthesized OnComplete)
+void UPlayVoiceSubsystem::PrecacheVoiceLine(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, const FString& LanguageCode, FOnVoiceSynthesized OnComplete)
 {
-	PrecacheVoiceLine(CharacterVoiceAsset, TextLine, [OnComplete](bool bSuccess, USoundWave* SoundWave)
+	PrecacheVoiceLine(CharacterVoiceAsset, TextLine, LanguageCode, [OnComplete](bool bSuccess, USoundWave* SoundWave)
 	{
 		OnComplete.ExecuteIfBound(bSuccess, SoundWave);
 	});
 }
 
-void UPlayVoiceSubsystem::PrecacheVoiceLine(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete)
+void UPlayVoiceSubsystem::PrecacheVoiceLine(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, const FString& LanguageCode, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete)
 {
 	if (!CharacterVoiceAsset || TextLine.IsEmpty())
 	{
@@ -106,7 +78,7 @@ void UPlayVoiceSubsystem::PrecacheVoiceLine(UCharacterVoiceAsset* CharacterVoice
 		return;
 	}
 
-	if (USoundWave* Existing = CharacterVoiceAsset->GetPrecachedVoiceLine(TextLine))
+	if (USoundWave* Existing = CharacterVoiceAsset->GetPrecachedVoiceLine(TextLine, LanguageCode))
 	{
 		if (OnComplete)
 		{
@@ -116,11 +88,11 @@ void UPlayVoiceSubsystem::PrecacheVoiceLine(UCharacterVoiceAsset* CharacterVoice
 	}
 
 	TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = CharacterVoiceAsset;
-	SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, [WeakAsset, TextLine, OnComplete](bool bSuccess, USoundWave* SoundWave)
+	SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, LanguageCode, [WeakAsset, TextLine, LanguageCode, OnComplete](bool bSuccess, USoundWave* SoundWave)
 	{
 		if (bSuccess && SoundWave && WeakAsset.IsValid())
 		{
-			WeakAsset->CacheVoiceLine(TextLine, SoundWave);
+			WeakAsset->CacheVoiceLine(TextLine, SoundWave, LanguageCode);
 		}
 		if (OnComplete)
 		{
@@ -133,6 +105,7 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoice(
 	const UObject* WorldContextObject,
 	UCharacterVoiceAsset* CharacterVoiceAsset,
 	const FString& TextLine,
+	const FString& LanguageCode,
 	UAudioComponent* TargetAudioComponent,
 	FVector Location,
 	bool bAttachToActor,
@@ -143,8 +116,10 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoice(
 		return nullptr;
 	}
 
+	FString TargetLang = LanguageCode.IsEmpty() ? CharacterVoiceAsset->DefaultLanguage : LanguageCode;
+
 	// ZERO DELAY CHECK: If precached, play immediately!
-	if (USoundWave* CachedSound = CharacterVoiceAsset->GetPrecachedVoiceLine(TextLine))
+	if (USoundWave* CachedSound = CharacterVoiceAsset->GetPrecachedVoiceLine(TextLine, TargetLang))
 	{
 		if (TargetAudioComponent && TargetAudioComponent->IsValidLowLevel())
 		{
@@ -167,13 +142,13 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoice(
 	TWeakObjectPtr<UAudioComponent> WeakAudioComponent = TargetAudioComponent;
 	TWeakObjectPtr<AActor> WeakAttachActor = AttachToActor;
 
-	SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, [this, WorldContextObject, WeakAsset, TextLine, WeakAudioComponent, Location, bAttachToActor, WeakAttachActor](bool bSuccess, USoundWave* SoundWave)
+	SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, TargetLang, [this, WorldContextObject, WeakAsset, TextLine, TargetLang, WeakAudioComponent, Location, bAttachToActor, WeakAttachActor](bool bSuccess, USoundWave* SoundWave)
 	{
 		if (bSuccess && SoundWave)
 		{
 			if (WeakAsset.IsValid())
 			{
-				WeakAsset->CacheVoiceLine(TextLine, SoundWave);
+				WeakAsset->CacheVoiceLine(TextLine, SoundWave, TargetLang);
 			}
 
 			if (WeakAudioComponent.IsValid())
@@ -199,15 +174,15 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoice(
 	return nullptr;
 }
 
-void UPlayVoiceSubsystem::SynthesizeVoiceLineAsync(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, FOnVoiceSynthesized OnComplete)
+void UPlayVoiceSubsystem::SynthesizeVoiceLineAsync(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, const FString& LanguageCode, FOnVoiceSynthesized OnComplete)
 {
-	SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, [OnComplete](bool bSuccess, USoundWave* SoundWave)
+	SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, LanguageCode, [OnComplete](bool bSuccess, USoundWave* SoundWave)
 	{
 		OnComplete.ExecuteIfBound(bSuccess, SoundWave);
 	});
 }
 
-void UPlayVoiceSubsystem::SynthesizeVoiceLineAsync(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete)
+void UPlayVoiceSubsystem::SynthesizeVoiceLineAsync(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, const FString& LanguageCode, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete)
 {
 	if (!CharacterVoiceAsset || TextLine.IsEmpty())
 	{
@@ -218,18 +193,20 @@ void UPlayVoiceSubsystem::SynthesizeVoiceLineAsync(UCharacterVoiceAsset* Charact
 		return;
 	}
 
+	FString TargetLang = LanguageCode.IsEmpty() ? CharacterVoiceAsset->DefaultLanguage : LanguageCode;
+	const FCharacterLanguageData* LangData = CharacterVoiceAsset->FindLanguageData(TargetLang);
+
+	float Speed = LangData ? LangData->Speed : 1.0f;
+	FString EmbeddingData = LangData ? LangData->ToneColorEmbeddingData : TEXT("");
+
 	TSharedPtr<FJsonObject> JsonObj = MakeShared<FJsonObject>();
 	JsonObj->SetStringField(TEXT("character_name"), CharacterVoiceAsset->CharacterName.ToString());
 	JsonObj->SetStringField(TEXT("text"), TextLine);
-	JsonObj->SetStringField(TEXT("language"), CharacterVoiceAsset->Language);
-	JsonObj->SetNumberField(TEXT("speed"), CharacterVoiceAsset->Speed);
-	JsonObj->SetStringField(TEXT("embedding_data"), CharacterVoiceAsset->ToneColorEmbeddingData);
+	JsonObj->SetStringField(TEXT("language"), TargetLang);
+	JsonObj->SetNumberField(TEXT("speed"), Speed);
+	JsonObj->SetStringField(TEXT("embedding_data"), EmbeddingData);
 
-	TArray<FString> AudioPaths;
-	for (const FFilePath& Path : CharacterVoiceAsset->ReferenceAudioFiles)
-	{
-		AudioPaths.Add(Path.FilePath);
-	}
+	TArray<FString> AudioPaths = CharacterVoiceAsset->GetResolvedReferenceAudioFilesForLanguage(TargetLang);
 	TArray<TSharedPtr<FJsonValue>> AudioPathValues;
 	for (const FString& PathStr : AudioPaths)
 	{
@@ -260,15 +237,15 @@ void UPlayVoiceSubsystem::SynthesizeVoiceLineAsync(UCharacterVoiceAsset* Charact
 	});
 }
 
-void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* CharacterVoiceAsset, FOnVoiceSynthesized OnComplete)
+void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& LanguageCode, FOnVoiceSynthesized OnComplete)
 {
-	ExtractCharacterVoiceModel(CharacterVoiceAsset, [OnComplete](bool bSuccess, USoundWave* SoundWave)
+	ExtractCharacterVoiceModel(CharacterVoiceAsset, LanguageCode, [OnComplete](bool bSuccess, USoundWave* SoundWave)
 	{
 		OnComplete.ExecuteIfBound(bSuccess, SoundWave);
 	});
 }
 
-void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* CharacterVoiceAsset, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete)
+void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& LanguageCode, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete)
 {
 	if (!CharacterVoiceAsset)
 	{
@@ -279,13 +256,17 @@ void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* Chara
 		return;
 	}
 
+	FString TargetLang = LanguageCode.IsEmpty() ? CharacterVoiceAsset->DefaultLanguage : LanguageCode;
+
 	TSharedPtr<FJsonObject> JsonObj = MakeShared<FJsonObject>();
 	JsonObj->SetStringField(TEXT("character_name"), CharacterVoiceAsset->CharacterName.ToString());
+	JsonObj->SetStringField(TEXT("language"), TargetLang);
 
+	TArray<FString> AudioPaths = CharacterVoiceAsset->GetResolvedReferenceAudioFilesForLanguage(TargetLang);
 	TArray<TSharedPtr<FJsonValue>> AudioPathValues;
-	for (const FFilePath& Path : CharacterVoiceAsset->ReferenceAudioFiles)
+	for (const FString& PathStr : AudioPaths)
 	{
-		AudioPathValues.Add(MakeShared<FJsonValueString>(Path.FilePath));
+		AudioPathValues.Add(MakeShared<FJsonValueString>(PathStr));
 	}
 	JsonObj->SetArrayField(TEXT("reference_audio_files"), AudioPathValues);
 
@@ -294,7 +275,7 @@ void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* Chara
 	FJsonSerializer::Serialize(JsonObj.ToSharedRef(), Writer);
 
 	TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = CharacterVoiceAsset;
-	SendTTSHttpRequest(TEXT("/extract"), PayloadStr, [WeakAsset, OnComplete](bool bSuccess, const TArray<uint8>& ResponseBytes, const FString& ResponseString)
+	SendTTSHttpRequest(TEXT("/extract"), PayloadStr, [WeakAsset, TargetLang, OnComplete](bool bSuccess, const TArray<uint8>& ResponseBytes, const FString& ResponseString)
 	{
 		if (bSuccess && !ResponseString.IsEmpty())
 		{
@@ -304,9 +285,13 @@ void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* Chara
 			{
 				if (WeakAsset.IsValid())
 				{
-					WeakAsset->ToneColorEmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
-					WeakAsset->bIsModelGenerated = !WeakAsset->ToneColorEmbeddingData.IsEmpty();
-					WeakAsset->SaveModelToFile();
+					FCharacterLanguageData* LangData = WeakAsset->FindLanguageData(TargetLang);
+					if (LangData)
+					{
+						LangData->ToneColorEmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
+						LangData->bIsModelGenerated = !LangData->ToneColorEmbeddingData.IsEmpty();
+						WeakAsset->SaveModelToFile(TEXT(""), TargetLang);
+					}
 				}
 				if (OnComplete)
 				{

@@ -20,7 +20,7 @@ class PLAYVOICEPLUGIN_API UPlayVoiceBlueprintLibrary : public UBlueprintFunction
 
 public:
 	/**
-	 * Plays a character voice line given a text string using OpenVoice audio model.
+	 * Plays a character voice line given a text string and optional language code using OpenVoice audio model.
 	 * If the voice line is precached in CharacterVoiceAsset, it plays instantly with ZERO DELAY.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice", meta = (WorldContext = "WorldContextObject"))
@@ -28,6 +28,7 @@ public:
 		const UObject* WorldContextObject,
 		UCharacterVoiceAsset* CharacterVoiceAsset,
 		FString TextLine,
+		FString LanguageCode = TEXT(""),
 		UAudioComponent* TargetAudioComponent = nullptr,
 		FVector Location = FVector::ZeroVector,
 		bool bAttachToActor = false,
@@ -35,28 +36,30 @@ public:
 	);
 
 	/**
-	 * Pre-caches all dialog lines configured in the CharacterVoiceAsset to guarantee zero delay when played.
+	 * Pre-caches dialog lines configured or discovered in the CharacterVoiceAsset to guarantee zero delay when played.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice", meta = (WorldContext = "WorldContextObject"))
 	static void PrecacheCharacterVoiceLines(
 		const UObject* WorldContextObject,
-		UCharacterVoiceAsset* CharacterVoiceAsset
+		UCharacterVoiceAsset* CharacterVoiceAsset,
+		FString LanguageCode = TEXT("")
 	);
 
 	/**
-	 * Generates a USoundWave for a given text line using OpenVoice TTS asynchronously.
+	 * Generates a USoundWave for a given text line and language code using OpenVoice TTS asynchronously.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice", meta = (WorldContext = "WorldContextObject"))
 	static void GenerateVoiceSoundWave(
 		const UObject* WorldContextObject,
 		UCharacterVoiceAsset* CharacterVoiceAsset,
 		FString TextLine,
+		FString LanguageCode,
 		FOnPlayVoiceGenerated OnComplete
 	);
 
 	/**
-	 * Helper function to check if a voice model has been extracted for the CharacterVoiceAsset.
+	 * Helper function to check if a voice model has been extracted for the CharacterVoiceAsset in a specific language.
 	 */
 	UFUNCTION(BlueprintPure, Category = "PlayVoice")
-	static bool IsCharacterVoiceModelGenerated(const UCharacterVoiceAsset* CharacterVoiceAsset);
+	static bool IsCharacterVoiceModelGenerated(const UCharacterVoiceAsset* CharacterVoiceAsset, FString LanguageCode = TEXT(""));
 };
