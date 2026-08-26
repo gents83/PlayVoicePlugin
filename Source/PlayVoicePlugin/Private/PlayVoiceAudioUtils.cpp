@@ -4,15 +4,19 @@
 #include "Sound/SoundWave.h"
 #include "Memory/SharedBuffer.h"
 
-USoundWave* UPlayVoiceAudioUtils::CreateSoundWaveFromPCM(const TArray<uint8>& PCMData, int32 SampleRate, int32 NumChannels)
+USoundWave* UPlayVoiceAudioUtils::CreateSoundWaveFromPCM(const TArray<uint8>& PCMData, int32 SampleRate, int32 NumChannels, UObject* Outer, FName Name)
 {
 	if (PCMData.Num() == 0 || SampleRate <= 0 || NumChannels <= 0)
 	{
 		return nullptr;
 	}
 
+	UObject* SoundOuter = Outer ? Outer : GetTransientPackage();
+	EObjectFlags ObjectFlags = Outer ? (RF_Public | RF_Standalone) : RF_Transient;
+	FName SoundName = Name.IsNone() ? NAME_None : Name;
+
 	// Create standard USoundWave object allowing repeated zero-delay playback without buffer drainage
-	USoundWave* SoundWave = NewObject<USoundWave>(GetTransientPackage(), NAME_None, RF_Transient);
+	USoundWave* SoundWave = NewObject<USoundWave>(SoundOuter, SoundName, ObjectFlags);
 	if (!SoundWave)
 	{
 		return nullptr;
@@ -38,7 +42,7 @@ USoundWave* UPlayVoiceAudioUtils::CreateSoundWaveFromPCM(const TArray<uint8>& PC
 	return SoundWave;
 }
 
-USoundWave* UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(const TArray<uint8>& WAVData)
+USoundWave* UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(const TArray<uint8>& WAVData, UObject* Outer, FName Name)
 {
 	if (WAVData.Num() < 44) // Basic WAV header size
 	{
@@ -69,5 +73,5 @@ USoundWave* UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(const TArray<uint
 	PCMData.SetNumUninitialized(DataSize);
 	FMemory::Memcpy(PCMData.GetData(), WAVData.GetData() + DataOffset, DataSize);
 
-	return CreateSoundWaveFromPCM(PCMData, SampleRate, NumChannels);
+	return CreateSoundWaveFromPCM(PCMData, SampleRate, NumChannels, Outer, Name);
 }

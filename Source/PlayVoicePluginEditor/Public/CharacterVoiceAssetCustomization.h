@@ -14,7 +14,12 @@ public:
 
 	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
 
+public:
+	/** Scans all Blueprint assets in the project and extracts dialogue lines used in PlayVoice nodes matching TargetAsset */
+	static TArray<FString> RetrieveVoiceLinesFromProjectBlueprints(const class UCharacterVoiceAsset* TargetAsset);
+
 private:
+	FReply OnGenerateAndProcessAllClicked();
 	FReply OnGenerateModelClicked();
 	FReply OnPrecacheLinesClicked();
 

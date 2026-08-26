@@ -41,7 +41,9 @@ public class PlayVoicePluginEditor : ModuleRules
 				"HTTP",
 				"Json",
 				"JsonUtilities",
-				"DeveloperSettings"
+				"DeveloperSettings",
+				"BlueprintGraph",
+				"AssetRegistry"
 			}
 		);
 	}

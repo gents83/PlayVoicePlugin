@@ -36,6 +36,13 @@ bool FCharacterVoiceAssetCachingTest::RunTest(const FString& Parameters)
 	FString MessyLine = TEXT("  HELLO WORLD, THIS IS A TEST LINE.  ");
 	TestTrue(TEXT("Voice line lookup should be case and whitespace insensitive"), VoiceAsset->HasPrecachedVoiceLine(MessyLine));
 
+	// Test folder & resolved files helper
+	FString AssetDiskFolder = VoiceAsset->GetAssetDiskFolder();
+	TestFalse(TEXT("GetAssetDiskFolder should return non-empty directory path"), AssetDiskFolder.IsEmpty());
+
+	TArray<FString> ResolvedFiles = VoiceAsset->GetResolvedReferenceAudioFiles();
+	TestEqual(TEXT("Resolved files should initially match valid ReferenceAudioFiles"), ResolvedFiles.Num(), 0);
+
 	return true;
 }
 
@@ -62,6 +69,10 @@ bool FPlayVoiceAudioUtilsTest::RunTest(const FString& Parameters)
 	TArray<uint8> EmptyData;
 	USoundWave* InvalidSoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromPCM(EmptyData, 24000, 1);
 	TestNull(TEXT("Empty PCM data should return null SoundWave"), InvalidSoundWave);
+
+	// 2c. Test SoundWave creation with Outer package
+	USoundWave* PersistentSoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromPCM(PCMData, 24000, 1, GetTransientPackage(), FName(TEXT("TestSW")));
+	TestNotNull(TEXT("SoundWave created with Outer should not be null"), PersistentSoundWave);
 
 	return true;
 }
