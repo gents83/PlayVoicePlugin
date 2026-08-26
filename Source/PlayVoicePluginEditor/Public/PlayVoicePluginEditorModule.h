@@ -5,6 +5,8 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 #include "HAL/PlatformProcess.h"
+#include "Developer/AssetTools/Public/AssetTypeCategories.h"
+#include "IAssetTypeActions.h"
 
 class FPlayVoicePluginEditorModule : public IModuleInterface
 {
@@ -13,10 +15,16 @@ public:
 	virtual void ShutdownModule() override;
 
 	static bool StartOpenVoiceService(FProcHandle* OutProcHandle = nullptr);
+	static EAssetTypeCategories::Type GetAssetCategoryBit() { return PlayVoiceAssetCategoryBit; }
 
 private:
 	void RegisterCustomizations();
 	void UnregisterCustomizations();
 
+	void RegisterAssetTypeActions();
+	void UnregisterAssetTypeActions();
+
 	FProcHandle AutoStartedServiceHandle;
+	static EAssetTypeCategories::Type PlayVoiceAssetCategoryBit;
+	TArray<TSharedPtr<IAssetTypeActions>> RegisteredAssetTypeActions;
 };

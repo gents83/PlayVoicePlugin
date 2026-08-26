@@ -16,12 +16,12 @@ public:
 	/**
 	 * Creates a USoundWave in-memory object from raw PCM 16-bit audio buffer.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "PlayVoice|Audio")
+	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	static USoundWave* CreateSoundWaveFromPCM(const TArray<uint8>& PCMData, int32 SampleRate = 24000, int32 NumChannels = 1);
 
 	/**
 	 * Creates a USoundWave in-memory object from full WAV file binary buffer.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "PlayVoice|Audio")
+	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	static USoundWave* CreateSoundWaveFromWAVBuffer(const TArray<uint8>& WAVData);
 };

@@ -2,8 +2,11 @@
 
 #include "PlayVoicePluginEditorModule.h"
 #include "PropertyEditorModule.h"
+#include "AssetToolsModule.h"
+#include "IAssetTools.h"
 #include "CharacterVoiceAsset.h"
 #include "CharacterVoiceAssetCustomization.h"
+#include "AssetTypeActions_CharacterVoiceAsset.h"
 #include "PlayVoiceSettings.h"
 #include "PlayVoiceSettingsCustomization.h"
 #include "Misc/Paths.h"
@@ -11,9 +14,12 @@
 
 #define LOCTEXT_NAMESPACE "FPlayVoicePluginEditorModule"
 
+EAssetTypeCategories::Type FPlayVoicePluginEditorModule::PlayVoiceAssetCategoryBit = EAssetTypeCategories::Misc;
+
 void FPlayVoicePluginEditorModule::StartupModule()
 {
 	RegisterCustomizations();
+	RegisterAssetTypeActions();
 
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
 	if (Settings && Settings->bAutoStartServiceOnEditorStartup)
@@ -25,6 +31,7 @@ void FPlayVoicePluginEditorModule::StartupModule()
 void FPlayVoicePluginEditorModule::ShutdownModule()
 {
 	UnregisterCustomizations();
+	UnregisterAssetTypeActions();
 
 	if (AutoStartedServiceHandle.IsValid())
 	{
@@ -133,6 +140,32 @@ void FPlayVoicePluginEditorModule::UnregisterCustomizations()
 		PropertyModule.UnregisterCustomClassLayout(UCharacterVoiceAsset::StaticClass()->GetFName());
 		PropertyModule.UnregisterCustomClassLayout(UPlayVoiceSettings::StaticClass()->GetFName());
 	}
+}
+
+void FPlayVoicePluginEditorModule::RegisterAssetTypeActions()
+{
+	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+	PlayVoiceAssetCategoryBit = AssetTools.RegisterAdvancedAssetCategory(FName(TEXT("PlayVoice")), LOCTEXT("PlayVoiceCategory", "PlayVoice"));
+
+	TSharedRef<IAssetTypeActions> Action = MakeShared<FAssetTypeActions_CharacterVoiceAsset>(PlayVoiceAssetCategoryBit);
+	AssetTools.RegisterAssetTypeActions(Action);
+	RegisteredAssetTypeActions.Add(Action);
+}
+
+void FPlayVoicePluginEditorModule::UnregisterAssetTypeActions()
+{
+	if (FModuleManager::Get().IsModuleLoaded("AssetTools"))
+	{
+		IAssetTools& AssetTools = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools").Get();
+		for (auto& Action : RegisteredAssetTypeActions)
+		{
+			if (Action.IsValid())
+			{
+				AssetTools.UnregisterAssetTypeActions(Action.ToSharedRef());
+			}
+		}
+	}
+	RegisteredAssetTypeActions.Empty();
 }
 
 #undef LOCTEXT_NAMESPACE
