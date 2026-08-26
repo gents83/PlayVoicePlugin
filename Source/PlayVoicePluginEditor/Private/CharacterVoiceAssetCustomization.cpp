@@ -5,6 +5,7 @@
 #include "PlayVoiceSettings.h"
 #include "PlayVoiceAudioUtils.h"
 #include "PlayVoicePluginEditorModule.h"
+#include "Containers/Ticker.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
 #include "DetailCategoryBuilder.h"
@@ -91,6 +92,64 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 		.ToolTipText(FText::FromString("Scans all Blueprint nodes for dialogue lines and pre-renders sound wave assets across all configured languages to eliminate in-game latency."))
 		.OnClicked(this, &FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked)
 	];
+}
+
+static void EnsureServiceReadyAndExecute(TFunction<void(bool bReady)> OnComplete, int32 MaxAttempts = 6)
+{
+	FProcHandle ProcHandle;
+	FPlayVoicePluginEditorModule::StartOpenVoiceService(&ProcHandle);
+
+	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
+	FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
+
+	TSharedRef<int32> Attempts = MakeShared<int32>(0);
+
+	struct FPollContext
+	{
+		TFunction<void(FPollContext& Self)> PollFunc;
+	};
+
+	TSharedRef<FPollContext> Context = MakeShared<FPollContext>();
+	Context->PollFunc = [BaseUrl, Attempts, MaxAttempts, OnComplete, Context](FPollContext& Self)
+	{
+		(*Attempts)++;
+
+		TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HealthReq = FHttpModule::Get().CreateRequest();
+		HealthReq->SetURL(BaseUrl + TEXT("/health"));
+		HealthReq->SetVerb(TEXT("GET"));
+		HealthReq->SetTimeout(2.0f);
+
+		HealthReq->OnProcessRequestComplete().BindLambda([Attempts, MaxAttempts, OnComplete, Context](FHttpRequestPtr Req, FHttpResponsePtr Res, bool bSuccess)
+		{
+			bool bReady = bSuccess && Res.IsValid() && EHttpResponseCodes::IsOk(Res->GetResponseCode());
+			if (bReady)
+			{
+				Context->PollFunc = nullptr;
+				OnComplete(true);
+			}
+			else if (*Attempts < MaxAttempts)
+			{
+				TWeakPtr<FPollContext> WeakCtx = Context.ToWeakPtr();
+				FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakCtx](float DeltaTime)
+				{
+					if (TSharedPtr<FPollContext> SharedCtx = WeakCtx.Pin())
+					{
+						SharedCtx->PollFunc(*SharedCtx);
+					}
+					return false;
+				}), 0.8f);
+			}
+			else
+			{
+				Context->PollFunc = nullptr;
+				OnComplete(false);
+			}
+		});
+
+		HealthReq->ProcessRequest();
+	};
+
+	Context->PollFunc(*Context);
 }
 
 TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProjectBlueprints(const UCharacterVoiceAsset* TargetAsset)
@@ -188,192 +247,506 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 		return FReply::Handled();
 	}
 
-	UCharacterVoiceAsset* Asset = TargetVoiceAsset.Get();
-	if (Asset->Languages.Num() == 0)
+	TWeakObjectPtr<UCharacterVoiceAsset> WeakTargetAsset = TargetVoiceAsset;
+	EnsureServiceReadyAndExecute([WeakTargetAsset](bool bServiceReady)
 	{
-		Asset->GetOrAddLanguageData(Asset->DefaultLanguage.IsEmpty() ? TEXT("EN") : Asset->DefaultLanguage);
-	}
-
-	TArray<FString> DiscoveredBlueprintLines = RetrieveVoiceLinesFromProjectBlueprints(Asset);
-
-	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
-	FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
-
-	// Ensure service is launched
-	FProcHandle ServiceHandle;
-	FPlayVoicePluginEditorModule::StartOpenVoiceService(&ServiceHandle);
-
-	int32 TotalLangsProcessed = 0;
-	TArray<FCharacterLanguageData*> ConfiguredLanguages;
-	for (FCharacterLanguageData& LangData : Asset->Languages)
-	{
-		bool bHasRefAudioConfigured = (LangData.ReferenceAudioFiles.Num() > 0 || !LangData.ReferenceAudioFolder.Path.IsEmpty());
-		if (bHasRefAudioConfigured)
+		if (!bServiceReady)
 		{
-			ConfiguredLanguages.Add(&LangData);
-			TotalLangsProcessed++;
+			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Failed to connect to OpenVoice REST Service. Please verify Python executable and service setup in Project Settings."));
+			return;
 		}
-	}
 
-	if (TotalLangsProcessed == 0)
-	{
-		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Please specify Reference Audio Files or Reference Audio Folder for at least one language before generating models."));
-		return FReply::Handled();
-	}
+		if (!WeakTargetAsset.IsValid())
+		{
+			return;
+		}
 
-	int32 TotalTasksCount = ConfiguredLanguages.Num() * (1 + DiscoveredBlueprintLines.Num());
-	TSharedPtr<int32> CompletedTasks = MakeShared<int32>(0);
-	TSharedPtr<int32> FailedTasks = MakeShared<int32>(0);
+		UCharacterVoiceAsset* Asset = WeakTargetAsset.Get();
+		if (Asset->Languages.Num() == 0)
+		{
+			Asset->GetOrAddLanguageData(Asset->DefaultLanguage.IsEmpty() ? TEXT("EN") : Asset->DefaultLanguage);
+		}
 
-	FNotificationInfo NotificationInfo(FText::Format(FText::FromString("PlayVoice: Processing Model Extraction & {0} Lines..."), FText::AsNumber(DiscoveredBlueprintLines.Num())));
-	NotificationInfo.bFireAndForget = false;
-	NotificationInfo.bUseThrobber = true;
-	NotificationInfo.bUseLargeFont = false;
-	NotificationInfo.bUseSuccessFailIcons = true;
-	NotificationInfo.FadeOutDuration = 0.5f;
+		TArray<FString> DiscoveredBlueprintLines = RetrieveVoiceLinesFromProjectBlueprints(Asset);
 
-	TSharedPtr<SNotificationItem> NotificationItem = FSlateNotificationManager::Get().AddNotification(NotificationInfo);
-	if (NotificationItem.IsValid())
-	{
-		NotificationItem->SetCompletionState(SNotificationItem::CS_Pending);
-	}
+		const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
+		FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
 
-	auto StepTaskProgress = [NotificationItem, CompletedTasks, FailedTasks, TotalTasksCount]()
-	{
-		(*CompletedTasks)++;
+		int32 TotalLangsProcessed = 0;
+		TArray<FCharacterLanguageData*> ConfiguredLanguages;
+		for (FCharacterLanguageData& LangData : Asset->Languages)
+		{
+			bool bHasRefAudioConfigured = (LangData.ReferenceAudioFiles.Num() > 0 || !LangData.ReferenceAudioFolder.Path.IsEmpty());
+			if (bHasRefAudioConfigured)
+			{
+				ConfiguredLanguages.Add(&LangData);
+				TotalLangsProcessed++;
+			}
+		}
+
+		if (TotalLangsProcessed == 0)
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Please specify Reference Audio Files or Reference Audio Folder for at least one language before generating models."));
+			return;
+		}
+
+		int32 TotalTasksCount = ConfiguredLanguages.Num() * (1 + DiscoveredBlueprintLines.Num());
+		TSharedPtr<int32> CompletedTasks = MakeShared<int32>(0);
+		TSharedPtr<int32> FailedTasks = MakeShared<int32>(0);
+
+		FNotificationInfo NotificationInfo(FText::Format(FText::FromString("PlayVoice: Processing Model Extraction & {0} Lines..."), FText::AsNumber(DiscoveredBlueprintLines.Num())));
+		NotificationInfo.bFireAndForget = false;
+		NotificationInfo.bUseThrobber = true;
+		NotificationInfo.bUseLargeFont = false;
+		NotificationInfo.bUseSuccessFailIcons = true;
+		NotificationInfo.FadeOutDuration = 0.5f;
+
+		TSharedPtr<SNotificationItem> NotificationItem = FSlateNotificationManager::Get().AddNotification(NotificationInfo);
 		if (NotificationItem.IsValid())
 		{
-			FText Msg = FText::Format(FText::FromString("PlayVoice: Processing ({0}/{1})..."), FText::AsNumber(*CompletedTasks), FText::AsNumber(TotalTasksCount));
-			NotificationItem->SetText(Msg);
+			NotificationItem->SetCompletionState(SNotificationItem::CS_Pending);
+		}
 
-			if (*CompletedTasks >= TotalTasksCount)
+		auto StepTaskProgress = [NotificationItem, CompletedTasks, FailedTasks, TotalTasksCount]()
+		{
+			(*CompletedTasks)++;
+			if (NotificationItem.IsValid())
 			{
-				if (*FailedTasks > 0)
+				FText Msg = FText::Format(FText::FromString("PlayVoice: Processing ({0}/{1})..."), FText::AsNumber(*CompletedTasks), FText::AsNumber(TotalTasksCount));
+				NotificationItem->SetText(Msg);
+
+				if (*CompletedTasks >= TotalTasksCount)
 				{
-					NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
-					if (*FailedTasks == TotalTasksCount)
+					if (*FailedTasks > 0)
 					{
-						NotificationItem->SetText(FText::FromString("PlayVoice: Failed to connect to OpenVoice REST Service. Please verify service status in Project Settings."));
+						NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
+						NotificationItem->SetText(FText::Format(FText::FromString("PlayVoice: Finished with {0} errors."), FText::AsNumber(*FailedTasks)));
 					}
 					else
 					{
-						NotificationItem->SetText(FText::Format(FText::FromString("PlayVoice: Finished with {0} errors. Verify OpenVoice REST Service is running."), FText::AsNumber(*FailedTasks)));
+						NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
+						NotificationItem->SetText(FText::FromString("PlayVoice: Full pipeline processing complete!"));
 					}
+					NotificationItem->SetExpireDuration(4.0f);
+					NotificationItem->ExpireAndFadeout();
 				}
-				else
-				{
-					NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
-					NotificationItem->SetText(FText::FromString("PlayVoice: Full pipeline processing complete!"));
-				}
-				NotificationItem->SetExpireDuration(5.0f);
-				NotificationItem->ExpireAndFadeout();
 			}
-		}
-	};
-
-	for (FCharacterLanguageData* LangDataPtr : ConfiguredLanguages)
-	{
-		FCharacterLanguageData& LangData = *LangDataPtr;
-		TArray<FString> RefAudioFiles = Asset->GetResolvedReferenceAudioFilesForLanguage(LangData.LanguageCode);
-
-		// Step 1: Extract model embeddings for this language
-		TSharedPtr<FJsonObject> ExtractObj = MakeShared<FJsonObject>();
-		ExtractObj->SetStringField(TEXT("character_name"), Asset->CharacterName.ToString());
-		ExtractObj->SetStringField(TEXT("language"), LangData.LanguageCode);
-
-		TArray<TSharedPtr<FJsonValue>> AudioPathValues;
-		for (const FString& Path : RefAudioFiles)
-		{
-			AudioPathValues.Add(MakeShared<FJsonValueString>(Path));
-		}
-		ExtractObj->SetArrayField(TEXT("reference_audio_files"), AudioPathValues);
-
-		FString ExtractPayload;
-		TSharedRef<TJsonWriter<>> ExtractWriter = TJsonWriterFactory<>::Create(&ExtractPayload);
-		FJsonSerializer::Serialize(ExtractObj.ToSharedRef(), ExtractWriter);
-
-		TSharedRef<IHttpRequest, ESPMode::ThreadSafe> ExtractReq = FHttpModule::Get().CreateRequest();
-		ExtractReq->SetURL(BaseUrl + TEXT("/extract"));
-		ExtractReq->SetVerb(TEXT("POST"));
-		ExtractReq->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
-		ExtractReq->SetContentAsString(ExtractPayload);
+		};
 
 		TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = TargetVoiceAsset;
-		FString CurrentLangCode = LangData.LanguageCode;
-		float CurrentSpeed = LangData.Speed;
-
-		ExtractReq->OnProcessRequestComplete().BindLambda([WeakAsset, BaseUrl, CurrentLangCode, CurrentSpeed, DiscoveredBlueprintLines, StepTaskProgress, FailedTasks](FHttpRequestPtr Req, FHttpResponsePtr Res, bool bExtractSuccess)
+		for (FCharacterLanguageData* LangDataPtr : ConfiguredLanguages)
 		{
-			bool bSuccess = bExtractSuccess && Res.IsValid() && EHttpResponseCodes::IsOk(Res->GetResponseCode());
-			if (!bSuccess)
-			{
-				(*FailedTasks)++;
-				UE_LOG(LogTemp, Warning, TEXT("PlayVoice: HTTP request to /extract failed. Please check if OpenVoice REST service is running."));
-			}
+			FCharacterLanguageData& LangData = *LangDataPtr;
+			TArray<FString> RefAudioFiles = Asset->GetResolvedReferenceAudioFilesForLanguage(LangData.LanguageCode);
 
-			if (bSuccess && WeakAsset.IsValid())
+			// Step 1: Extract model embeddings for this language
+			TSharedPtr<FJsonObject> ExtractObj = MakeShared<FJsonObject>();
+			ExtractObj->SetStringField(TEXT("character_name"), Asset->CharacterName.ToString());
+			ExtractObj->SetStringField(TEXT("language"), LangData.LanguageCode);
+
+			TArray<TSharedPtr<FJsonValue>> AudioPathValues;
+			for (const FString& Path : RefAudioFiles)
 			{
-				TSharedPtr<FJsonObject> ResObj;
-				TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Res->GetContentAsString());
-				if (FJsonSerializer::Deserialize(Reader, ResObj) && ResObj.IsValid())
+				AudioPathValues.Add(MakeShared<FJsonValueString>(Path));
+			}
+			ExtractObj->SetArrayField(TEXT("reference_audio_files"), AudioPathValues);
+
+			FString ExtractPayload;
+			TSharedRef<TJsonWriter<>> ExtractWriter = TJsonWriterFactory<>::Create(&ExtractPayload);
+			FJsonSerializer::Serialize(ExtractObj.ToSharedRef(), ExtractWriter);
+
+			TSharedRef<IHttpRequest, ESPMode::ThreadSafe> ExtractReq = FHttpModule::Get().CreateRequest();
+			ExtractReq->SetURL(BaseUrl + TEXT("/extract"));
+			ExtractReq->SetVerb(TEXT("POST"));
+			ExtractReq->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+			ExtractReq->SetContentAsString(ExtractPayload);
+
+			FString CurrentLangCode = LangData.LanguageCode;
+			float CurrentSpeed = LangData.Speed;
+
+			ExtractReq->OnProcessRequestComplete().BindLambda([WeakAsset, BaseUrl, CurrentLangCode, CurrentSpeed, DiscoveredBlueprintLines, StepTaskProgress, FailedTasks](FHttpRequestPtr Req, FHttpResponsePtr Res, bool bExtractSuccess)
+			{
+				bool bSuccess = bExtractSuccess && Res.IsValid() && EHttpResponseCodes::IsOk(Res->GetResponseCode());
+				if (!bSuccess)
 				{
-					FCharacterLanguageData* TargetLangData = WeakAsset->FindLanguageData(CurrentLangCode);
-					if (TargetLangData)
+					(*FailedTasks)++;
+				}
+
+				if (bSuccess && WeakAsset.IsValid())
+				{
+					TSharedPtr<FJsonObject> ResObj;
+					TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Res->GetContentAsString());
+					if (FJsonSerializer::Deserialize(Reader, ResObj) && ResObj.IsValid())
 					{
-						TargetLangData->ToneColorEmbeddingData = ResObj->GetStringField(TEXT("embedding_data"));
-						TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
-						WeakAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
-						WeakAsset->MarkPackageDirty();
+						FCharacterLanguageData* TargetLangData = WeakAsset->FindLanguageData(CurrentLangCode);
+						if (TargetLangData)
+						{
+							TargetLangData->ToneColorEmbeddingData = ResObj->GetStringField(TEXT("embedding_data"));
+							TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
+							WeakAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
+							WeakAsset->MarkPackageDirty();
+						}
 					}
 				}
-			}
 
-			StepTaskProgress();
+				StepTaskProgress();
 
-			if (!WeakAsset.IsValid() || DiscoveredBlueprintLines.Num() == 0)
+				if (!WeakAsset.IsValid() || DiscoveredBlueprintLines.Num() == 0)
+				{
+					return;
+				}
+
+				UCharacterVoiceAsset* VoiceAsset = WeakAsset.Get();
+				FCharacterLanguageData* TargetLangData = VoiceAsset->FindLanguageData(CurrentLangCode);
+				FString EmbeddingData = TargetLangData ? TargetLangData->ToneColorEmbeddingData : TEXT("");
+
+				UPackage* OuterPackage = VoiceAsset->GetOutermost();
+				FString AssetFolderPath = FPaths::GetPath(OuterPackage->GetName());
+
+				for (const FString& LineText : DiscoveredBlueprintLines)
+				{
+					if (VoiceAsset->HasPrecachedVoiceLine(LineText, CurrentLangCode))
+					{
+						StepTaskProgress();
+						continue;
+					}
+
+					TSharedPtr<FJsonObject> SynthObj = MakeShared<FJsonObject>();
+					SynthObj->SetStringField(TEXT("character_name"), VoiceAsset->CharacterName.ToString());
+					SynthObj->SetStringField(TEXT("text"), LineText);
+					SynthObj->SetStringField(TEXT("language"), CurrentLangCode);
+					SynthObj->SetNumberField(TEXT("speed"), CurrentSpeed);
+					SynthObj->SetStringField(TEXT("embedding_data"), EmbeddingData);
+
+					FString SynthPayload;
+					TSharedRef<TJsonWriter<>> SynthWriter = TJsonWriterFactory<>::Create(&SynthPayload);
+					FJsonSerializer::Serialize(SynthObj.ToSharedRef(), SynthWriter);
+
+					TSharedRef<IHttpRequest, ESPMode::ThreadSafe> SynthReq = FHttpModule::Get().CreateRequest();
+					SynthReq->SetURL(BaseUrl + TEXT("/synthesize"));
+					SynthReq->SetVerb(TEXT("POST"));
+					SynthReq->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+					SynthReq->SetContentAsString(SynthPayload);
+
+					SynthReq->OnProcessRequestComplete().BindLambda([WeakAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr SReq, FHttpResponsePtr SRes, bool bSynthSuccess)
+					{
+						bool bSynthOk = bSynthSuccess && SRes.IsValid() && EHttpResponseCodes::IsOk(SRes->GetResponseCode());
+						if (!bSynthOk)
+						{
+							(*FailedTasks)++;
+						}
+
+						if (bSynthOk && WeakAsset.IsValid())
+						{
+							FString LineSanitized = FString::Printf(TEXT("SW_%s_%s_%u"), *WeakAsset->CharacterName.ToString(), *CurrentLangCode, GetTypeHash(LineText));
+							FString SoundWavePackagePath = AssetFolderPath / LineSanitized;
+
+							UPackage* SoundWavePackage = CreatePackage(*SoundWavePackagePath);
+							USoundWave* SoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(SRes->GetContent(), SoundWavePackage, FName(*LineSanitized));
+
+							if (SoundWave)
+							{
+								WeakAsset->CacheVoiceLine(LineText, SoundWave, CurrentLangCode);
+								SoundWave->MarkPackageDirty();
+								WeakAsset->MarkPackageDirty();
+
+								if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+								{
+									FAssetRegistryModule::AssetCreated(SoundWave);
+								}
+							}
+						}
+
+						StepTaskProgress();
+					});
+
+					SynthReq->ProcessRequest();
+				}
+			});
+
+			ExtractReq->ProcessRequest();
+		}
+	});
+
+	return FReply::Handled();
+}
+
+FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
+{
+	if (!TargetVoiceAsset.IsValid())
+	{
+		return FReply::Handled();
+	}
+
+	TWeakObjectPtr<UCharacterVoiceAsset> WeakTargetAsset = TargetVoiceAsset;
+	EnsureServiceReadyAndExecute([WeakTargetAsset](bool bServiceReady)
+	{
+		if (!bServiceReady)
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Failed to connect to OpenVoice REST Service. Please verify Python executable and service setup in Project Settings."));
+			return;
+		}
+
+		if (!WeakTargetAsset.IsValid())
+		{
+			return;
+		}
+
+		UCharacterVoiceAsset* Asset = WeakTargetAsset.Get();
+		TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = WeakTargetAsset;
+		if (Asset->Languages.Num() == 0)
+		{
+			Asset->GetOrAddLanguageData(Asset->DefaultLanguage.IsEmpty() ? TEXT("EN") : Asset->DefaultLanguage);
+		}
+
+		const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
+		FString Url = (Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983")) + TEXT("/extract");
+
+		int32 ProcessedLangs = 0;
+		TArray<FCharacterLanguageData*> ConfiguredLanguages;
+		for (FCharacterLanguageData& LangData : Asset->Languages)
+		{
+			bool bHasRefAudioConfigured = (LangData.ReferenceAudioFiles.Num() > 0 || !LangData.ReferenceAudioFolder.Path.IsEmpty());
+			if (bHasRefAudioConfigured)
 			{
-				return;
+				ConfiguredLanguages.Add(&LangData);
+				ProcessedLangs++;
 			}
+		}
 
-			UCharacterVoiceAsset* VoiceAsset = WeakAsset.Get();
-			FCharacterLanguageData* TargetLangData = VoiceAsset->FindLanguageData(CurrentLangCode);
-			FString EmbeddingData = TargetLangData ? TargetLangData->ToneColorEmbeddingData : TEXT("");
+		if (ProcessedLangs == 0)
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Please specify Reference Audio Files or Reference Audio Folder for at least one language."));
+			return;
+		}
 
-			UPackage* OuterPackage = VoiceAsset->GetOutermost();
-			FString AssetFolderPath = FPaths::GetPath(OuterPackage->GetName());
+		int32 TotalTasksCount = ConfiguredLanguages.Num();
+		TSharedPtr<int32> CompletedTasks = MakeShared<int32>(0);
+		TSharedPtr<int32> FailedTasks = MakeShared<int32>(0);
+
+		FNotificationInfo NotificationInfo(FText::Format(FText::FromString("PlayVoice: Extracting Model for {0} languages..."), FText::AsNumber(TotalTasksCount)));
+		NotificationInfo.bFireAndForget = false;
+		NotificationInfo.bUseThrobber = true;
+		NotificationInfo.bUseLargeFont = false;
+		NotificationInfo.bUseSuccessFailIcons = true;
+		NotificationInfo.FadeOutDuration = 0.5f;
+
+		TSharedPtr<SNotificationItem> NotificationItem = FSlateNotificationManager::Get().AddNotification(NotificationInfo);
+		if (NotificationItem.IsValid())
+		{
+			NotificationItem->SetCompletionState(SNotificationItem::CS_Pending);
+		}
+
+		auto StepTaskProgress = [NotificationItem, CompletedTasks, FailedTasks, TotalTasksCount]()
+		{
+			(*CompletedTasks)++;
+			if (NotificationItem.IsValid())
+			{
+				FText Msg = FText::Format(FText::FromString("PlayVoice: Model extraction ({0}/{1})..."), FText::AsNumber(*CompletedTasks), FText::AsNumber(TotalTasksCount));
+				NotificationItem->SetText(Msg);
+
+				if (*CompletedTasks >= TotalTasksCount)
+				{
+					if (*FailedTasks > 0)
+					{
+						NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
+						NotificationItem->SetText(FText::Format(FText::FromString("PlayVoice: Model extraction finished with {0} errors."), FText::AsNumber(*FailedTasks)));
+					}
+					else
+					{
+						NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
+						NotificationItem->SetText(FText::FromString("PlayVoice: OpenVoice model extraction complete!"));
+					}
+					NotificationItem->SetExpireDuration(4.0f);
+					NotificationItem->ExpireAndFadeout();
+				}
+			}
+		};
+
+		TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = TargetVoiceAsset;
+		for (FCharacterLanguageData* LangDataPtr : ConfiguredLanguages)
+		{
+			FCharacterLanguageData& LangData = *LangDataPtr;
+			TArray<FString> RefAudioFiles = Asset->GetResolvedReferenceAudioFilesForLanguage(LangData.LanguageCode);
+
+			TSharedPtr<FJsonObject> JsonObj = MakeShared<FJsonObject>();
+			JsonObj->SetStringField(TEXT("character_name"), Asset->CharacterName.ToString());
+			JsonObj->SetStringField(TEXT("language"), LangData.LanguageCode);
+
+			TArray<TSharedPtr<FJsonValue>> AudioPathValues;
+			for (const FString& Path : RefAudioFiles)
+			{
+				AudioPathValues.Add(MakeShared<FJsonValueString>(Path));
+			}
+			JsonObj->SetArrayField(TEXT("reference_audio_files"), AudioPathValues);
+
+			FString PayloadStr;
+			TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&PayloadStr);
+			FJsonSerializer::Serialize(JsonObj.ToSharedRef(), Writer);
+
+			TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest = FHttpModule::Get().CreateRequest();
+			HttpRequest->SetURL(Url);
+			HttpRequest->SetVerb(TEXT("POST"));
+			HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+			HttpRequest->SetContentAsString(PayloadStr);
+
+			FString CurrentLangCode = LangData.LanguageCode;
+
+			HttpRequest->OnProcessRequestComplete().BindLambda([WeakAsset, CurrentLangCode, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
+			{
+				bool bSuccess = bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode());
+				if (!bSuccess)
+				{
+					(*FailedTasks)++;
+				}
+
+				if (bSuccess)
+				{
+					TSharedPtr<FJsonObject> ResponseObj;
+					TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Response->GetContentAsString());
+					if (FJsonSerializer::Deserialize(Reader, ResponseObj) && ResponseObj.IsValid())
+					{
+						if (WeakAsset.IsValid())
+						{
+							FCharacterLanguageData* TargetLangData = WeakAsset->FindLanguageData(CurrentLangCode);
+							if (TargetLangData)
+							{
+								TargetLangData->ToneColorEmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
+								TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
+								WeakAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
+								WeakAsset->MarkPackageDirty();
+							}
+						}
+					}
+				}
+
+				StepTaskProgress();
+			});
+
+			HttpRequest->ProcessRequest();
+		}
+	});
+
+	return FReply::Handled();
+}
+
+FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
+{
+	if (!TargetVoiceAsset.IsValid())
+	{
+		return FReply::Handled();
+	}
+
+	TWeakObjectPtr<UCharacterVoiceAsset> WeakTargetAsset = TargetVoiceAsset;
+	EnsureServiceReadyAndExecute([WeakTargetAsset](bool bServiceReady)
+	{
+		if (!bServiceReady)
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Failed to connect to OpenVoice REST Service. Please verify Python executable and service setup in Project Settings."));
+			return;
+		}
+
+		if (!WeakTargetAsset.IsValid())
+		{
+			return;
+		}
+
+		UCharacterVoiceAsset* Asset = WeakTargetAsset.Get();
+		TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = WeakTargetAsset;
+		TArray<FString> DiscoveredBlueprintLines = RetrieveVoiceLinesFromProjectBlueprints(Asset);
+
+		if (DiscoveredBlueprintLines.Num() == 0)
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("No dialogue lines found in Blueprint graph nodes referencing this asset."));
+			return;
+		}
+
+		const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
+		FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
+
+		UPackage* OuterPackage = Asset->GetOutermost();
+		FString AssetFolderPath = FPaths::GetPath(OuterPackage->GetName());
+
+		int32 TotalTasksCount = Asset->Languages.Num() * DiscoveredBlueprintLines.Num();
+		TSharedPtr<int32> CompletedTasks = MakeShared<int32>(0);
+		TSharedPtr<int32> FailedTasks = MakeShared<int32>(0);
+
+		FNotificationInfo NotificationInfo(FText::Format(FText::FromString("PlayVoice: Pre-processing {0} dialogue lines..."), FText::AsNumber(DiscoveredBlueprintLines.Num())));
+		NotificationInfo.bFireAndForget = false;
+		NotificationInfo.bUseThrobber = true;
+		NotificationInfo.bUseLargeFont = false;
+		NotificationInfo.bUseSuccessFailIcons = true;
+		NotificationInfo.FadeOutDuration = 0.5f;
+
+		TSharedPtr<SNotificationItem> NotificationItem = FSlateNotificationManager::Get().AddNotification(NotificationInfo);
+		if (NotificationItem.IsValid())
+		{
+			NotificationItem->SetCompletionState(SNotificationItem::CS_Pending);
+		}
+
+		auto StepTaskProgress = [NotificationItem, CompletedTasks, FailedTasks, TotalTasksCount]()
+		{
+			(*CompletedTasks)++;
+			if (NotificationItem.IsValid())
+			{
+				FText Msg = FText::Format(FText::FromString("PlayVoice: Pre-processing dialogue lines ({0}/{1})..."), FText::AsNumber(*CompletedTasks), FText::AsNumber(TotalTasksCount));
+				NotificationItem->SetText(Msg);
+
+				if (*CompletedTasks >= TotalTasksCount)
+				{
+					if (*FailedTasks > 0)
+					{
+						NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
+						NotificationItem->SetText(FText::Format(FText::FromString("PlayVoice: Voice line pre-processing finished with {0} errors."), FText::AsNumber(*FailedTasks)));
+					}
+					else
+					{
+						NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
+						NotificationItem->SetText(FText::FromString("PlayVoice: Voice line pre-processing complete!"));
+					}
+					NotificationItem->SetExpireDuration(4.0f);
+					NotificationItem->ExpireAndFadeout();
+				}
+			}
+		};
+
+		for (const FCharacterLanguageData& LangData : Asset->Languages)
+		{
+			FString CurrentLangCode = LangData.LanguageCode;
+			float CurrentSpeed = LangData.Speed;
+			FString EmbeddingData = LangData.ToneColorEmbeddingData;
 
 			for (const FString& LineText : DiscoveredBlueprintLines)
 			{
-				if (VoiceAsset->HasPrecachedVoiceLine(LineText, CurrentLangCode))
+				if (Asset->HasPrecachedVoiceLine(LineText, CurrentLangCode))
 				{
 					StepTaskProgress();
 					continue;
 				}
 
-				TSharedPtr<FJsonObject> SynthObj = MakeShared<FJsonObject>();
-				SynthObj->SetStringField(TEXT("character_name"), VoiceAsset->CharacterName.ToString());
-				SynthObj->SetStringField(TEXT("text"), LineText);
-				SynthObj->SetStringField(TEXT("language"), CurrentLangCode);
-				SynthObj->SetNumberField(TEXT("speed"), CurrentSpeed);
-				SynthObj->SetStringField(TEXT("embedding_data"), EmbeddingData);
+				TSharedPtr<FJsonObject> JsonObj = MakeShared<FJsonObject>();
+				JsonObj->SetStringField(TEXT("character_name"), Asset->CharacterName.ToString());
+				JsonObj->SetStringField(TEXT("text"), LineText);
+				JsonObj->SetStringField(TEXT("language"), CurrentLangCode);
+				JsonObj->SetNumberField(TEXT("speed"), CurrentSpeed);
+				JsonObj->SetStringField(TEXT("embedding_data"), EmbeddingData);
 
-				FString SynthPayload;
-				TSharedRef<TJsonWriter<>> SynthWriter = TJsonWriterFactory<>::Create(&SynthPayload);
-				FJsonSerializer::Serialize(SynthObj.ToSharedRef(), SynthWriter);
+				FString PayloadStr;
+				TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&PayloadStr);
+				FJsonSerializer::Serialize(JsonObj.ToSharedRef(), Writer);
 
-				TSharedRef<IHttpRequest, ESPMode::ThreadSafe> SynthReq = FHttpModule::Get().CreateRequest();
-				SynthReq->SetURL(BaseUrl + TEXT("/synthesize"));
-				SynthReq->SetVerb(TEXT("POST"));
-				SynthReq->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
-				SynthReq->SetContentAsString(SynthPayload);
+				TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest = FHttpModule::Get().CreateRequest();
+				HttpRequest->SetURL(BaseUrl + TEXT("/synthesize"));
+				HttpRequest->SetVerb(TEXT("POST"));
+				HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+				HttpRequest->SetContentAsString(PayloadStr);
 
-				SynthReq->OnProcessRequestComplete().BindLambda([WeakAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr SReq, FHttpResponsePtr SRes, bool bSynthSuccess)
+				HttpRequest->OnProcessRequestComplete().BindLambda([WeakAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
 				{
-					bool bSynthOk = bSynthSuccess && SRes.IsValid() && EHttpResponseCodes::IsOk(SRes->GetResponseCode());
+					bool bSynthOk = bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode());
 					if (!bSynthOk)
 					{
 						(*FailedTasks)++;
-						UE_LOG(LogTemp, Warning, TEXT("PlayVoice: HTTP request to /synthesize failed for text '%s'."), *LineText);
 					}
 
 					if (bSynthOk && WeakAsset.IsValid())
@@ -382,7 +755,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 						FString SoundWavePackagePath = AssetFolderPath / LineSanitized;
 
 						UPackage* SoundWavePackage = CreatePackage(*SoundWavePackagePath);
-						USoundWave* SoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(SRes->GetContent(), SoundWavePackage, FName(*LineSanitized));
+						USoundWave* SoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(Response->GetContent(), SoundWavePackage, FName(*LineSanitized));
 
 						if (SoundWave)
 						{
@@ -400,315 +773,10 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 					StepTaskProgress();
 				});
 
-				SynthReq->ProcessRequest();
-			}
-		});
-
-		ExtractReq->ProcessRequest();
-	}
-
-	return FReply::Handled();
-}
-
-FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
-{
-	if (!TargetVoiceAsset.IsValid())
-	{
-		return FReply::Handled();
-	}
-
-	UCharacterVoiceAsset* Asset = TargetVoiceAsset.Get();
-	if (Asset->Languages.Num() == 0)
-	{
-		Asset->GetOrAddLanguageData(Asset->DefaultLanguage.IsEmpty() ? TEXT("EN") : Asset->DefaultLanguage);
-	}
-
-	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
-	FString Url = (Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983")) + TEXT("/extract");
-
-	// Ensure service is launched
-	FProcHandle ServiceHandle;
-	FPlayVoicePluginEditorModule::StartOpenVoiceService(&ServiceHandle);
-
-	int32 ProcessedLangs = 0;
-	TArray<FCharacterLanguageData*> ConfiguredLanguages;
-	for (FCharacterLanguageData& LangData : Asset->Languages)
-	{
-		bool bHasRefAudioConfigured = (LangData.ReferenceAudioFiles.Num() > 0 || !LangData.ReferenceAudioFolder.Path.IsEmpty());
-		if (bHasRefAudioConfigured)
-		{
-			ConfiguredLanguages.Add(&LangData);
-			ProcessedLangs++;
-		}
-	}
-
-	if (ProcessedLangs == 0)
-	{
-		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Please specify Reference Audio Files or Reference Audio Folder for at least one language."));
-		return FReply::Handled();
-	}
-
-	int32 TotalTasksCount = ConfiguredLanguages.Num();
-	TSharedPtr<int32> CompletedTasks = MakeShared<int32>(0);
-	TSharedPtr<int32> FailedTasks = MakeShared<int32>(0);
-
-	FNotificationInfo NotificationInfo(FText::Format(FText::FromString("PlayVoice: Extracting Model for {0} languages..."), FText::AsNumber(TotalTasksCount)));
-	NotificationInfo.bFireAndForget = false;
-	NotificationInfo.bUseThrobber = true;
-	NotificationInfo.bUseLargeFont = false;
-	NotificationInfo.bUseSuccessFailIcons = true;
-	NotificationInfo.FadeOutDuration = 0.5f;
-
-	TSharedPtr<SNotificationItem> NotificationItem = FSlateNotificationManager::Get().AddNotification(NotificationInfo);
-	if (NotificationItem.IsValid())
-	{
-		NotificationItem->SetCompletionState(SNotificationItem::CS_Pending);
-	}
-
-	auto StepTaskProgress = [NotificationItem, CompletedTasks, FailedTasks, TotalTasksCount]()
-	{
-		(*CompletedTasks)++;
-		if (NotificationItem.IsValid())
-		{
-			FText Msg = FText::Format(FText::FromString("PlayVoice: Model extraction ({0}/{1})..."), FText::AsNumber(*CompletedTasks), FText::AsNumber(TotalTasksCount));
-			NotificationItem->SetText(Msg);
-
-			if (*CompletedTasks >= TotalTasksCount)
-			{
-				if (*FailedTasks > 0)
-				{
-					NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
-					if (*FailedTasks == TotalTasksCount)
-					{
-						NotificationItem->SetText(FText::FromString("PlayVoice: Failed to connect to OpenVoice REST Service. Please verify service status in Project Settings."));
-					}
-					else
-					{
-						NotificationItem->SetText(FText::Format(FText::FromString("PlayVoice: Model extraction finished with {0} errors. Verify OpenVoice REST Service is running."), FText::AsNumber(*FailedTasks)));
-					}
-				}
-				else
-				{
-					NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
-					NotificationItem->SetText(FText::FromString("PlayVoice: OpenVoice model extraction complete!"));
-				}
-				NotificationItem->SetExpireDuration(5.0f);
-				NotificationItem->ExpireAndFadeout();
+				HttpRequest->ProcessRequest();
 			}
 		}
-	};
-
-	for (FCharacterLanguageData* LangDataPtr : ConfiguredLanguages)
-	{
-		FCharacterLanguageData& LangData = *LangDataPtr;
-		TArray<FString> RefAudioFiles = Asset->GetResolvedReferenceAudioFilesForLanguage(LangData.LanguageCode);
-
-		TSharedPtr<FJsonObject> JsonObj = MakeShared<FJsonObject>();
-		JsonObj->SetStringField(TEXT("character_name"), Asset->CharacterName.ToString());
-		JsonObj->SetStringField(TEXT("language"), LangData.LanguageCode);
-
-		TArray<TSharedPtr<FJsonValue>> AudioPathValues;
-		for (const FString& Path : RefAudioFiles)
-		{
-			AudioPathValues.Add(MakeShared<FJsonValueString>(Path));
-		}
-		JsonObj->SetArrayField(TEXT("reference_audio_files"), AudioPathValues);
-
-		FString PayloadStr;
-		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&PayloadStr);
-		FJsonSerializer::Serialize(JsonObj.ToSharedRef(), Writer);
-
-		TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest = FHttpModule::Get().CreateRequest();
-		HttpRequest->SetURL(Url);
-		HttpRequest->SetVerb(TEXT("POST"));
-		HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
-		HttpRequest->SetContentAsString(PayloadStr);
-
-		TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = TargetVoiceAsset;
-		FString CurrentLangCode = LangData.LanguageCode;
-
-		HttpRequest->OnProcessRequestComplete().BindLambda([WeakAsset, CurrentLangCode, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
-		{
-			bool bSuccess = bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode());
-			if (!bSuccess)
-			{
-				(*FailedTasks)++;
-				UE_LOG(LogTemp, Warning, TEXT("PlayVoice: Model extraction HTTP request failed. Please check if OpenVoice REST service is running."));
-			}
-
-			if (bSuccess)
-			{
-				TSharedPtr<FJsonObject> ResponseObj;
-				TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Response->GetContentAsString());
-				if (FJsonSerializer::Deserialize(Reader, ResponseObj) && ResponseObj.IsValid())
-				{
-					if (WeakAsset.IsValid())
-					{
-						FCharacterLanguageData* TargetLangData = WeakAsset->FindLanguageData(CurrentLangCode);
-						if (TargetLangData)
-						{
-							TargetLangData->ToneColorEmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
-							TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
-							WeakAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
-							WeakAsset->MarkPackageDirty();
-						}
-					}
-				}
-			}
-
-			StepTaskProgress();
-		});
-
-		HttpRequest->ProcessRequest();
-	}
-
-	return FReply::Handled();
-}
-
-FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
-{
-	if (!TargetVoiceAsset.IsValid())
-	{
-		return FReply::Handled();
-	}
-
-	UCharacterVoiceAsset* Asset = TargetVoiceAsset.Get();
-	TArray<FString> DiscoveredBlueprintLines = RetrieveVoiceLinesFromProjectBlueprints(Asset);
-
-	if (DiscoveredBlueprintLines.Num() == 0)
-	{
-		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("No dialogue lines found in Blueprint graph nodes referencing this asset."));
-		return FReply::Handled();
-	}
-
-	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
-	FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
-
-	// Ensure service is launched
-	FProcHandle ServiceHandle;
-	FPlayVoicePluginEditorModule::StartOpenVoiceService(&ServiceHandle);
-
-	TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = TargetVoiceAsset;
-	UPackage* OuterPackage = Asset->GetOutermost();
-	FString AssetFolderPath = FPaths::GetPath(OuterPackage->GetName());
-
-	int32 TotalTasksCount = Asset->Languages.Num() * DiscoveredBlueprintLines.Num();
-	TSharedPtr<int32> CompletedTasks = MakeShared<int32>(0);
-	TSharedPtr<int32> FailedTasks = MakeShared<int32>(0);
-
-	FNotificationInfo NotificationInfo(FText::Format(FText::FromString("PlayVoice: Pre-processing {0} dialogue lines..."), FText::AsNumber(DiscoveredBlueprintLines.Num())));
-	NotificationInfo.bFireAndForget = false;
-	NotificationInfo.bUseThrobber = true;
-	NotificationInfo.bUseLargeFont = false;
-	NotificationInfo.bUseSuccessFailIcons = true;
-	NotificationInfo.FadeOutDuration = 0.5f;
-
-	TSharedPtr<SNotificationItem> NotificationItem = FSlateNotificationManager::Get().AddNotification(NotificationInfo);
-	if (NotificationItem.IsValid())
-	{
-		NotificationItem->SetCompletionState(SNotificationItem::CS_Pending);
-	}
-
-	auto StepTaskProgress = [NotificationItem, CompletedTasks, FailedTasks, TotalTasksCount]()
-	{
-		(*CompletedTasks)++;
-		if (NotificationItem.IsValid())
-		{
-			FText Msg = FText::Format(FText::FromString("PlayVoice: Pre-processing dialogue lines ({0}/{1})..."), FText::AsNumber(*CompletedTasks), FText::AsNumber(TotalTasksCount));
-			NotificationItem->SetText(Msg);
-
-			if (*CompletedTasks >= TotalTasksCount)
-			{
-				if (*FailedTasks > 0)
-				{
-					NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
-					if (*FailedTasks == TotalTasksCount)
-					{
-						NotificationItem->SetText(FText::FromString("PlayVoice: Failed to connect to OpenVoice REST Service. Please verify service status in Project Settings."));
-					}
-					else
-					{
-						NotificationItem->SetText(FText::Format(FText::FromString("PlayVoice: Voice line pre-processing finished with {0} errors. Verify OpenVoice REST Service is running."), FText::AsNumber(*FailedTasks)));
-					}
-				}
-				else
-				{
-					NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
-					NotificationItem->SetText(FText::FromString("PlayVoice: Voice line pre-processing complete!"));
-				}
-				NotificationItem->SetExpireDuration(5.0f);
-				NotificationItem->ExpireAndFadeout();
-			}
-		}
-	};
-
-	for (const FCharacterLanguageData& LangData : Asset->Languages)
-	{
-		FString CurrentLangCode = LangData.LanguageCode;
-		float CurrentSpeed = LangData.Speed;
-		FString EmbeddingData = LangData.ToneColorEmbeddingData;
-
-		for (const FString& LineText : DiscoveredBlueprintLines)
-		{
-			if (Asset->HasPrecachedVoiceLine(LineText, CurrentLangCode))
-			{
-				StepTaskProgress();
-				continue;
-			}
-
-			TSharedPtr<FJsonObject> JsonObj = MakeShared<FJsonObject>();
-			JsonObj->SetStringField(TEXT("character_name"), Asset->CharacterName.ToString());
-			JsonObj->SetStringField(TEXT("text"), LineText);
-			JsonObj->SetStringField(TEXT("language"), CurrentLangCode);
-			JsonObj->SetNumberField(TEXT("speed"), CurrentSpeed);
-			JsonObj->SetStringField(TEXT("embedding_data"), EmbeddingData);
-
-			FString PayloadStr;
-			TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&PayloadStr);
-			FJsonSerializer::Serialize(JsonObj.ToSharedRef(), Writer);
-
-			TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest = FHttpModule::Get().CreateRequest();
-			HttpRequest->SetURL(BaseUrl + TEXT("/synthesize"));
-			HttpRequest->SetVerb(TEXT("POST"));
-			HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
-			HttpRequest->SetContentAsString(PayloadStr);
-
-			HttpRequest->OnProcessRequestComplete().BindLambda([WeakAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
-			{
-				bool bSynthOk = bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode());
-				if (!bSynthOk)
-				{
-					(*FailedTasks)++;
-					UE_LOG(LogTemp, Warning, TEXT("PlayVoice: Pre-processing HTTP request to /synthesize failed for line '%s'."), *LineText);
-				}
-
-				if (bSynthOk && WeakAsset.IsValid())
-				{
-					FString LineSanitized = FString::Printf(TEXT("SW_%s_%s_%u"), *WeakAsset->CharacterName.ToString(), *CurrentLangCode, GetTypeHash(LineText));
-					FString SoundWavePackagePath = AssetFolderPath / LineSanitized;
-
-					UPackage* SoundWavePackage = CreatePackage(*SoundWavePackagePath);
-					USoundWave* SoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(Response->GetContent(), SoundWavePackage, FName(*LineSanitized));
-
-					if (SoundWave)
-					{
-						WeakAsset->CacheVoiceLine(LineText, SoundWave, CurrentLangCode);
-						SoundWave->MarkPackageDirty();
-						WeakAsset->MarkPackageDirty();
-
-						if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
-						{
-							FAssetRegistryModule::AssetCreated(SoundWave);
-						}
-					}
-				}
-
-				StepTaskProgress();
-			});
-
-			HttpRequest->ProcessRequest();
-		}
-	}
+	});
 
 	return FReply::Handled();
 }

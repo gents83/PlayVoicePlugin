@@ -5,7 +5,7 @@
 UPlayVoiceSettings::UPlayVoiceSettings()
 	: ServiceUrl(TEXT("http://127.0.0.1:1983"))
 	, PythonScriptPath(TEXT(""))
-	, bAutoStartServiceOnEditorStartup(false)
+	, bAutoStartServiceOnEditorStartup(true)
 	, PythonExecutable(TEXT("python"))
 	, RequirementsFilePath(TEXT("Resources/OpenVoiceService/requirements.txt"))
 	, TargetInstallDir(TEXT(""))
