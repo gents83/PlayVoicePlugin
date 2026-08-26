@@ -32,11 +32,11 @@ public:
 	UCharacterVoiceAsset();
 
 	/** Unique identifier for the character voice */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "PlayVoice")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	FName CharacterName;
 
 	/** List of file paths to audio clips (WAV/MP3) used as reference for OpenVoice tone, speed, and color */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "PlayVoice", meta = (FilePathFilter = "wav,mp3,flac"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice", meta = (FilePathFilter = "wav,mp3,flac"))
 	TArray<FFilePath> ReferenceAudioFiles;
 
 	/** Target language for TTS synthesis (e.g., "EN", "ES", "FR", "ZH", "JP") */
@@ -78,4 +78,12 @@ public:
 	/** Check if a voice line is precached */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	bool HasPrecachedVoiceLine(const FString& TextLine) const;
+
+	/** Save extracted model embedding data to a file on disk */
+	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
+	bool SaveModelToFile(const FString& FilePath = TEXT(""));
+
+	/** Load extracted model embedding data from a file on disk */
+	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
+	bool LoadModelFromFile(const FString& FilePath = TEXT(""));
 };

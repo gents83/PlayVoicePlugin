@@ -21,6 +21,9 @@ class PLAYVOICEPLUGIN_API UPlayVoiceSubsystem : public UGameInstanceSubsystem
 	GENERATED_BODY()
 
 public:
+	/** Get instance of PlayVoiceSubsystem from any world context object in C++ code */
+	static UPlayVoiceSubsystem* Get(const UObject* WorldContextObject);
+
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 

@@ -10,6 +10,23 @@
 #include "JsonObjectConverter.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonReader.h"
+#include "Engine/Engine.h"
+#include "Engine/GameInstance.h"
+
+UPlayVoiceSubsystem* UPlayVoiceSubsystem::Get(const UObject* WorldContextObject)
+{
+	if (WorldContextObject)
+	{
+		if (UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull))
+		{
+			if (UGameInstance* GI = World->GetGameInstance())
+			{
+				return GI->GetSubsystem<UPlayVoiceSubsystem>();
+			}
+		}
+	}
+	return nullptr;
+}
 
 void UPlayVoiceSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -288,8 +305,8 @@ void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* Chara
 				if (WeakAsset.IsValid())
 				{
 					WeakAsset->ToneColorEmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
-					WeakAsset->ModelCheckpointPath = ResponseObj->GetStringField(TEXT("model_checkpoint"));
-					WeakAsset->bIsModelGenerated = true;
+					WeakAsset->bIsModelGenerated = !WeakAsset->ToneColorEmbeddingData.IsEmpty();
+					WeakAsset->SaveModelToFile();
 				}
 				if (OnComplete)
 				{

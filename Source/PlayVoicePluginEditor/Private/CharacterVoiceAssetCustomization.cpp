@@ -44,7 +44,7 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 	[
 		SNew(SButton)
 		.Text(FText::FromString("Generate OpenVoice Model"))
-		.ToolTipText(FText::FromString("Extract tone color embedding from the reference audio clips."))
+		.ToolTipText(FText::FromString("Extract tone color embedding from the reference audio clips and save to model file."))
 		.OnClicked(this, &FCharacterVoiceAssetCustomization::OnGenerateModelClicked)
 	];
 
@@ -113,11 +113,11 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 				if (WeakAsset.IsValid())
 				{
 					WeakAsset->ToneColorEmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
-					WeakAsset->ModelCheckpointPath = ResponseObj->GetStringField(TEXT("model_checkpoint"));
-					WeakAsset->bIsModelGenerated = true;
+					WeakAsset->bIsModelGenerated = !WeakAsset->ToneColorEmbeddingData.IsEmpty();
+					WeakAsset->SaveModelToFile();
 					WeakAsset->MarkPackageDirty();
 				}
-				FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Successfully generated OpenVoice model tone color embedding!"));
+				FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Successfully generated and saved OpenVoice model tone color embedding file!"));
 				return;
 			}
 		}
