@@ -129,15 +129,13 @@ static void EnsureServiceReadyAndExecute(TFunction<void(bool bReady)> OnComplete
 			}
 			else if (*Attempts < MaxAttempts)
 			{
-				TWeakPtr<FPollContext> WeakCtx = Context.ToWeakPtr();
-				FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakCtx](float DeltaTime)
+				FTickerDelegate TickerDelegate;
+				TickerDelegate.BindLambda([Context](float DeltaTime)
 				{
-					if (TSharedPtr<FPollContext> SharedCtx = WeakCtx.Pin())
-					{
-						SharedCtx->PollFunc(*SharedCtx);
-					}
+					Context->PollFunc(*Context);
 					return false;
-				}), 0.8f);
+				});
+				FTSTicker::GetCoreTicker().AddTicker(TickerDelegate, 0.8f);
 			}
 			else
 			{
