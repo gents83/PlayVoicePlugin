@@ -256,6 +256,9 @@ TArray<FString> UCharacterVoiceAsset::ResolveAudioFilesFromFolderAndFiles(const 
 			IFileManager::Get().FindFilesRecursive(FoundFiles, *FolderFullPath, TEXT("*.wav"), true, false, false);
 			IFileManager::Get().FindFilesRecursive(FoundFiles, *FolderFullPath, TEXT("*.mp3"), true, false, false);
 			IFileManager::Get().FindFilesRecursive(FoundFiles, *FolderFullPath, TEXT("*.flac"), true, false, false);
+			IFileManager::Get().FindFilesRecursive(FoundFiles, *FolderFullPath, TEXT("*.ogg"), true, false, false);
+			IFileManager::Get().FindFilesRecursive(FoundFiles, *FolderFullPath, TEXT("*.aiff"), true, false, false);
+			IFileManager::Get().FindFilesRecursive(FoundFiles, *FolderFullPath, TEXT("*.wma"), true, false, false);
 
 			for (const FString& FoundFile : FoundFiles)
 			{
