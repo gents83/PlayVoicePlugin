@@ -54,7 +54,7 @@ bool FPlayVoicePluginEditorModule::StartOpenVoiceService(FProcHandle* OutProcHan
 	}
 
 	FString Host = TEXT("127.0.0.1");
-	int32 Port = 8000;
+	int32 Port = 1983;
 
 	if (Settings && !Settings->ServiceUrl.IsEmpty())
 	{

@@ -79,7 +79,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 	}
 
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
-	FString Url = (Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:8000")) + TEXT("/extract");
+	FString Url = (Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983")) + TEXT("/extract");
 
 	TSharedPtr<FJsonObject> JsonObj = MakeShared<FJsonObject>();
 	JsonObj->SetStringField(TEXT("character_name"), Asset->CharacterName.ToString());
@@ -143,7 +143,7 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 	}
 
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
-	FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:8000");
+	FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
 
 	TSharedPtr<int32> RemainingCount = MakeShared<int32>(Asset->LinesToPreprocess.Num());
 	TSharedPtr<int32> SuccessCount = MakeShared<int32>(0);

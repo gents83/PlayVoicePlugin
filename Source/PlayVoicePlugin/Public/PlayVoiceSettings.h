@@ -14,7 +14,7 @@ class PLAYVOICEPLUGIN_API UPlayVoiceSettings : public UDeveloperSettings
 public:
 	UPlayVoiceSettings();
 
-	/** URL endpoint of the local or remote OpenVoice TTS service (e.g. http://127.0.0.1:8000) */
+	/** URL endpoint of the local or remote OpenVoice TTS service (e.g. http://127.0.0.1:1983) */
 	UPROPERTY(EditAnywhere, Config, Category = "Service Setup", meta = (DisplayName = "Service URL"))
 	FString ServiceUrl;
 
