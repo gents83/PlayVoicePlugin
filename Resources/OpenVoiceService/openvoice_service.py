@@ -99,7 +99,7 @@ class OpenVoiceEngine:
             "character_name": character_name,
             "num_reference_files": len(reference_files),
             "valid_reference_files": valid_files,
-            "embedding_vector": embedding_vector,
+            "target_se": embedding_vector,
             "engine": "OpenVoice-Fallback"
         }
 
@@ -127,25 +127,35 @@ class OpenVoiceEngine:
                 src_path = os.path.join(temp_dir, f"{character_name}_src.wav")
                 out_path = os.path.join(temp_dir, f"{character_name}_out.wav")
 
-                model.tts_to_file(text, speaker_ids['EN-Default'], src_path, speed=speed)
+                spk_id = speaker_ids.get('EN-Default', list(speaker_ids.values())[0]) if speaker_ids else 0
+                model.tts_to_file(text, spk_id, src_path, speed=speed)
 
                 if embedding_data:
                     emb = json.loads(embedding_data)
-                    target_se = torch.tensor(emb.get("target_se"))
-                    source_se = torch.load(f'{self.checkpoint_dir}/base_speakers/ses/en-default.pth')
-                    self.converter.convert(
-                        audio_src_path=src_path,
-                        src_se=source_se,
-                        tgt_se=target_se,
-                        output_path=out_path
-                    )
-                    with open(out_path, 'rb') as f:
+                    target_se_list = emb.get("target_se")
+                    if target_se_list and isinstance(target_se_list, list):
+                        target_se = torch.tensor(target_se_list)
+                        source_se_path = f'{self.checkpoint_dir}/base_speakers/ses/en-default.pth'
+                        if os.path.exists(source_se_path):
+                            source_se = torch.load(source_se_path)
+                            self.converter.convert(
+                                audio_src_path=src_path,
+                                src_se=source_se,
+                                tgt_se=target_se,
+                                output_path=out_path
+                            )
+                            if os.path.exists(out_path):
+                                with open(out_path, 'rb') as f:
+                                    return f.read()
+
+                if os.path.exists(src_path):
+                    with open(src_path, 'rb') as f:
                         return f.read()
             except Exception as e:
                 logger.error(f"OpenVoice synthesis exception: {e}")
 
         # High-fidelity PCM WAV fallback generator
-        return generate_synthetic_wav(text, speed=speed, pitch_freq=200.0 + (hash(character_name) % 80))
+        return generate_synthetic_wav(text, speed=speed, pitch_freq=220.0 + (abs(hash(character_name)) % 80))
 
     def transcribe_audio(self, audio_file: str) -> str:
         """

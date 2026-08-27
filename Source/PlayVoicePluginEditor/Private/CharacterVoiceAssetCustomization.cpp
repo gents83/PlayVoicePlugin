@@ -97,70 +97,91 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 	];
 }
 
-static void EnsureServiceReadyAndExecute(TFunction<void(bool bReady)> OnComplete, int32 MaxAttempts = 15)
+static void EnsureServiceReadyAndExecute(TFunction<void(bool bReady)> OnComplete, int32 MaxAttempts = 30)
 {
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
-	FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
+	FString BaseUrl = Settings && !Settings->ServiceUrl.IsEmpty() ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
+	BaseUrl.RemoveFromEnd(TEXT("/"));
 
-	Async(EAsyncExecution::Thread, [BaseUrl, MaxAttempts, OnComplete]()
+	// First, test if service is already running and healthy
+	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> InitialHealthReq = FHttpModule::Get().CreateRequest();
+	InitialHealthReq->SetURL(BaseUrl + TEXT("/health"));
+	InitialHealthReq->SetVerb(TEXT("GET"));
+	InitialHealthReq->SetTimeout(2.0f);
+
+	InitialHealthReq->OnProcessRequestComplete().BindLambda([BaseUrl, MaxAttempts, OnComplete](FHttpRequestPtr Req, FHttpResponsePtr Res, bool bSuccess)
 	{
-		FProcHandle ProcHandle;
-		bool bStarted = FPlayVoicePluginEditorModule::StartOpenVoiceService(&ProcHandle);
-		UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("StartOpenVoiceService requested from EnsureServiceReadyAndExecute (Started: %d)"), bStarted);
-
-		Async(EAsyncExecution::TaskGraphMainThread, [BaseUrl, MaxAttempts, OnComplete]()
+		bool bAlreadyReady = bSuccess && Res.IsValid() && EHttpResponseCodes::IsOk(Res->GetResponseCode());
+		if (bAlreadyReady)
 		{
-			TSharedRef<int32> Attempts = MakeShared<int32>(0);
+			UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OpenVoice REST Service is already running and healthy at %s"), *BaseUrl);
+			OnComplete(true);
+			return;
+		}
 
-			struct FPollContext
+		// Service not currently responding, launch process and poll until ready
+		Async(EAsyncExecution::Thread, [BaseUrl, MaxAttempts, OnComplete]()
+		{
+			FProcHandle ProcHandle;
+			bool bStarted = FPlayVoicePluginEditorModule::StartOpenVoiceService(&ProcHandle);
+			UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("StartOpenVoiceService requested from EnsureServiceReadyAndExecute (Started: %d)"), bStarted);
+
+			Async(EAsyncExecution::TaskGraphMainThread, [BaseUrl, MaxAttempts, OnComplete]()
 			{
-				TFunction<void(FPollContext& Self)> PollFunc;
-			};
+				TSharedRef<int32> Attempts = MakeShared<int32>(0);
 
-			TSharedRef<FPollContext> Context = MakeShared<FPollContext>();
-			Context->PollFunc = [BaseUrl, Attempts, MaxAttempts, OnComplete, Context](FPollContext& Self)
-			{
-				(*Attempts)++;
-
-				TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HealthReq = FHttpModule::Get().CreateRequest();
-				HealthReq->SetURL(BaseUrl + TEXT("/health"));
-				HealthReq->SetVerb(TEXT("GET"));
-				HealthReq->SetTimeout(2.0f);
-
-				HealthReq->OnProcessRequestComplete().BindLambda([Attempts, MaxAttempts, OnComplete, Context](FHttpRequestPtr Req, FHttpResponsePtr Res, bool bSuccess)
+				struct FPollContext
 				{
-					bool bReady = bSuccess && Res.IsValid() && EHttpResponseCodes::IsOk(Res->GetResponseCode());
-					if (bReady)
+					TFunction<void(FPollContext& Self)> PollFunc;
+				};
+
+				TSharedRef<FPollContext> Context = MakeShared<FPollContext>();
+				Context->PollFunc = [BaseUrl, Attempts, MaxAttempts, OnComplete, Context](FPollContext& Self)
+				{
+					(*Attempts)++;
+
+					TSharedRef<IHttpRequest, ESPMode::ThreadSafe> PollReq = FHttpModule::Get().CreateRequest();
+					PollReq->SetURL(BaseUrl + TEXT("/health"));
+					PollReq->SetVerb(TEXT("GET"));
+					PollReq->SetTimeout(2.0f);
+
+					PollReq->OnProcessRequestComplete().BindLambda([Attempts, MaxAttempts, OnComplete, Context](FHttpRequestPtr Req, FHttpResponsePtr Res, bool bSuccess)
 					{
-						UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OpenVoice REST Service health check succeeded after %d attempts."), *Attempts);
-						Context->PollFunc = nullptr;
-						OnComplete(true);
-					}
-					else if (*Attempts < MaxAttempts)
-					{
-						UE_LOG(LogCharacterVoiceCustomization, Verbose, TEXT("OpenVoice health check attempt %d failed, polling again..."), *Attempts);
-						FTickerDelegate TickerDelegate;
-						TickerDelegate.BindLambda([Context](float DeltaTime)
+						bool bReady = bSuccess && Res.IsValid() && EHttpResponseCodes::IsOk(Res->GetResponseCode());
+						if (bReady)
 						{
-							Context->PollFunc(*Context);
-							return false;
-						});
-						FTSTicker::GetCoreTicker().AddTicker(TickerDelegate, 0.8f);
-					}
-					else
-					{
-						UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OpenVoice REST Service health check timed out after %d attempts."), MaxAttempts);
-						Context->PollFunc = nullptr;
-						OnComplete(false);
-					}
-				});
+							UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OpenVoice REST Service health check succeeded after %d attempts."), *Attempts);
+							Context->PollFunc = nullptr;
+							OnComplete(true);
+						}
+						else if (*Attempts < MaxAttempts)
+						{
+							UE_LOG(LogCharacterVoiceCustomization, Verbose, TEXT("OpenVoice health check attempt %d failed, polling again..."), *Attempts);
+							FTickerDelegate TickerDelegate;
+							TickerDelegate.BindLambda([Context](float DeltaTime)
+							{
+								Context->PollFunc(*Context);
+								return false;
+							});
+							FTSTicker::GetCoreTicker().AddTicker(TickerDelegate, 0.8f);
+						}
+						else
+						{
+							UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OpenVoice REST Service health check timed out after %d attempts."), MaxAttempts);
+							Context->PollFunc = nullptr;
+							OnComplete(false);
+						}
+					});
 
-				HealthReq->ProcessRequest();
-			};
+					PollReq->ProcessRequest();
+				};
 
-			Context->PollFunc(*Context);
+				Context->PollFunc(*Context);
+			});
 		});
 	});
+
+	InitialHealthReq->ProcessRequest();
 }
 
 TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProjectBlueprints(const UCharacterVoiceAsset* TargetAsset)

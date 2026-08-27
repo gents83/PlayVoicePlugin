@@ -13,6 +13,8 @@
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogPlayVoice, Log, All);
+
 UPlayVoiceSubsystem* UPlayVoiceSubsystem::Get(const UObject* WorldContextObject)
 {
 	if (WorldContextObject)
@@ -47,16 +49,17 @@ void UPlayVoiceSubsystem::PrecacheAllVoiceLines(UCharacterVoiceAsset* CharacterV
 	}
 
 	FString TargetLang = LanguageCode.IsEmpty() ? CharacterVoiceAsset->DefaultLanguage : LanguageCode;
-	const FCharacterLanguageData* LangData = CharacterVoiceAsset->FindLanguageData(TargetLang);
 
-	TArray<FString> RefFiles = CharacterVoiceAsset->GetResolvedReferenceAudioFilesForLanguage(TargetLang);
-	if (RefFiles.Num() == 0)
+	int32 PrecachedCount = 0;
+	for (const auto& Pair : CharacterVoiceAsset->PrecachedSoundWaves)
 	{
-		OnComplete.ExecuteIfBound(0);
-		return;
+		if (Pair.Value != nullptr)
+		{
+			PrecachedCount++;
+		}
 	}
 
-	OnComplete.ExecuteIfBound(RefFiles.Num());
+	OnComplete.ExecuteIfBound(PrecachedCount);
 }
 
 void UPlayVoiceSubsystem::PrecacheVoiceLine(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, const FString& LanguageCode, FOnVoiceSynthesized OnComplete)
@@ -87,6 +90,7 @@ void UPlayVoiceSubsystem::PrecacheVoiceLine(UCharacterVoiceAsset* CharacterVoice
 		return;
 	}
 
+#if WITH_EDITOR
 	TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = CharacterVoiceAsset;
 	SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, LanguageCode, [WeakAsset, TextLine, LanguageCode, OnComplete](bool bSuccess, USoundWave* SoundWave)
 	{
@@ -99,6 +103,13 @@ void UPlayVoiceSubsystem::PrecacheVoiceLine(UCharacterVoiceAsset* CharacterVoice
 			OnComplete(bSuccess, SoundWave);
 		}
 	});
+#else
+	UE_LOG(LogPlayVoice, Warning, TEXT("PrecacheVoiceLine: Voice line '%s' is not precached and live TTS synthesis is disabled at runtime."), *TextLine);
+	if (OnComplete)
+	{
+		OnComplete(false, nullptr);
+	}
+#endif
 }
 
 UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoice(
@@ -118,7 +129,7 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoice(
 
 	FString TargetLang = LanguageCode.IsEmpty() ? CharacterVoiceAsset->DefaultLanguage : LanguageCode;
 
-	// ZERO DELAY CHECK: If precached, play immediately!
+	// Runtime zero-delay playback using pre-generated SoundWave
 	if (USoundWave* CachedSound = CharacterVoiceAsset->GetPrecachedVoiceLine(TextLine, TargetLang))
 	{
 		if (TargetAudioComponent && TargetAudioComponent->IsValidLowLevel())
@@ -137,39 +148,7 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoice(
 		}
 	}
 
-	// FALLBACK: Async synthesize and play when ready
-	TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = CharacterVoiceAsset;
-	TWeakObjectPtr<UAudioComponent> WeakAudioComponent = TargetAudioComponent;
-	TWeakObjectPtr<AActor> WeakAttachActor = AttachToActor;
-
-	SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, TargetLang, [this, WorldContextObject, WeakAsset, TextLine, TargetLang, WeakAudioComponent, Location, bAttachToActor, WeakAttachActor](bool bSuccess, USoundWave* SoundWave)
-	{
-		if (bSuccess && SoundWave)
-		{
-			if (WeakAsset.IsValid())
-			{
-				WeakAsset->CacheVoiceLine(TextLine, SoundWave, TargetLang);
-			}
-
-			if (WeakAudioComponent.IsValid())
-			{
-				WeakAudioComponent->SetSound(SoundWave);
-				WeakAudioComponent->Play();
-			}
-			else if (bAttachToActor && WeakAttachActor.IsValid())
-			{
-				UGameplayStatics::SpawnSoundAttached(SoundWave, WeakAttachActor->GetRootComponent());
-			}
-			else
-			{
-				UWorld* World = WorldContextObject ? WorldContextObject->GetWorld() : GetWorld();
-				if (World)
-				{
-					UGameplayStatics::SpawnSoundAtLocation(World, SoundWave, Location);
-				}
-			}
-		}
-	});
+	UE_LOG(LogPlayVoice, Warning, TEXT("PlayCharacterVoice: Voice line '%s' (Lang: %s) is not precached in asset '%s'. Ensure all Blueprint dialogue lines are pre-processed in the Editor before runtime."), *TextLine, *TargetLang, *GetNameSafe(CharacterVoiceAsset));
 
 	return nullptr;
 }
@@ -184,6 +163,7 @@ void UPlayVoiceSubsystem::SynthesizeVoiceLineAsync(UCharacterVoiceAsset* Charact
 
 void UPlayVoiceSubsystem::SynthesizeVoiceLineAsync(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, const FString& LanguageCode, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete)
 {
+#if WITH_EDITOR
 	if (!CharacterVoiceAsset || TextLine.IsEmpty())
 	{
 		if (OnComplete)
@@ -235,6 +215,13 @@ void UPlayVoiceSubsystem::SynthesizeVoiceLineAsync(UCharacterVoiceAsset* Charact
 			OnComplete(SoundWave != nullptr, SoundWave);
 		}
 	});
+#else
+	UE_LOG(LogPlayVoice, Warning, TEXT("SynthesizeVoiceLineAsync: Dynamic synthesis via backend service is disabled at runtime. Pre-generate all dialogue lines in the Editor."));
+	if (OnComplete)
+	{
+		OnComplete(false, nullptr);
+	}
+#endif
 }
 
 void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& LanguageCode, FOnVoiceSynthesized OnComplete)
@@ -247,6 +234,7 @@ void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* Chara
 
 void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& LanguageCode, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete)
 {
+#if WITH_EDITOR
 	if (!CharacterVoiceAsset)
 	{
 		if (OnComplete)
@@ -305,10 +293,18 @@ void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* Chara
 			OnComplete(false, nullptr);
 		}
 	});
+#else
+	UE_LOG(LogPlayVoice, Warning, TEXT("ExtractCharacterVoiceModel: Model extraction via backend service is disabled at runtime. Extract models in the Editor."));
+	if (OnComplete)
+	{
+		OnComplete(false, nullptr);
+	}
+#endif
 }
 
 void UPlayVoiceSubsystem::SendTTSHttpRequest(const FString& Endpoint, const FString& JsonPayload, TFunction<void(bool bSuccess, const TArray<uint8>& ResponseBytes, const FString& ResponseString)> Callback)
 {
+#if WITH_EDITOR
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
 	FString FullUrl = (Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983")) + Endpoint;
 
@@ -335,4 +331,11 @@ void UPlayVoiceSubsystem::SendTTSHttpRequest(const FString& Endpoint, const FStr
 	});
 
 	HttpRequest->ProcessRequest();
+#else
+	UE_LOG(LogPlayVoice, Warning, TEXT("SendTTSHttpRequest: HTTP requests to local TTS service are disabled at runtime."));
+	if (Callback)
+	{
+		Callback(false, TArray<uint8>(), FString());
+	}
+#endif
 }
