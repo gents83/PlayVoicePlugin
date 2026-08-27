@@ -22,6 +22,7 @@ private:
 	FReply OnGenerateAndProcessAllClicked();
 	FReply OnGenerateModelClicked();
 	FReply OnPrecacheLinesClicked();
+	FReply OnCleanPrecachedSoundWavesClicked();
 
 	TWeakObjectPtr<class UCharacterVoiceAsset> TargetVoiceAsset;
 };

@@ -95,6 +95,21 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 		.ToolTipText(FText::FromString("Scans all Blueprint nodes for dialogue lines and pre-renders sound wave assets across all configured languages to eliminate in-game latency."))
 		.OnClicked(this, &FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked)
 	];
+
+	OpenVoiceCategory.AddCustomRow(FText::FromString("Clean Precached Sound Waves"))
+	.NameContent()
+	[
+		SNew(STextBlock)
+		.Text(FText::FromString("Clean Precached Assets"))
+		.Font(IDetailLayoutBuilder::GetDetailFont())
+	]
+	.ValueContent()
+	[
+		SNew(SButton)
+		.Text(FText::FromString("Clean Precached Sound Waves"))
+		.ToolTipText(FText::FromString("Clears precached voice lines map from UCharacterVoiceAsset and deletes generated USoundWave package files from disk and project."))
+		.OnClicked(this, &FCharacterVoiceAssetCustomization::OnCleanPrecachedSoundWavesClicked)
+	];
 }
 
 static void EnsureServiceReadyAndExecute(TFunction<void(bool bReady)> OnComplete, int32 MaxAttempts = 30)
@@ -661,6 +676,54 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 			HttpRequest->ProcessRequest();
 		}
 	});
+
+	return FReply::Handled();
+}
+
+FReply FCharacterVoiceAssetCustomization::OnCleanPrecachedSoundWavesClicked()
+{
+	if (!TargetVoiceAsset.IsValid())
+	{
+		return FReply::Handled();
+	}
+
+	UCharacterVoiceAsset* Asset = TargetVoiceAsset.Get();
+	int32 RemovedCount = Asset->PrecachedSoundWaves.Num();
+
+	TArray<UPackage*> PackagesToDelete;
+	TArray<FString> FilePathsToDelete;
+
+	for (auto& KVP : Asset->PrecachedSoundWaves)
+	{
+		if (USoundWave* SoundWave = KVP.Value.Get())
+		{
+			UPackage* Pkg = SoundWave->GetOutermost();
+			if (Pkg && Pkg != GetTransientPackage())
+			{
+				PackagesToDelete.AddUnique(Pkg);
+				FString PkgFilename;
+				if (FPackageName::DoesPackageExist(Pkg->GetName(), &PkgFilename))
+				{
+					FilePathsToDelete.AddUnique(PkgFilename);
+				}
+			}
+		}
+	}
+
+	Asset->ClearPrecachedVoiceLines();
+	Asset->MarkPackageDirty();
+
+	for (FString& FilePath : FilePathsToDelete)
+	{
+		if (IFileManager::Get().FileExists(*FilePath))
+		{
+			IFileManager::Get().Delete(*FilePath);
+		}
+	}
+
+	FNotificationInfo NotificationInfo(FText::Format(FText::FromString("PlayVoice: Cleaned {0} precached sound wave assets."), FText::AsNumber(RemovedCount)));
+	NotificationInfo.ExpireDuration = 4.0f;
+	FSlateNotificationManager::Get().AddNotification(NotificationInfo);
 
 	return FReply::Handled();
 }
