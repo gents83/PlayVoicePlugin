@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""
+Requirements verification script for PlayVoice Unreal Engine Plugin.
+Parses a requirements.txt file and checks whether required packages are installed.
+"""
+
+import sys
+import os
+import argparse
+
+try:
+    import importlib.metadata as meta
+except ImportError:
+    import importlib_metadata as meta
+
+# Map pip package names to possible module import names or distribution aliases
+PACKAGE_IMPORT_MAP = {
+    "melo_tts": ["melo", "melo_tts", "melotts"],
+    "melo-tts": ["melo", "melo_tts", "melotts"],
+}
+
+
+def check_requirements(requirements_file: str) -> bool:
+    if not os.path.exists(requirements_file):
+        print(f"Error: Requirements file not found at '{requirements_file}'")
+        return False
+
+    with open(requirements_file, 'r', encoding='utf-8') as f:
+        lines = [l.strip() for l in f if l.strip() and not l.strip().startswith('#')]
+
+    installed = set()
+    for dist in meta.distributions():
+        if dist.metadata:
+            name = dist.metadata.get('Name')
+            if name:
+                installed.add(name.lower().replace('-', '_'))
+
+    missing = []
+    for req in lines:
+        # If line contains an optional extra marker (e.g. '; extra == ...'), ignore for base requirements check
+        if ';' in req:
+            condition_part = req.split(';', 1)[1].strip()
+            if 'extra ==' in condition_part or 'extra!=' in condition_part or 'extra' in condition_part:
+                continue
+
+        raw_pkg = req.split(';')[0].split('>=')[0].split('<=')[0].split('==')[0].split('~=')[0].split('!=')[0].strip().lower()
+        norm_pkg = raw_pkg.replace('-', '_')
+
+        if not norm_pkg:
+            continue
+
+        # Check distribution names
+        if norm_pkg in installed:
+            continue
+
+        # Check alternative distribution names & import module names
+        candidates = PACKAGE_IMPORT_MAP.get(norm_pkg, [norm_pkg, raw_pkg])
+        bInstalled = False
+        for candidate in candidates:
+            cand_norm = candidate.replace('-', '_')
+            if cand_norm in installed:
+                bInstalled = True
+                break
+            try:
+                __import__(candidate)
+                bInstalled = True
+                break
+            except Exception:
+                pass
+
+        if not bInstalled:
+            missing.append(raw_pkg)
+
+    if missing:
+        print("Missing packages:", ", ".join(missing))
+        return False
+    else:
+        print("All requirements satisfied.")
+        return True
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Check installed Python requirements for PlayVoice Plugin.")
+    parser.add_argument("requirements_file", nargs="?", default="requirements.txt", help="Path to requirements.txt file")
+    args = parser.parse_args()
+
+    success = check_requirements(args.requirements_file)
+    sys.exit(0 if success else 1)
+
+
+if __name__ == "__main__":
+    main()

@@ -26,6 +26,9 @@
 #include "UObject/Package.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "Async/Async.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogCharacterVoiceCustomization, Log, All);
 
 TSharedRef<IDetailCustomization> FCharacterVoiceAssetCustomization::MakeInstance()
 {
@@ -94,60 +97,70 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 	];
 }
 
-static void EnsureServiceReadyAndExecute(TFunction<void(bool bReady)> OnComplete, int32 MaxAttempts = 6)
+static void EnsureServiceReadyAndExecute(TFunction<void(bool bReady)> OnComplete, int32 MaxAttempts = 15)
 {
-	FProcHandle ProcHandle;
-	FPlayVoicePluginEditorModule::StartOpenVoiceService(&ProcHandle);
-
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
 	FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
 
-	TSharedRef<int32> Attempts = MakeShared<int32>(0);
-
-	struct FPollContext
+	Async(EAsyncExecution::Thread, [BaseUrl, MaxAttempts, OnComplete]()
 	{
-		TFunction<void(FPollContext& Self)> PollFunc;
-	};
+		FProcHandle ProcHandle;
+		bool bStarted = FPlayVoicePluginEditorModule::StartOpenVoiceService(&ProcHandle);
+		UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("StartOpenVoiceService requested from EnsureServiceReadyAndExecute (Started: %d)"), bStarted);
 
-	TSharedRef<FPollContext> Context = MakeShared<FPollContext>();
-	Context->PollFunc = [BaseUrl, Attempts, MaxAttempts, OnComplete, Context](FPollContext& Self)
-	{
-		(*Attempts)++;
-
-		TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HealthReq = FHttpModule::Get().CreateRequest();
-		HealthReq->SetURL(BaseUrl + TEXT("/health"));
-		HealthReq->SetVerb(TEXT("GET"));
-		HealthReq->SetTimeout(2.0f);
-
-		HealthReq->OnProcessRequestComplete().BindLambda([Attempts, MaxAttempts, OnComplete, Context](FHttpRequestPtr Req, FHttpResponsePtr Res, bool bSuccess)
+		Async(EAsyncExecution::TaskGraphMainThread, [BaseUrl, MaxAttempts, OnComplete]()
 		{
-			bool bReady = bSuccess && Res.IsValid() && EHttpResponseCodes::IsOk(Res->GetResponseCode());
-			if (bReady)
+			TSharedRef<int32> Attempts = MakeShared<int32>(0);
+
+			struct FPollContext
 			{
-				Context->PollFunc = nullptr;
-				OnComplete(true);
-			}
-			else if (*Attempts < MaxAttempts)
+				TFunction<void(FPollContext& Self)> PollFunc;
+			};
+
+			TSharedRef<FPollContext> Context = MakeShared<FPollContext>();
+			Context->PollFunc = [BaseUrl, Attempts, MaxAttempts, OnComplete, Context](FPollContext& Self)
 			{
-				FTickerDelegate TickerDelegate;
-				TickerDelegate.BindLambda([Context](float DeltaTime)
+				(*Attempts)++;
+
+				TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HealthReq = FHttpModule::Get().CreateRequest();
+				HealthReq->SetURL(BaseUrl + TEXT("/health"));
+				HealthReq->SetVerb(TEXT("GET"));
+				HealthReq->SetTimeout(2.0f);
+
+				HealthReq->OnProcessRequestComplete().BindLambda([Attempts, MaxAttempts, OnComplete, Context](FHttpRequestPtr Req, FHttpResponsePtr Res, bool bSuccess)
 				{
-					Context->PollFunc(*Context);
-					return false;
+					bool bReady = bSuccess && Res.IsValid() && EHttpResponseCodes::IsOk(Res->GetResponseCode());
+					if (bReady)
+					{
+						UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OpenVoice REST Service health check succeeded after %d attempts."), *Attempts);
+						Context->PollFunc = nullptr;
+						OnComplete(true);
+					}
+					else if (*Attempts < MaxAttempts)
+					{
+						UE_LOG(LogCharacterVoiceCustomization, Verbose, TEXT("OpenVoice health check attempt %d failed, polling again..."), *Attempts);
+						FTickerDelegate TickerDelegate;
+						TickerDelegate.BindLambda([Context](float DeltaTime)
+						{
+							Context->PollFunc(*Context);
+							return false;
+						});
+						FTSTicker::GetCoreTicker().AddTicker(TickerDelegate, 0.8f);
+					}
+					else
+					{
+						UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OpenVoice REST Service health check timed out after %d attempts."), MaxAttempts);
+						Context->PollFunc = nullptr;
+						OnComplete(false);
+					}
 				});
-				FTSTicker::GetCoreTicker().AddTicker(TickerDelegate, 0.8f);
-			}
-			else
-			{
-				Context->PollFunc = nullptr;
-				OnComplete(false);
-			}
+
+				HealthReq->ProcessRequest();
+			};
+
+			Context->PollFunc(*Context);
 		});
-
-		HealthReq->ProcessRequest();
-	};
-
-	Context->PollFunc(*Context);
+	});
 }
 
 TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProjectBlueprints(const UCharacterVoiceAsset* TargetAsset)

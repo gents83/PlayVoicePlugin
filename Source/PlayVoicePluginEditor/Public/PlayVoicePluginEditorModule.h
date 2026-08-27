@@ -17,6 +17,9 @@ public:
 	static bool StartOpenVoiceService(FProcHandle* OutProcHandle = nullptr);
 	static EAssetTypeCategories::Type GetAssetCategoryBit() { return PlayVoiceAssetCategoryBit; }
 
+	/** Helper function to resolve relative resource paths using Plugin directory first, then Project and Engine directories. */
+	static FString ResolveResourcePath(const FString& RelativeOrAbsolutePath);
+
 private:
 	void RegisterCustomizations();
 	void UnregisterCustomizations();

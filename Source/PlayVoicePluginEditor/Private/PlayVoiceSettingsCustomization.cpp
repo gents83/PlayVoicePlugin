@@ -12,6 +12,11 @@
 #include "Misc/Paths.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/FileManager.h"
+#include "Async/Async.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "Widgets/Notifications/SNotificationList.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogPlayVoiceSettings, Log, All);
 
 TSharedRef<IDetailCustomization> FPlayVoiceSettingsCustomization::MakeInstance()
 {
@@ -76,68 +81,132 @@ FReply FPlayVoiceSettingsCustomization::OnCheckRequirementsClicked()
 	FString PythonExec = Settings && !Settings->PythonExecutable.IsEmpty() ? Settings->PythonExecutable : TEXT("python");
 	FString ReqFile = Settings && !Settings->RequirementsFilePath.IsEmpty() ? Settings->RequirementsFilePath : TEXT("Resources/OpenVoiceService/requirements.txt");
 
-	FString ResolvedReqFile = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), ReqFile);
+	FString ResolvedReqFile = FPlayVoicePluginEditorModule::ResolveResourcePath(ReqFile);
+
 	if (!IFileManager::Get().FileExists(*ResolvedReqFile))
 	{
-		ResolvedReqFile = FPaths::ConvertRelativePathToFull(FPaths::EngineDir(), ReqFile);
-	}
-
-	FString Args;
-	if (IFileManager::Get().FileExists(*ResolvedReqFile))
-	{
-		Args = FString::Printf(
-			TEXT("-c \"import sys; ")
-			TEXT("try:\n")
-			TEXT("    import importlib.metadata as meta\n")
-			TEXT("except ImportError:\n")
-			TEXT("    import importlib_metadata as meta\n")
-			TEXT("lines = [l.strip() for l in open('%s').readlines() if l.strip() and not l.strip().startswith('#')]; ")
-			TEXT("missing = []; ")
-			TEXT("installed = {dist.metadata['Name'].lower() for dist in meta.distributions() if dist.metadata and 'Name' in dist.metadata}; ")
-			TEXT("for req in lines:\n")
-			TEXT("    pkg_name = req.split('>=')[0].split('<=')[0].split('==')[0].split(';')[0].strip().lower(); ")
-			TEXT("    if pkg_name and pkg_name not in installed:\n")
-			TEXT("        missing.append(pkg_name)\n")
-			TEXT("sys.exit(0 if not missing else 1)\""),
-			*ResolvedReqFile
-		);
-	}
-	else
-	{
-		Args = TEXT("-m pip check");
-	}
-
-	int32 ReturnCode = -1;
-	FString StdOut;
-	FString StdErr;
-	bool bSuccess = FPlatformProcess::ExecProcess(*PythonExec, *Args, &ReturnCode, &StdOut, &StdErr);
-
-	if (bSuccess && ReturnCode == 0)
-	{
-		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(TEXT("All requirements are successfully installed and verified!")));
-	}
-	else
-	{
-		FString ErrorMsg = FString::Printf(TEXT("Requirements check failed or missing dependencies found.\nDetails: %s\n%s"), *StdOut, *StdErr);
+		FString ErrorMsg = FString::Printf(TEXT("Requirements check failed: Requirements file not found at '%s'."), *ResolvedReqFile);
+		UE_LOG(LogPlayVoiceSettings, Error, TEXT("%s"), *ErrorMsg);
 		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(ErrorMsg));
+		return FReply::Handled();
 	}
+
+	FString CheckScriptPath = FPlayVoicePluginEditorModule::ResolveResourcePath(TEXT("Resources/OpenVoiceService/check_requirements.py"));
+	if (!IFileManager::Get().FileExists(*CheckScriptPath))
+	{
+		FString ErrorMsg = FString::Printf(TEXT("Requirements check script not found at '%s'."), *CheckScriptPath);
+		UE_LOG(LogPlayVoiceSettings, Error, TEXT("%s"), *ErrorMsg);
+		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(ErrorMsg));
+		return FReply::Handled();
+	}
+
+	FNotificationInfo NotificationInfo(FText::FromString("PlayVoice: Checking Python requirements..."));
+	NotificationInfo.bFireAndForget = false;
+	NotificationInfo.bUseThrobber = true;
+	NotificationInfo.bUseLargeFont = false;
+	NotificationInfo.bUseSuccessFailIcons = true;
+	NotificationInfo.FadeOutDuration = 0.5f;
+
+	TSharedPtr<SNotificationItem> NotificationItem = FSlateNotificationManager::Get().AddNotification(NotificationInfo);
+	if (NotificationItem.IsValid())
+	{
+		NotificationItem->SetCompletionState(SNotificationItem::CS_Pending);
+	}
+
+	UE_LOG(LogPlayVoiceSettings, Log, TEXT("Checking requirements with Python: %s, script: %s, file: %s"), *PythonExec, *CheckScriptPath, *ResolvedReqFile);
+
+	FString Args = FString::Printf(TEXT("\"%s\" \"%s\""), *CheckScriptPath, *ResolvedReqFile);
+
+	Async(EAsyncExecution::Thread, [PythonExec, Args, NotificationItem]()
+	{
+		int32 ReturnCode = -1;
+		FString StdOut;
+		FString StdErr;
+		bool bSuccess = FPlatformProcess::ExecProcess(*PythonExec, *Args, &ReturnCode, &StdOut, &StdErr);
+
+		Async(EAsyncExecution::TaskGraphMainThread, [bSuccess, ReturnCode, StdOut, StdErr, NotificationItem]()
+		{
+			if (bSuccess && ReturnCode == 0)
+			{
+				UE_LOG(LogPlayVoiceSettings, Log, TEXT("Requirements check successful:\n%s"), *StdOut);
+				if (NotificationItem.IsValid())
+				{
+					NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
+					NotificationItem->SetText(FText::FromString("PlayVoice: All requirements are verified!"));
+					NotificationItem->SetExpireDuration(3.0f);
+					NotificationItem->ExpireAndFadeout();
+				}
+				FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(TEXT("All requirements are successfully installed and verified!")));
+			}
+			else
+			{
+				UE_LOG(LogPlayVoiceSettings, Warning, TEXT("Requirements check failed (Code: %d).\nOutput: %s\nError: %s"), ReturnCode, *StdOut, *StdErr);
+				if (NotificationItem.IsValid())
+				{
+					NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
+					NotificationItem->SetText(FText::FromString("PlayVoice: Requirements check failed."));
+					NotificationItem->SetExpireDuration(4.0f);
+					NotificationItem->ExpireAndFadeout();
+				}
+				FString ErrorMsg = FString::Printf(TEXT("Requirements check failed or missing dependencies found.\nDetails: %s\n%s"), *StdOut, *StdErr);
+				FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(ErrorMsg));
+			}
+		});
+	});
 
 	return FReply::Handled();
 }
 
 FReply FPlayVoiceSettingsCustomization::OnStartServiceClicked()
 {
-	FProcHandle ProcHandle;
-	bool bStarted = FPlayVoicePluginEditorModule::StartOpenVoiceService(&ProcHandle);
+	FNotificationInfo NotificationInfo(FText::FromString("PlayVoice: Launching OpenVoice REST Service..."));
+	NotificationInfo.bFireAndForget = false;
+	NotificationInfo.bUseThrobber = true;
+	NotificationInfo.bUseLargeFont = false;
+	NotificationInfo.bUseSuccessFailIcons = true;
+	NotificationInfo.FadeOutDuration = 0.5f;
 
-	if (bStarted)
+	TSharedPtr<SNotificationItem> NotificationItem = FSlateNotificationManager::Get().AddNotification(NotificationInfo);
+	if (NotificationItem.IsValid())
 	{
-		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(TEXT("OpenVoice REST Service launched successfully!")));
+		NotificationItem->SetCompletionState(SNotificationItem::CS_Pending);
 	}
-	else
+
+	UE_LOG(LogPlayVoiceSettings, Log, TEXT("Initiating OpenVoice REST Service startup..."));
+
+	Async(EAsyncExecution::Thread, [NotificationItem]()
 	{
-		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(TEXT("Failed to launch OpenVoice REST Service. Please verify Python executable and script settings.")));
-	}
+		FProcHandle ProcHandle;
+		bool bStarted = FPlayVoicePluginEditorModule::StartOpenVoiceService(&ProcHandle);
+
+		Async(EAsyncExecution::TaskGraphMainThread, [bStarted, NotificationItem]()
+		{
+			if (bStarted)
+			{
+				UE_LOG(LogPlayVoiceSettings, Log, TEXT("OpenVoice REST Service process started successfully."));
+				if (NotificationItem.IsValid())
+				{
+					NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
+					NotificationItem->SetText(FText::FromString("PlayVoice: Service launched successfully!"));
+					NotificationItem->SetExpireDuration(3.0f);
+					NotificationItem->ExpireAndFadeout();
+				}
+				FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(TEXT("OpenVoice REST Service launched successfully!")));
+			}
+			else
+			{
+				UE_LOG(LogPlayVoiceSettings, Error, TEXT("Failed to start OpenVoice REST Service."));
+				if (NotificationItem.IsValid())
+				{
+					NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
+					NotificationItem->SetText(FText::FromString("PlayVoice: Failed to launch service."));
+					NotificationItem->SetExpireDuration(4.0f);
+					NotificationItem->ExpireAndFadeout();
+				}
+				FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(TEXT("Failed to launch OpenVoice REST Service. Please verify Python executable and script settings.")));
+			}
+		});
+	});
 
 	return FReply::Handled();
 }
@@ -150,11 +219,7 @@ FReply FPlayVoiceSettingsCustomization::OnLaunchSetupClicked()
 	FString TargetDir = Settings ? Settings->TargetInstallDir : TEXT("");
 	FString ExtraArgs = Settings ? Settings->ExtraPipArgs : TEXT("");
 
-	FString ResolvedReqFile = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), ReqFile);
-	if (!IFileManager::Get().FileExists(*ResolvedReqFile))
-	{
-		ResolvedReqFile = FPaths::ConvertRelativePathToFull(FPaths::EngineDir(), ReqFile);
-	}
+	FString ResolvedReqFile = FPlayVoicePluginEditorModule::ResolveResourcePath(ReqFile);
 
 	FString CmdArgs = FString::Printf(TEXT("-m pip install -r \"%s\""), *ResolvedReqFile);
 	if (!TargetDir.IsEmpty())
@@ -166,20 +231,57 @@ FReply FPlayVoiceSettingsCustomization::OnLaunchSetupClicked()
 		CmdArgs += FString::Printf(TEXT(" %s"), *ExtraArgs);
 	}
 
-	int32 ReturnCode = -1;
-	FString StdOut;
-	FString StdErr;
-	bool bSuccess = FPlatformProcess::ExecProcess(*PythonExec, *CmdArgs, &ReturnCode, &StdOut, &StdErr);
+	FNotificationInfo NotificationInfo(FText::FromString("PlayVoice: Installing Python requirements via pip..."));
+	NotificationInfo.bFireAndForget = false;
+	NotificationInfo.bUseThrobber = true;
+	NotificationInfo.bUseLargeFont = false;
+	NotificationInfo.bUseSuccessFailIcons = true;
+	NotificationInfo.FadeOutDuration = 0.5f;
 
-	if (bSuccess && ReturnCode == 0)
+	TSharedPtr<SNotificationItem> NotificationItem = FSlateNotificationManager::Get().AddNotification(NotificationInfo);
+	if (NotificationItem.IsValid())
 	{
-		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(TEXT("Setup completed successfully! All requirements were installed.")));
+		NotificationItem->SetCompletionState(SNotificationItem::CS_Pending);
 	}
-	else
+
+	UE_LOG(LogPlayVoiceSettings, Log, TEXT("Running setup installation: %s %s"), *PythonExec, *CmdArgs);
+
+	Async(EAsyncExecution::Thread, [PythonExec, CmdArgs, NotificationItem]()
 	{
-		FString ErrorMsg = FString::Printf(TEXT("Setup process failed (Exit Code: %d).\nOutput: %s\nError: %s"), ReturnCode, *StdOut, *StdErr);
-		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(ErrorMsg));
-	}
+		int32 ReturnCode = -1;
+		FString StdOut;
+		FString StdErr;
+		bool bSuccess = FPlatformProcess::ExecProcess(*PythonExec, *CmdArgs, &ReturnCode, &StdOut, &StdErr);
+
+		Async(EAsyncExecution::TaskGraphMainThread, [bSuccess, ReturnCode, StdOut, StdErr, NotificationItem]()
+		{
+			if (bSuccess && ReturnCode == 0)
+			{
+				UE_LOG(LogPlayVoiceSettings, Log, TEXT("Setup completed successfully:\n%s"), *StdOut);
+				if (NotificationItem.IsValid())
+				{
+					NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
+					NotificationItem->SetText(FText::FromString("PlayVoice: Requirements installed successfully!"));
+					NotificationItem->SetExpireDuration(3.0f);
+					NotificationItem->ExpireAndFadeout();
+				}
+				FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(TEXT("Setup completed successfully! All requirements were installed.")));
+			}
+			else
+			{
+				UE_LOG(LogPlayVoiceSettings, Error, TEXT("Setup process failed (Exit Code: %d).\nOutput: %s\nError: %s"), ReturnCode, *StdOut, *StdErr);
+				if (NotificationItem.IsValid())
+				{
+					NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
+					NotificationItem->SetText(FText::FromString("PlayVoice: Setup process failed."));
+					NotificationItem->SetExpireDuration(4.0f);
+					NotificationItem->ExpireAndFadeout();
+				}
+				FString ErrorMsg = FString::Printf(TEXT("Setup process failed (Exit Code: %d).\nOutput: %s\nError: %s"), ReturnCode, *StdOut, *StdErr);
+				FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(ErrorMsg));
+			}
+		});
+	});
 
 	return FReply::Handled();
 }
