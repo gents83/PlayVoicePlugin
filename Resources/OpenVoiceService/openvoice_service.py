@@ -203,11 +203,11 @@ class OpenVoiceEngine:
                             )
                             if os.path.exists(out_path):
                                 with open(out_path, 'rb') as f:
-                                    return f.read()
+                                    return ensure_wav_format(f.read(), target_sample_rate=24000)
 
                 if os.path.exists(src_path):
                     with open(src_path, 'rb') as f:
-                        return f.read()
+                        return ensure_wav_format(f.read(), target_sample_rate=24000)
             except Exception as e:
                 logger.error(f"OpenVoice synthesis exception: {e}")
 
@@ -224,7 +224,7 @@ class OpenVoiceEngine:
                 with open(pyttsx_path, 'rb') as f:
                     wav_data = f.read()
                     if len(wav_data) >= 44 and wav_data.startswith(b'RIFF'):
-                        return wav_data
+                        return ensure_wav_format(wav_data, target_sample_rate=24000)
         except Exception as e:
             logger.debug(f"pyttsx3 fallback exception: {e}")
 
@@ -247,7 +247,7 @@ class OpenVoiceEngine:
                 with open(plat_path, 'rb') as f:
                     wav_data = f.read()
                     if len(wav_data) >= 44 and wav_data.startswith(b'RIFF'):
-                        return wav_data
+                        return ensure_wav_format(wav_data, target_sample_rate=24000)
         except Exception as e:
             logger.debug(f"Platform TTS fallback exception: {e}")
 
@@ -266,7 +266,8 @@ class OpenVoiceEngine:
                 acoustic_profile["pitch_mean"] = (pitch_freq + float(guide_profile["pitch_mean"])) / 2.0
                 acoustic_profile["rms_mean"] = float(guide_profile.get("rms_mean", 0.25))
 
-        return generate_synthetic_wav(text, speed=speed, pitch_freq=pitch_freq, acoustic_profile=acoustic_profile, character_name=character_name)
+        synth_bytes = generate_synthetic_wav(text, speed=speed, pitch_freq=pitch_freq, acoustic_profile=acoustic_profile, character_name=character_name)
+        return ensure_wav_format(synth_bytes, target_sample_rate=24000)
 
     def transcribe_audio(self, audio_file: str) -> str:
         """
@@ -382,6 +383,68 @@ def analyze_reference_audio_files(valid_files: List[str]) -> Dict[str, Any]:
         "zcr_mean": mean_zcr,
         "num_voiced_frames": len(pitches)
     }
+
+
+def ensure_wav_format(wav_bytes: bytes, target_sample_rate: int = 24000) -> bytes:
+    """
+    Ensures the audio byte payload is a valid 16-bit mono PCM WAV buffer matching target_sample_rate.
+    Resamples and downmixes if necessary.
+    """
+    if not wav_bytes or len(wav_bytes) < 44 or not wav_bytes.startswith(b'RIFF'):
+        return wav_bytes
+
+    try:
+        wf = wave.open(io.BytesIO(wav_bytes), 'rb')
+        nchannels = wf.getnchannels()
+        sampwidth = wf.getsampwidth()
+        framerate = wf.getframerate()
+        nframes = wf.getnframes()
+        frames = wf.readframes(nframes)
+        wf.close()
+
+        if framerate == target_sample_rate and nchannels == 1 and sampwidth == 2:
+            return wav_bytes
+
+        if sampwidth == 2:
+            fmt = f'<{nframes * nchannels}h'
+            raw_samples = struct.unpack(fmt, frames)
+        elif sampwidth == 1:
+            fmt = f'<{nframes * nchannels}B'
+            raw_samples = [(s - 128) * 256 for s in struct.unpack(fmt, frames)]
+        else:
+            return wav_bytes
+
+        if nchannels > 1:
+            mono_samples = [int(sum(raw_samples[i:i+nchannels]) / nchannels) for i in range(0, len(raw_samples), nchannels)]
+        else:
+            mono_samples = list(raw_samples)
+
+        if framerate == target_sample_rate:
+            resampled_samples = mono_samples
+        else:
+            num_target_samples = int(len(mono_samples) * target_sample_rate / framerate)
+            resampled_samples = []
+            for i in range(num_target_samples):
+                src_pos = float(i) * framerate / target_sample_rate
+                idx = int(src_pos)
+                frac = src_pos - idx
+                if idx >= len(mono_samples) - 1:
+                    val = mono_samples[-1] if mono_samples else 0
+                else:
+                    val = (1.0 - frac) * mono_samples[idx] + frac * mono_samples[idx + 1]
+                resampled_samples.append(max(-32768, min(32767, int(val))))
+
+        out_buf = io.BytesIO()
+        with wave.open(out_buf, 'wb') as out_wf:
+            out_wf.setnchannels(1)
+            out_wf.setsampwidth(2)
+            out_wf.setframerate(target_sample_rate)
+            packed = struct.pack(f'<{len(resampled_samples)}h', *resampled_samples)
+            out_wf.writeframes(packed)
+        return out_buf.getvalue()
+    except Exception as e:
+        logger.warning(f"Audio resampling exception: {e}")
+        return wav_bytes
 
 
 def generate_synthetic_wav(text: str, speed: float = 1.0, sample_rate: int = 24000, pitch_freq: float = 220.0, acoustic_profile: Optional[Dict[str, Any]] = None, character_name: str = "") -> bytes:
