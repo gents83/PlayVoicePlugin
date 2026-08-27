@@ -199,9 +199,95 @@ static void EnsureServiceReadyAndExecute(TFunction<void(bool bReady)> OnComplete
 	InitialHealthReq->ProcessRequest();
 }
 
+static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
+{
+	if (!Pin || Depth > 5)
+	{
+		return FString();
+	}
+
+	FString DirectDefault = Pin->GetDefaultAsString();
+	DirectDefault.TrimStartAndEndInline();
+	if (DirectDefault.StartsWith(TEXT("\"")) && DirectDefault.EndsWith(TEXT("\"")) && DirectDefault.Len() >= 2)
+	{
+		DirectDefault = DirectDefault.Mid(1, DirectDefault.Len() - 2);
+	}
+	if (!DirectDefault.IsEmpty())
+	{
+		return DirectDefault;
+	}
+
+	if (Pin->LinkedTo.Num() > 0)
+	{
+		for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
+		{
+			if (!LinkedPin)
+			{
+				continue;
+			}
+
+			FString LinkedDefault = LinkedPin->GetDefaultAsString();
+			LinkedDefault.TrimStartAndEndInline();
+			if (LinkedDefault.StartsWith(TEXT("\"")) && LinkedDefault.EndsWith(TEXT("\"")) && LinkedDefault.Len() >= 2)
+			{
+				LinkedDefault = LinkedDefault.Mid(1, LinkedDefault.Len() - 2);
+			}
+			if (!LinkedDefault.IsEmpty())
+			{
+				return LinkedDefault;
+			}
+
+			const UEdGraphNode* OwningNode = LinkedPin->GetOwningNode();
+			if (OwningNode)
+			{
+				for (const UEdGraphPin* NodePin : OwningNode->Pins)
+				{
+					if (NodePin && NodePin->Direction == EGPD_Input && NodePin != LinkedPin)
+					{
+						FString InputVal = ExtractTextFromPin(NodePin, Depth + 1);
+						if (!InputVal.IsEmpty())
+						{
+							return InputVal;
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return FString();
+}
+
 TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProjectBlueprints(const UCharacterVoiceAsset* TargetAsset)
 {
 	TArray<FString> DiscoveredLines;
+
+	if (TargetAsset)
+	{
+		for (const FVoiceLineGuideTrack& GuideTrack : TargetAsset->GuideTracks)
+		{
+			FString CleanLine = GuideTrack.LineText.TrimStartAndEnd();
+			if (!CleanLine.IsEmpty())
+			{
+				DiscoveredLines.AddUnique(CleanLine);
+			}
+		}
+
+		for (const auto& KVP : TargetAsset->PrecachedSoundWaves)
+		{
+			FString Key = KVP.Key;
+			int32 ColonIdx = -1;
+			if (Key.FindChar(TEXT(':'), ColonIdx) && ColonIdx >= 0 && ColonIdx < Key.Len() - 1)
+			{
+				Key = Key.Mid(ColonIdx + 1);
+			}
+			Key.TrimStartAndEndInline();
+			if (!Key.IsEmpty())
+			{
+				DiscoveredLines.AddUnique(Key);
+			}
+		}
+	}
 	if (!FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
 	{
 		FModuleManager::Get().LoadModule("AssetRegistry");
@@ -268,15 +354,10 @@ TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProject
 
 					if (bMatchesAsset && TextPin)
 					{
-						FString TextVal = TextPin->GetDefaultAsString();
-						TextVal.TrimStartAndEndInline();
-						if (TextVal.StartsWith(TEXT("\"")) && TextVal.EndsWith(TEXT("\"")) && TextVal.Len() >= 2)
+						FString ExtractedText = ExtractTextFromPin(TextPin);
+						if (!ExtractedText.IsEmpty())
 						{
-							TextVal = TextVal.Mid(1, TextVal.Len() - 2);
-						}
-						if (!TextVal.IsEmpty())
-						{
-							DiscoveredLines.AddUnique(TextVal);
+							DiscoveredLines.AddUnique(ExtractedText);
 						}
 					}
 				}

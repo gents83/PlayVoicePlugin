@@ -159,6 +159,9 @@ class OpenVoiceEngine:
                             target_se = target_se.unsqueeze(0).unsqueeze(-1)
                         elif target_se.ndim == 2:
                             target_se = target_se.unsqueeze(-1)
+                        elif target_se.ndim > 3:
+                            while target_se.ndim > 3:
+                                target_se = target_se.squeeze(0)
 
                         source_se = None
                         source_se_path = os.path.join(self.checkpoint_dir, "base_speakers", "ses", "en-default.pth")
