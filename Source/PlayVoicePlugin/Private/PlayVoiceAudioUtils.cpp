@@ -3,14 +3,17 @@
 #include "PlayVoiceAudioUtils.h"
 #include "Sound/SoundWave.h"
 #include "Memory/SharedBuffer.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "HAL/FileManager.h"
 
 static TArray<uint8> BuildWAVHeaderAndPCMBuffer(const TArray<uint8>& PCMData, int32 SampleRate, int32 NumChannels)
 {
 	uint32 DataSize = PCMData.Num();
 	uint32 ChunkSize = 36 + DataSize;
 	uint16 AudioFormat = 1; // Uncompressed PCM
-	uint16 Channels = (uint16)NumChannels;
-	uint32 SampleRateU32 = (uint32)SampleRate;
+	uint16 Channels = (uint16)FMath::Max(1, NumChannels);
+	uint32 SampleRateU32 = (uint32)FMath::Max(1, SampleRate);
 	uint16 BitsPerSample = 16;
 	uint16 BlockAlign = Channels * (BitsPerSample / 8);
 	uint32 ByteRate = SampleRateU32 * BlockAlign;
@@ -137,4 +140,52 @@ USoundWave* UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(const TArray<uint
 	FMemory::Memcpy(SoundWave->RawPCMData, PCMData.GetData(), DataSize);
 
 	return SoundWave;
+}
+
+FString UPlayVoiceAudioUtils::ExportSoundWaveToTempWAVFile(USoundWave* SoundWave)
+{
+	if (!SoundWave)
+	{
+		return FString();
+	}
+
+	TArray<uint8> WAVBytes;
+
+#if WITH_EDITORONLY_DATA
+	if (SoundWave->RawData.HasPayloadData())
+	{
+		FSharedBuffer Payload = SoundWave->RawData.FetchPayload();
+		if (Payload.GetSize() >= 44)
+		{
+			WAVBytes.SetNumUninitialized(Payload.GetSize());
+			FMemory::Memcpy(WAVBytes.GetData(), Payload.GetData(), Payload.GetSize());
+		}
+	}
+#endif
+
+	if (WAVBytes.Num() < 44 && SoundWave->RawPCMData && SoundWave->RawPCMDataSize > 0)
+	{
+		TArray<uint8> PCMData;
+		PCMData.SetNumUninitialized(SoundWave->RawPCMDataSize);
+		FMemory::Memcpy(PCMData.GetData(), SoundWave->RawPCMData, SoundWave->RawPCMDataSize);
+		int32 SR = FMath::Max(1, (int32)SoundWave->GetSampleRateForCurrentPlatform());
+		int32 Ch = FMath::Max(1, (int32)SoundWave->NumChannels);
+		WAVBytes = BuildWAVHeaderAndPCMBuffer(PCMData, SR, Ch);
+	}
+
+	if (WAVBytes.Num() < 44)
+	{
+		return FString();
+	}
+
+	FString TempDir = FPaths::ProjectSavedDir() / TEXT("PlayVoiceTemp");
+	IFileManager::Get().MakeDirectory(*TempDir, true);
+
+	FString TempFilePath = TempDir / FString::Printf(TEXT("%s.wav"), *SoundWave->GetName());
+	if (FFileHelper::SaveArrayToFile(WAVBytes, *TempFilePath))
+	{
+		return FPaths::ConvertRelativePathToFull(TempFilePath);
+	}
+
+	return FString();
 }

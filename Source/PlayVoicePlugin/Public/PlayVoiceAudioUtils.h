@@ -26,4 +26,11 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	static USoundWave* CreateSoundWaveFromWAVBuffer(const TArray<uint8>& WAVData, UObject* Outer = nullptr, FName Name = NAME_None);
+
+	/**
+	 * Exports a USoundWave asset to a temporary .wav disk file for backend service consumption.
+	 * Returns the absolute disk path of the created .wav file, or empty string on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
+	static FString ExportSoundWaveToTempWAVFile(USoundWave* SoundWave);
 };

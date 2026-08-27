@@ -1,12 +1,14 @@
 // Copyright (c) 2025 PlayVoice Team. All Rights Reserved.
 
 #include "CharacterVoiceAsset.h"
+#include "PlayVoiceAudioUtils.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/PackageName.h"
 #include "UObject/Package.h"
 #include "HAL/FileManager.h"
 #include "UObject/UObjectGlobals.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 UCharacterVoiceAsset::UCharacterVoiceAsset()
 	: CharacterName(TEXT("NewCharacter"))
@@ -243,6 +245,18 @@ TArray<FString> UCharacterVoiceAsset::ResolveAudioFilesFromFolderAndFiles(const 
 			{
 				ResolvedFiles.AddUnique(FullPath);
 			}
+			else if (FullPath.StartsWith(TEXT("/Game/")))
+			{
+				USoundWave* LoadedWave = Cast<USoundWave>(StaticLoadObject(USoundWave::StaticClass(), nullptr, *FullPath));
+				if (LoadedWave)
+				{
+					FString ExportedWav = UPlayVoiceAudioUtils::ExportSoundWaveToTempWAVFile(LoadedWave);
+					if (!ExportedWav.IsEmpty())
+					{
+						ResolvedFiles.AddUnique(ExportedWav);
+					}
+				}
+			}
 		}
 	}
 
@@ -265,6 +279,58 @@ TArray<FString> UCharacterVoiceAsset::ResolveAudioFilesFromFolderAndFiles(const 
 				if (IFileManager::Get().FileExists(*FoundFile))
 				{
 					ResolvedFiles.AddUnique(FoundFile);
+				}
+			}
+
+			// Also search for imported Unreal Engine .uasset files in the directory
+			TArray<FString> FoundUAssets;
+			IFileManager::Get().FindFilesRecursive(FoundUAssets, *FolderFullPath, TEXT("*.uasset"), true, false, false);
+			for (const FString& UAssetFile : FoundUAssets)
+			{
+				FString PackageName;
+				if (FPackageName::TryConvertFilenameToLongPackageName(UAssetFile, PackageName))
+				{
+					USoundWave* LoadedWave = Cast<USoundWave>(StaticLoadObject(USoundWave::StaticClass(), nullptr, *PackageName));
+					if (LoadedWave)
+					{
+						FString ExportedWav = UPlayVoiceAudioUtils::ExportSoundWaveToTempWAVFile(LoadedWave);
+						if (!ExportedWav.IsEmpty())
+						{
+							ResolvedFiles.AddUnique(ExportedWav);
+						}
+					}
+				}
+			}
+		}
+
+		// Also check AssetRegistry for USoundWave assets if FolderPath is a /Game/ package path
+		FString CleanPath = FolderPath.Path.TrimStartAndEnd();
+		if (CleanPath.StartsWith(TEXT("/Game")))
+		{
+			if (!FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+			{
+				FModuleManager::Get().LoadModule("AssetRegistry");
+			}
+			if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+			{
+				FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+				TArray<FAssetData> AssetList;
+				AssetRegistryModule.Get().GetAssetsByPath(FName(*CleanPath), AssetList, true);
+
+				for (const FAssetData& AssetData : AssetList)
+				{
+					if (AssetData.AssetClassPath.GetAssetName() == FName(TEXT("SoundWave")) || AssetData.GetClass() == USoundWave::StaticClass())
+					{
+						USoundWave* LoadedWave = Cast<USoundWave>(AssetData.GetAsset());
+						if (LoadedWave)
+						{
+							FString ExportedWav = UPlayVoiceAudioUtils::ExportSoundWaveToTempWAVFile(LoadedWave);
+							if (!ExportedWav.IsEmpty())
+							{
+								ResolvedFiles.AddUnique(ExportedWav);
+							}
+						}
+					}
 				}
 			}
 		}
