@@ -331,7 +331,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 			}
 		};
 
-		TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = TargetVoiceAsset;
+		TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = WeakTargetAsset;
 		for (FCharacterLanguageData* LangDataPtr : ConfiguredLanguages)
 		{
 			FCharacterLanguageData& LangData = *LangDataPtr;
