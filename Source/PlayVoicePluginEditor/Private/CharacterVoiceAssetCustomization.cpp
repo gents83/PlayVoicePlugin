@@ -514,14 +514,24 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 					TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Res->GetContentAsString());
 					if (FJsonSerializer::Deserialize(Reader, ResObj) && ResObj.IsValid())
 					{
-						FCharacterLanguageData* TargetLangData = WeakTargetAsset->FindLanguageData(CurrentLangCode);
-						if (TargetLangData)
+								FString Status = ResObj->GetStringField(TEXT("status"));
+								if (Status.Equals(TEXT("success"), ESearchCase::IgnoreCase))
 						{
-							TargetLangData->ToneColorEmbeddingData = ResObj->GetStringField(TEXT("embedding_data"));
-							TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
-							WeakTargetAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
-							WeakTargetAsset->MarkPackageDirty();
-							UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateAndProcessAllClicked: Model extraction succeeded for language '%s'."), *CurrentLangCode);
+									FCharacterLanguageData* TargetLangData = WeakTargetAsset->FindLanguageData(CurrentLangCode);
+									if (TargetLangData)
+									{
+										TargetLangData->ToneColorEmbeddingData = ResObj->GetStringField(TEXT("embedding_data"));
+										TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
+										WeakTargetAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
+										WeakTargetAsset->MarkPackageDirty();
+										UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateAndProcessAllClicked: Model extraction succeeded for language '%s'."), *CurrentLangCode);
+									}
+								}
+								else
+								{
+									(*FailedTasks)++;
+									FString ErrMsg = ResObj->GetStringField(TEXT("message"));
+									UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateAndProcessAllClicked: Model extraction error for language '%s': %s"), *CurrentLangCode, *ErrMsg);
 						}
 					}
 				}
@@ -555,6 +565,14 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 					SynthObj->SetStringField(TEXT("language"), CurrentLangCode);
 					SynthObj->SetNumberField(TEXT("speed"), CurrentSpeed);
 					SynthObj->SetStringField(TEXT("embedding_data"), EmbeddingData);
+
+					TArray<FString> RefAudioFiles = VoiceAsset->GetResolvedReferenceAudioFilesForLanguage(CurrentLangCode);
+					TArray<TSharedPtr<FJsonValue>> RefPathValues;
+					for (const FString& RefPath : RefAudioFiles)
+					{
+						RefPathValues.Add(MakeShared<FJsonValueString>(RefPath));
+					}
+					SynthObj->SetArrayField(TEXT("reference_audio_files"), RefPathValues);
 
 					FString GuideFile = VoiceAsset->GetResolvedGuideAudioFileForLine(LineText);
 					if (!GuideFile.IsEmpty())
@@ -759,18 +777,28 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 					TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Response->GetContentAsString());
 					if (FJsonSerializer::Deserialize(Reader, ResponseObj) && ResponseObj.IsValid())
 					{
-						if (WeakTargetAsset.IsValid())
+								FString Status = ResponseObj->GetStringField(TEXT("status"));
+								if (Status.Equals(TEXT("success"), ESearchCase::IgnoreCase))
 						{
-							FCharacterLanguageData* TargetLangData = WeakTargetAsset->FindLanguageData(CurrentLangCode);
-							if (TargetLangData)
+									if (WeakTargetAsset.IsValid())
 							{
-								TargetLangData->ToneColorEmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
-								TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
-								WeakTargetAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
-								WeakTargetAsset->MarkPackageDirty();
-								UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateModelClicked: Model saved for language '%s'."), *CurrentLangCode);
+										FCharacterLanguageData* TargetLangData = WeakTargetAsset->FindLanguageData(CurrentLangCode);
+										if (TargetLangData)
+										{
+											TargetLangData->ToneColorEmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
+											TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
+											WeakTargetAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
+											WeakTargetAsset->MarkPackageDirty();
+											UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateModelClicked: Model saved for language '%s'."), *CurrentLangCode);
+										}
 							}
 						}
+								else
+								{
+									(*FailedTasks)++;
+									FString ErrMsg = ResponseObj->GetStringField(TEXT("message"));
+									UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateModelClicked: Extraction error for language '%s': %s"), *CurrentLangCode, *ErrMsg);
+								}
 					}
 				}
 
@@ -796,7 +824,9 @@ FReply FCharacterVoiceAssetCustomization::OnCleanPrecachedSoundWavesClicked()
 	int32 RemovedCount = Asset->PrecachedSoundWaves.Num();
 	UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnCleanPrecachedSoundWavesClicked: Initiating precached sound wave cleanup for asset '%s' (%d entries)"), *Asset->GetName(), RemovedCount);
 
+	TArray<UPackage*> PackagesToDelete;
 	TArray<FString> FilePathsToDelete;
+
 	for (auto& KVP : Asset->PrecachedSoundWaves)
 	{
 		if (USoundWave* SoundWave = KVP.Value.Get())
@@ -804,6 +834,7 @@ FReply FCharacterVoiceAssetCustomization::OnCleanPrecachedSoundWavesClicked()
 			UPackage* Pkg = SoundWave->GetOutermost();
 			if (Pkg && Pkg != GetTransientPackage())
 			{
+				PackagesToDelete.AddUnique(Pkg);
 				FString PkgFilename;
 				if (FPackageName::DoesPackageExist(Pkg->GetName(), &PkgFilename))
 				{
@@ -815,6 +846,18 @@ FReply FCharacterVoiceAssetCustomization::OnCleanPrecachedSoundWavesClicked()
 
 	Asset->ClearPrecachedVoiceLines();
 	Asset->MarkPackageDirty();
+
+	if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+	{
+		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+		for (UPackage* Pkg : PackagesToDelete)
+		{
+			if (Pkg)
+			{
+				AssetRegistryModule.Get().RemovePackageData(Pkg->GetName());
+			}
+		}
+	}
 
 	for (FString& FilePath : FilePathsToDelete)
 	{
@@ -942,6 +985,14 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 				JsonObj->SetStringField(TEXT("language"), CurrentLangCode);
 				JsonObj->SetNumberField(TEXT("speed"), CurrentSpeed);
 				JsonObj->SetStringField(TEXT("embedding_data"), EmbeddingData);
+
+				TArray<FString> RefAudioFiles = Asset->GetResolvedReferenceAudioFilesForLanguage(CurrentLangCode);
+				TArray<TSharedPtr<FJsonValue>> RefPathValues;
+				for (const FString& RefPath : RefAudioFiles)
+				{
+					RefPathValues.Add(MakeShared<FJsonValueString>(RefPath));
+				}
+				JsonObj->SetArrayField(TEXT("reference_audio_files"), RefPathValues);
 
 				FString GuideFile = Asset->GetResolvedGuideAudioFileForLine(LineText);
 				if (!GuideFile.IsEmpty())

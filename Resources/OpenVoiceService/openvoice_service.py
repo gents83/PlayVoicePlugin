@@ -76,7 +76,12 @@ class OpenVoiceEngine:
                 target_dir = os.path.join(tempfile.gettempdir(), 'processed')
                 os.makedirs(target_dir, exist_ok=True)
                 target_se, audio_name = get_se(valid_files[0], self.converter, target_dir=target_dir, vad=True)
-                se_list = target_se.tolist() if hasattr(target_se, 'tolist') else list(target_se)
+                if HAS_OPENVOICE and isinstance(target_se, torch.Tensor):
+                    se_list = target_se.detach().cpu().numpy().tolist()
+                elif hasattr(target_se, 'tolist'):
+                    se_list = target_se.tolist()
+                else:
+                    se_list = list(target_se)
 
                 embedding_payload = {
                     "character_name": character_name,
@@ -95,30 +100,47 @@ class OpenVoiceEngine:
             except Exception as e:
                 logger.error(f"OpenVoice extraction failed: {e}")
 
-        # Fallback embedding extraction representation with reference acoustic features
-        pitch_base = acoustic_profile.get("pitch_mean", 170.0) if acoustic_profile else (150.0 + (abs(hash(character_name)) % 120))
-        embedding_vector = [(0.05 * (i % 7 + 1)) * (pitch_base / 200.0) for i in range(256)]
-        embedding_payload = {
-            "character_name": character_name,
-            "num_reference_files": len(reference_files),
-            "valid_reference_files": valid_files,
-            "target_se": embedding_vector,
-            "acoustic_profile": acoustic_profile,
-            "engine": "OpenVoice-Fallback"
-        }
+        # If OpenVoice is not installed or reference audio extraction failed, return explicit error
+        if not HAS_OPENVOICE:
+            err_msg = "OpenVoice and MeloTTS packages are not installed in the Python environment. Please install requirements from Project Settings."
+            logger.error(err_msg)
+            return {
+                "status": "error",
+                "message": err_msg,
+                "character_name": character_name
+            }
 
+        if not valid_files:
+            err_msg = f"No valid reference audio files found on disk for character '{character_name}'."
+            logger.error(err_msg)
+            return {
+                "status": "error",
+                "message": err_msg,
+                "character_name": character_name
+            }
+
+        err_msg = f"Tone color extraction failed for character '{character_name}' using reference audio files."
+        logger.error(err_msg)
         return {
-            "status": "success",
-            "character_name": character_name,
-            "embedding_data": json.dumps(embedding_payload),
-            "model_checkpoint": f"{self.checkpoint_dir}/{character_name}_se.pth"
+            "status": "error",
+            "message": err_msg,
+            "character_name": character_name
         }
 
-    def synthesize(self, text: str, character_name: str, language: str = "EN", speed: float = 1.0, embedding_data: Optional[str] = None, guide_audio_file: Optional[str] = None, emotion: Optional[str] = None) -> bytes:
+    def synthesize(self, text: str, character_name: str, language: str = "EN", speed: float = 1.0, embedding_data: Optional[str] = None, reference_audio_files: Optional[List[str]] = None, guide_audio_file: Optional[str] = None, emotion: Optional[str] = None) -> bytes:
         """
         Synthesizes text into voice matching character reference tone, pitch, and speed.
+        If embedding_data is not provided, extracts tone color automatically on the fly from reference_audio_files.
         If guide_audio_file is provided, uses the recorded guide track as source speech to transfer custom speed and emotions.
         """
+        # Automatically extract embedding data on the fly if not provided but reference audio files exist
+        if not embedding_data and reference_audio_files:
+            valid_refs = [f for f in reference_audio_files if os.path.exists(f)]
+            if valid_refs:
+                logger.info(f"Extracting tone color on the fly from {len(valid_refs)} reference audio clips for character '{character_name}'")
+                ext_res = self.extract_tone_color(valid_refs, character_name)
+                embedding_data = ext_res.get("embedding_data")
+
         acoustic_profile = None
         if embedding_data:
             try:
@@ -127,20 +149,19 @@ class OpenVoiceEngine:
             except Exception as e:
                 logger.warning(f"Could not parse embedding_data for synthesis: {e}")
 
-        if HAS_OPENVOICE and self.converter:
+        if HAS_OPENVOICE:
             try:
                 device = "cuda" if torch.cuda.is_available() else "cpu"
                 if language not in self.tts_models:
                     self.tts_models[language] = TTS(language=language, device=device)
 
-                model = self.tts_models[language]
-                speaker_ids = model.hps.data.spk2id
+                tts_engine_model = self.tts_models[language]
+                speaker_ids = tts_engine_model.hps.data.spk2id if hasattr(tts_engine_model, 'hps') else {}
 
                 temp_dir = tempfile.gettempdir()
                 src_path = os.path.join(temp_dir, f"{character_name}_src.wav")
                 out_path = os.path.join(temp_dir, f"{character_name}_out.wav")
 
-                # If a valid recorded guide audio track is provided, use it directly as source speech!
                 bUsedGuideTrack = False
                 if guide_audio_file and os.path.exists(guide_audio_file):
                     src_path = guide_audio_file
@@ -148,9 +169,9 @@ class OpenVoiceEngine:
                     logger.info(f"Using optional recorded guide audio track: {guide_audio_file}")
                 else:
                     spk_id = speaker_ids.get('EN-Default', list(speaker_ids.values())[0]) if speaker_ids else 0
-                    model.tts_to_file(text, spk_id, src_path, speed=speed)
+                    tts_engine_model.tts_to_file(text, spk_id, src_path, speed=speed)
 
-                if embedding_data:
+                if embedding_data and self.converter:
                     emb = json.loads(embedding_data)
                     target_se_list = emb.get("target_se")
                     if target_se_list and isinstance(target_se_list, list):
@@ -190,31 +211,45 @@ class OpenVoiceEngine:
             except Exception as e:
                 logger.error(f"OpenVoice synthesis exception: {e}")
 
-        # System TTS fallback attempt via pyttsx3 or gTTS if installed
+        # System TTS fallback attempt via pyttsx3 if installed (generates 16-bit mono PCM WAV)
         try:
             import pyttsx3
             tts_engine = pyttsx3.init()
             temp_dir = tempfile.gettempdir()
             pyttsx_path = os.path.join(temp_dir, f"{character_name}_pyttsx.wav")
+            tts_engine.setProperty('rate', int(150 * speed))
             tts_engine.save_to_file(text, pyttsx_path)
             tts_engine.runAndWait()
             if os.path.exists(pyttsx_path):
                 with open(pyttsx_path, 'rb') as f:
-                    return f.read()
-        except Exception:
-            pass
+                    wav_data = f.read()
+                    if len(wav_data) >= 44 and wav_data.startswith(b'RIFF'):
+                        return wav_data
+        except Exception as e:
+            logger.debug(f"pyttsx3 fallback exception: {e}")
 
+        # Native platform TTS engines (SAPI on Windows, say on macOS, espeak on Linux)
         try:
-            from gtts import gTTS
-            gtts_obj = gTTS(text=text, lang=language.lower() if language else 'en')
+            import subprocess
             temp_dir = tempfile.gettempdir()
-            gtts_path = os.path.join(temp_dir, f"{character_name}_gtts.mp3")
-            gtts_obj.save(gtts_path)
-            if os.path.exists(gtts_path):
-                with open(gtts_path, 'rb') as f:
-                    return f.read()
-        except Exception:
-            pass
+            plat_path = os.path.join(temp_dir, f"{character_name}_plat.wav")
+            if sys.platform == "darwin":
+                aiff_path = os.path.join(temp_dir, f"{character_name}_plat.aiff")
+                subprocess.run(["say", "-o", aiff_path, text], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16", aiff_path, plat_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            elif sys.platform == "win32":
+                ps_cmd = f"Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.SetOutputToWaveFile('{plat_path}'); $s.Speak('{text}')"
+                subprocess.run(["powershell", "-Command", ps_cmd], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.run(["espeak-ng", "-w", plat_path, text], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            if os.path.exists(plat_path):
+                with open(plat_path, 'rb') as f:
+                    wav_data = f.read()
+                    if len(wav_data) >= 44 and wav_data.startswith(b'RIFF'):
+                        return wav_data
+        except Exception as e:
+            logger.debug(f"Platform TTS fallback exception: {e}")
 
         # Voice cloning synthesis generator with pitch/harmonic reference modeling
         pitch_freq = 170.0
@@ -459,6 +494,8 @@ if HAS_FASTAPI:
     @app.post("/extract")
     def api_extract(req: ExtractRequest):
         res = engine.extract_tone_color(req.reference_audio_files, req.character_name)
+        if res.get("status") == "error":
+            return JSONResponse(status_code=400, content=res)
         return JSONResponse(content=res)
 
     @app.post("/synthesize")
@@ -472,6 +509,7 @@ if HAS_FASTAPI:
             language=req.language or "EN",
             speed=req.speed or 1.0,
             embedding_data=req.embedding_data,
+            reference_audio_files=req.reference_audio_files,
             guide_audio_file=req.guide_audio_file,
             emotion=req.emotion
         )
