@@ -10,7 +10,6 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/Paths.h"
-#include "Misc/Base64.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/FileManager.h"
 
@@ -86,43 +85,15 @@ FReply FPlayVoiceSettingsCustomization::OnCheckRequirementsClicked()
 		return FReply::Handled();
 	}
 
-	// Escape backslashes for python string literal on Windows
-	FString EscapedReqFile = ResolvedReqFile.Replace(TEXT("\\"), TEXT("/"));
+	FString CheckScriptPath = FPlayVoicePluginEditorModule::ResolveResourcePath(TEXT("Resources/OpenVoiceService/check_requirements.py"));
+	if (!IFileManager::Get().FileExists(*CheckScriptPath))
+	{
+		FString ErrorMsg = FString::Printf(TEXT("Requirements check script not found at '%s'."), *CheckScriptPath);
+		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(ErrorMsg));
+		return FReply::Handled();
+	}
 
-	FString PyScriptCode = FString::Printf(
-		TEXT("import sys, base64\n")
-		TEXT("try:\n")
-		TEXT("    import importlib.metadata as meta\n")
-		TEXT("except ImportError:\n")
-		TEXT("    import importlib_metadata as meta\n")
-		TEXT("with open('%s', 'r', encoding='utf-8') as f:\n")
-		TEXT("    lines = [l.strip() for l in f if l.strip() and not l.strip().startswith('#')]\n")
-		TEXT("installed = set()\n")
-		TEXT("for dist in meta.distributions():\n")
-		TEXT("    if dist.metadata:\n")
-		TEXT("        name = dist.metadata.get('Name')\n")
-		TEXT("        if name:\n")
-		TEXT("            installed.add(name.lower().replace('-', '_'))\n")
-		TEXT("missing = []\n")
-		TEXT("for req in lines:\n")
-		TEXT("    raw_pkg = req.split(';')[0].split('>=')[0].split('<=')[0].split('==')[0].split('~=')[0].split('!=')[0].strip().lower()\n")
-		TEXT("    norm_pkg = raw_pkg.replace('-', '_')\n")
-		TEXT("    if norm_pkg and norm_pkg not in installed:\n")
-		TEXT("        try:\n")
-		TEXT("            __import__(norm_pkg)\n")
-		TEXT("        except Exception:\n")
-		TEXT("            missing.append(raw_pkg)\n")
-		TEXT("if missing:\n")
-		TEXT("    print('Missing packages:', ', '.join(missing))\n")
-		TEXT("    sys.exit(1)\n")
-		TEXT("else:\n")
-		TEXT("    print('All requirements satisfied')\n")
-		TEXT("    sys.exit(0)\n"),
-		*EscapedReqFile
-	);
-
-	FString EncodedScript = FBase64::Encode(PyScriptCode);
-	FString Args = FString::Printf(TEXT("-c \"import base64; exec(base64.b64decode('%s').decode('utf-8'))\""), *EncodedScript);
+	FString Args = FString::Printf(TEXT("\"%s\" \"%s\""), *CheckScriptPath, *ResolvedReqFile);
 
 	int32 ReturnCode = -1;
 	FString StdOut;
