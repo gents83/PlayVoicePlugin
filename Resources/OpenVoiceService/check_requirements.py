@@ -13,6 +13,12 @@ try:
 except ImportError:
     import importlib_metadata as meta
 
+# Map pip package names to possible module import names or distribution aliases
+PACKAGE_IMPORT_MAP = {
+    "melo_tts": ["melo", "melo_tts", "melotts"],
+    "melo-tts": ["melo", "melo_tts", "melotts"],
+}
+
 
 def check_requirements(requirements_file: str) -> bool:
     if not os.path.exists(requirements_file):
@@ -31,13 +37,39 @@ def check_requirements(requirements_file: str) -> bool:
 
     missing = []
     for req in lines:
+        # If line contains an optional extra marker (e.g. '; extra == ...'), ignore for base requirements check
+        if ';' in req:
+            condition_part = req.split(';', 1)[1].strip()
+            if 'extra ==' in condition_part or 'extra!=' in condition_part or 'extra' in condition_part:
+                continue
+
         raw_pkg = req.split(';')[0].split('>=')[0].split('<=')[0].split('==')[0].split('~=')[0].split('!=')[0].strip().lower()
         norm_pkg = raw_pkg.replace('-', '_')
-        if norm_pkg and norm_pkg not in installed:
+
+        if not norm_pkg:
+            continue
+
+        # Check distribution names
+        if norm_pkg in installed:
+            continue
+
+        # Check alternative distribution names & import module names
+        candidates = PACKAGE_IMPORT_MAP.get(norm_pkg, [norm_pkg, raw_pkg])
+        bInstalled = False
+        for candidate in candidates:
+            cand_norm = candidate.replace('-', '_')
+            if cand_norm in installed:
+                bInstalled = True
+                break
             try:
-                __import__(norm_pkg)
+                __import__(candidate)
+                bInstalled = True
+                break
             except Exception:
-                missing.append(raw_pkg)
+                pass
+
+        if not bInstalled:
+            missing.append(raw_pkg)
 
     if missing:
         print("Missing packages:", ", ".join(missing))
