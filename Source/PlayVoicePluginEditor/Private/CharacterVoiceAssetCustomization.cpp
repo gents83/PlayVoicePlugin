@@ -824,17 +824,17 @@ FReply FCharacterVoiceAssetCustomization::OnCleanPrecachedSoundWavesClicked()
 	int32 RemovedCount = Asset->PrecachedSoundWaves.Num();
 	UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnCleanPrecachedSoundWavesClicked: Initiating precached sound wave cleanup for asset '%s' (%d entries)"), *Asset->GetName(), RemovedCount);
 
-	TArray<UPackage*> PackagesToDelete;
+	TArray<USoundWave*> SoundWavesToDelete;
 	TArray<FString> FilePathsToDelete;
 
 	for (auto& KVP : Asset->PrecachedSoundWaves)
 	{
 		if (USoundWave* SoundWave = KVP.Value.Get())
 		{
+			SoundWavesToDelete.AddUnique(SoundWave);
 			UPackage* Pkg = SoundWave->GetOutermost();
 			if (Pkg && Pkg != GetTransientPackage())
 			{
-				PackagesToDelete.AddUnique(Pkg);
 				FString PkgFilename;
 				if (FPackageName::DoesPackageExist(Pkg->GetName(), &PkgFilename))
 				{
@@ -849,12 +849,11 @@ FReply FCharacterVoiceAssetCustomization::OnCleanPrecachedSoundWavesClicked()
 
 	if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
 	{
-		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
-		for (UPackage* Pkg : PackagesToDelete)
+		for (USoundWave* SoundWave : SoundWavesToDelete)
 		{
-			if (Pkg)
+			if (SoundWave)
 			{
-				AssetRegistryModule.Get().RemovePackageData(Pkg->GetName());
+				FAssetRegistryModule::AssetDeleted(SoundWave);
 			}
 		}
 	}
