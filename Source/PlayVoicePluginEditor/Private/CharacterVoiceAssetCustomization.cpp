@@ -95,6 +95,21 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 		.ToolTipText(FText::FromString("Scans all Blueprint nodes for dialogue lines and pre-renders sound wave assets across all configured languages to eliminate in-game latency."))
 		.OnClicked(this, &FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked)
 	];
+
+	OpenVoiceCategory.AddCustomRow(FText::FromString("Clean Precached Sound Waves"))
+	.NameContent()
+	[
+		SNew(STextBlock)
+		.Text(FText::FromString("Clean Precached Assets"))
+		.Font(IDetailLayoutBuilder::GetDetailFont())
+	]
+	.ValueContent()
+	[
+		SNew(SButton)
+		.Text(FText::FromString("Clean Precached Sound Waves"))
+		.ToolTipText(FText::FromString("Clears precached voice lines map from UCharacterVoiceAsset and deletes generated USoundWave package files from disk and project."))
+		.OnClicked(this, &FCharacterVoiceAssetCustomization::OnCleanPrecachedSoundWavesClicked)
+	];
 }
 
 static void EnsureServiceReadyAndExecute(TFunction<void(bool bReady)> OnComplete, int32 MaxAttempts = 30)
@@ -184,9 +199,95 @@ static void EnsureServiceReadyAndExecute(TFunction<void(bool bReady)> OnComplete
 	InitialHealthReq->ProcessRequest();
 }
 
+static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
+{
+	if (!Pin || Depth > 5)
+	{
+		return FString();
+	}
+
+	FString DirectDefault = Pin->GetDefaultAsString();
+	DirectDefault.TrimStartAndEndInline();
+	if (DirectDefault.StartsWith(TEXT("\"")) && DirectDefault.EndsWith(TEXT("\"")) && DirectDefault.Len() >= 2)
+	{
+		DirectDefault = DirectDefault.Mid(1, DirectDefault.Len() - 2);
+	}
+	if (!DirectDefault.IsEmpty())
+	{
+		return DirectDefault;
+	}
+
+	if (Pin->LinkedTo.Num() > 0)
+	{
+		for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
+		{
+			if (!LinkedPin)
+			{
+				continue;
+			}
+
+			FString LinkedDefault = LinkedPin->GetDefaultAsString();
+			LinkedDefault.TrimStartAndEndInline();
+			if (LinkedDefault.StartsWith(TEXT("\"")) && LinkedDefault.EndsWith(TEXT("\"")) && LinkedDefault.Len() >= 2)
+			{
+				LinkedDefault = LinkedDefault.Mid(1, LinkedDefault.Len() - 2);
+			}
+			if (!LinkedDefault.IsEmpty())
+			{
+				return LinkedDefault;
+			}
+
+			const UEdGraphNode* OwningNode = LinkedPin->GetOwningNode();
+			if (OwningNode)
+			{
+				for (const UEdGraphPin* NodePin : OwningNode->Pins)
+				{
+					if (NodePin && NodePin->Direction == EGPD_Input && NodePin != LinkedPin)
+					{
+						FString InputVal = ExtractTextFromPin(NodePin, Depth + 1);
+						if (!InputVal.IsEmpty())
+						{
+							return InputVal;
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return FString();
+}
+
 TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProjectBlueprints(const UCharacterVoiceAsset* TargetAsset)
 {
 	TArray<FString> DiscoveredLines;
+
+	if (TargetAsset)
+	{
+		for (const FVoiceLineGuideTrack& GuideTrack : TargetAsset->GuideTracks)
+		{
+			FString CleanLine = GuideTrack.LineText.TrimStartAndEnd();
+			if (!CleanLine.IsEmpty())
+			{
+				DiscoveredLines.AddUnique(CleanLine);
+			}
+		}
+
+		for (const auto& KVP : TargetAsset->PrecachedSoundWaves)
+		{
+			FString Key = KVP.Key;
+			int32 ColonIdx = -1;
+			if (Key.FindChar(TEXT(':'), ColonIdx) && ColonIdx >= 0 && ColonIdx < Key.Len() - 1)
+			{
+				Key = Key.Mid(ColonIdx + 1);
+			}
+			Key.TrimStartAndEndInline();
+			if (!Key.IsEmpty())
+			{
+				DiscoveredLines.AddUnique(Key);
+			}
+		}
+	}
 	if (!FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
 	{
 		FModuleManager::Get().LoadModule("AssetRegistry");
@@ -253,15 +354,10 @@ TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProject
 
 					if (bMatchesAsset && TextPin)
 					{
-						FString TextVal = TextPin->GetDefaultAsString();
-						TextVal.TrimStartAndEndInline();
-						if (TextVal.StartsWith(TEXT("\"")) && TextVal.EndsWith(TEXT("\"")) && TextVal.Len() >= 2)
+						FString ExtractedText = ExtractTextFromPin(TextPin);
+						if (!ExtractedText.IsEmpty())
 						{
-							TextVal = TextVal.Mid(1, TextVal.Len() - 2);
-						}
-						if (!TextVal.IsEmpty())
-						{
-							DiscoveredLines.AddUnique(TextVal);
+							DiscoveredLines.AddUnique(ExtractedText);
 						}
 					}
 				}
@@ -276,20 +372,25 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 {
 	if (!TargetVoiceAsset.IsValid())
 	{
+		UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnGenerateAndProcessAllClicked: Target voice asset is invalid."));
 		return FReply::Handled();
 	}
 
+	UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateAndProcessAllClicked: Initiating non-blocking model pipeline for asset '%s'"), *TargetVoiceAsset->GetName());
 	TWeakObjectPtr<UCharacterVoiceAsset> WeakTargetAsset = TargetVoiceAsset;
+
 	EnsureServiceReadyAndExecute([WeakTargetAsset](bool bServiceReady)
 	{
 		if (!bServiceReady)
 		{
+			UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateAndProcessAllClicked: Service health check failed. Could not connect to OpenVoice REST backend."));
 			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Failed to connect to OpenVoice REST Service. Please verify Python executable and service setup in Project Settings."));
 			return;
 		}
 
 		if (!WeakTargetAsset.IsValid())
 		{
+			UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnGenerateAndProcessAllClicked: Target voice asset is invalid or garbage collected."));
 			return;
 		}
 
@@ -300,6 +401,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 		}
 
 		TArray<FString> DiscoveredBlueprintLines = RetrieveVoiceLinesFromProjectBlueprints(Asset);
+		UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateAndProcessAllClicked: Discovered %d dialogue lines for pre-processing."), DiscoveredBlueprintLines.Num());
 
 		const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
 		FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
@@ -318,6 +420,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 
 		if (TotalLangsProcessed == 0)
 		{
+			UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnGenerateAndProcessAllClicked: No reference audio files or folders configured."));
 			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Please specify Reference Audio Files or Reference Audio Folder for at least one language before generating models."));
 			return;
 		}
@@ -353,11 +456,13 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 					{
 						NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
 						NotificationItem->SetText(FText::Format(FText::FromString("PlayVoice: Finished with {0} errors."), FText::AsNumber(*FailedTasks)));
+						UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnGenerateAndProcessAllClicked: Completed background pipeline with %d errors."), *FailedTasks);
 					}
 					else
 					{
 						NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
 						NotificationItem->SetText(FText::FromString("PlayVoice: Full pipeline processing complete!"));
+						UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateAndProcessAllClicked: Successfully completed full model extraction & line pre-processing pipeline!"));
 					}
 					NotificationItem->SetExpireDuration(4.0f);
 					NotificationItem->ExpireAndFadeout();
@@ -370,7 +475,6 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 			FCharacterLanguageData& LangData = *LangDataPtr;
 			TArray<FString> RefAudioFiles = Asset->GetResolvedReferenceAudioFilesForLanguage(LangData.LanguageCode);
 
-			// Step 1: Extract model embeddings for this language
 			TSharedPtr<FJsonObject> ExtractObj = MakeShared<FJsonObject>();
 			ExtractObj->SetStringField(TEXT("character_name"), Asset->CharacterName.ToString());
 			ExtractObj->SetStringField(TEXT("language"), LangData.LanguageCode);
@@ -401,6 +505,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 				if (!bSuccess)
 				{
 					(*FailedTasks)++;
+					UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateAndProcessAllClicked: Model extraction failed for language '%s'."), *CurrentLangCode);
 				}
 
 				if (bSuccess && WeakTargetAsset.IsValid())
@@ -409,13 +514,24 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 					TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Res->GetContentAsString());
 					if (FJsonSerializer::Deserialize(Reader, ResObj) && ResObj.IsValid())
 					{
-						FCharacterLanguageData* TargetLangData = WeakTargetAsset->FindLanguageData(CurrentLangCode);
-						if (TargetLangData)
+								FString Status = ResObj->GetStringField(TEXT("status"));
+								if (Status.Equals(TEXT("success"), ESearchCase::IgnoreCase))
 						{
-							TargetLangData->ToneColorEmbeddingData = ResObj->GetStringField(TEXT("embedding_data"));
-							TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
-							WeakTargetAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
-							WeakTargetAsset->MarkPackageDirty();
+									FCharacterLanguageData* TargetLangData = WeakTargetAsset->FindLanguageData(CurrentLangCode);
+									if (TargetLangData)
+									{
+										TargetLangData->ToneColorEmbeddingData = ResObj->GetStringField(TEXT("embedding_data"));
+										TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
+										WeakTargetAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
+										WeakTargetAsset->MarkPackageDirty();
+										UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateAndProcessAllClicked: Model extraction succeeded for language '%s'."), *CurrentLangCode);
+									}
+								}
+								else
+								{
+									(*FailedTasks)++;
+									FString ErrMsg = ResObj->GetStringField(TEXT("message"));
+									UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateAndProcessAllClicked: Model extraction error for language '%s': %s"), *CurrentLangCode, *ErrMsg);
 						}
 					}
 				}
@@ -436,8 +552,9 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 
 				for (const FString& LineText : DiscoveredBlueprintLines)
 				{
-					if (VoiceAsset->HasPrecachedVoiceLine(LineText, CurrentLangCode))
+					if (!VoiceAsset->bRegenerateExistingVoiceLines && VoiceAsset->HasPrecachedVoiceLine(LineText, CurrentLangCode))
 					{
+						UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateAndProcessAllClicked: Skipping line '%s' (already precached)."), *LineText);
 						StepTaskProgress();
 						continue;
 					}
@@ -448,6 +565,20 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 					SynthObj->SetStringField(TEXT("language"), CurrentLangCode);
 					SynthObj->SetNumberField(TEXT("speed"), CurrentSpeed);
 					SynthObj->SetStringField(TEXT("embedding_data"), EmbeddingData);
+
+					TArray<FString> RefAudioFiles = VoiceAsset->GetResolvedReferenceAudioFilesForLanguage(CurrentLangCode);
+					TArray<TSharedPtr<FJsonValue>> RefPathValues;
+					for (const FString& RefPath : RefAudioFiles)
+					{
+						RefPathValues.Add(MakeShared<FJsonValueString>(RefPath));
+					}
+					SynthObj->SetArrayField(TEXT("reference_audio_files"), RefPathValues);
+
+					FString GuideFile = VoiceAsset->GetResolvedGuideAudioFileForLine(LineText);
+					if (!GuideFile.IsEmpty())
+					{
+						SynthObj->SetStringField(TEXT("guide_audio_file"), GuideFile);
+					}
 
 					FString SynthPayload;
 					TSharedRef<TJsonWriter<>> SynthWriter = TJsonWriterFactory<>::Create(&SynthPayload);
@@ -465,6 +596,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 						if (!bSynthOk)
 						{
 							(*FailedTasks)++;
+							UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateAndProcessAllClicked: Failed to synthesize line '%s' for language '%s'."), *LineText, *CurrentLangCode);
 						}
 
 						if (bSynthOk && WeakTargetAsset.IsValid())
@@ -485,6 +617,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 								{
 									FAssetRegistryModule::AssetCreated(SoundWave);
 								}
+								UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateAndProcessAllClicked: Successfully pre-rendered sound wave asset '%s'."), *LineSanitized);
 							}
 						}
 
@@ -506,20 +639,25 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 {
 	if (!TargetVoiceAsset.IsValid())
 	{
+		UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnGenerateModelClicked: Target voice asset is invalid."));
 		return FReply::Handled();
 	}
 
+	UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateModelClicked: Initiating non-blocking model extraction for asset '%s'"), *TargetVoiceAsset->GetName());
 	TWeakObjectPtr<UCharacterVoiceAsset> WeakTargetAsset = TargetVoiceAsset;
+
 	EnsureServiceReadyAndExecute([WeakTargetAsset](bool bServiceReady)
 	{
 		if (!bServiceReady)
 		{
+			UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateModelClicked: Service health check failed. Could not connect to OpenVoice REST backend."));
 			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Failed to connect to OpenVoice REST Service. Please verify Python executable and service setup in Project Settings."));
 			return;
 		}
 
 		if (!WeakTargetAsset.IsValid())
 		{
+			UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnGenerateModelClicked: Target voice asset is invalid or garbage collected."));
 			return;
 		}
 
@@ -546,6 +684,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 
 		if (ProcessedLangs == 0)
 		{
+			UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnGenerateModelClicked: No reference audio files or folders specified."));
 			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Please specify Reference Audio Files or Reference Audio Folder for at least one language."));
 			return;
 		}
@@ -581,11 +720,13 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 					{
 						NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
 						NotificationItem->SetText(FText::Format(FText::FromString("PlayVoice: Model extraction finished with {0} errors."), FText::AsNumber(*FailedTasks)));
+						UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnGenerateModelClicked: Model extraction completed with %d errors."), *FailedTasks);
 					}
 					else
 					{
 						NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
 						NotificationItem->SetText(FText::FromString("PlayVoice: OpenVoice model extraction complete!"));
+						UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateModelClicked: OpenVoice model extraction completed successfully for all languages."));
 					}
 					NotificationItem->SetExpireDuration(4.0f);
 					NotificationItem->ExpireAndFadeout();
@@ -627,6 +768,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 				if (!bSuccess)
 				{
 					(*FailedTasks)++;
+					UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateModelClicked: Extraction failed for language '%s'."), *CurrentLangCode);
 				}
 
 				if (bSuccess)
@@ -635,17 +777,28 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 					TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Response->GetContentAsString());
 					if (FJsonSerializer::Deserialize(Reader, ResponseObj) && ResponseObj.IsValid())
 					{
-						if (WeakTargetAsset.IsValid())
+								FString Status = ResponseObj->GetStringField(TEXT("status"));
+								if (Status.Equals(TEXT("success"), ESearchCase::IgnoreCase))
 						{
-							FCharacterLanguageData* TargetLangData = WeakTargetAsset->FindLanguageData(CurrentLangCode);
-							if (TargetLangData)
+									if (WeakTargetAsset.IsValid())
 							{
-								TargetLangData->ToneColorEmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
-								TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
-								WeakTargetAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
-								WeakTargetAsset->MarkPackageDirty();
+										FCharacterLanguageData* TargetLangData = WeakTargetAsset->FindLanguageData(CurrentLangCode);
+										if (TargetLangData)
+										{
+											TargetLangData->ToneColorEmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
+											TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
+											WeakTargetAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
+											WeakTargetAsset->MarkPackageDirty();
+											UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateModelClicked: Model saved for language '%s'."), *CurrentLangCode);
+										}
 							}
 						}
+								else
+								{
+									(*FailedTasks)++;
+									FString ErrMsg = ResponseObj->GetStringField(TEXT("message"));
+									UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateModelClicked: Extraction error for language '%s': %s"), *CurrentLangCode, *ErrMsg);
+								}
 					}
 				}
 
@@ -659,32 +812,102 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 	return FReply::Handled();
 }
 
+FReply FCharacterVoiceAssetCustomization::OnCleanPrecachedSoundWavesClicked()
+{
+	if (!TargetVoiceAsset.IsValid())
+	{
+		UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnCleanPrecachedSoundWavesClicked: Target voice asset is invalid."));
+		return FReply::Handled();
+	}
+
+	UCharacterVoiceAsset* Asset = TargetVoiceAsset.Get();
+	int32 RemovedCount = Asset->PrecachedSoundWaves.Num();
+	UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnCleanPrecachedSoundWavesClicked: Initiating precached sound wave cleanup for asset '%s' (%d entries)"), *Asset->GetName(), RemovedCount);
+
+	TArray<USoundWave*> SoundWavesToDelete;
+	TArray<FString> FilePathsToDelete;
+
+	for (auto& KVP : Asset->PrecachedSoundWaves)
+	{
+		if (USoundWave* SoundWave = KVP.Value.Get())
+		{
+			SoundWavesToDelete.AddUnique(SoundWave);
+			UPackage* Pkg = SoundWave->GetOutermost();
+			if (Pkg && Pkg != GetTransientPackage())
+			{
+				FString PkgFilename;
+				if (FPackageName::DoesPackageExist(Pkg->GetName(), &PkgFilename))
+				{
+					FilePathsToDelete.AddUnique(PkgFilename);
+				}
+			}
+		}
+	}
+
+	Asset->ClearPrecachedVoiceLines();
+	Asset->MarkPackageDirty();
+
+	if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+	{
+		for (USoundWave* SoundWave : SoundWavesToDelete)
+		{
+			if (SoundWave)
+			{
+				FAssetRegistryModule::AssetDeleted(SoundWave);
+			}
+		}
+	}
+
+	for (FString& FilePath : FilePathsToDelete)
+	{
+		if (IFileManager::Get().FileExists(*FilePath))
+		{
+			bool bDeleted = IFileManager::Get().Delete(*FilePath);
+			UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnCleanPrecachedSoundWavesClicked: Deleted package file '%s' (Success: %d)"), *FilePath, bDeleted);
+		}
+	}
+
+	FNotificationInfo NotificationInfo(FText::Format(FText::FromString("PlayVoice: Cleaned {0} precached sound wave assets."), FText::AsNumber(RemovedCount)));
+	NotificationInfo.ExpireDuration = 4.0f;
+	FSlateNotificationManager::Get().AddNotification(NotificationInfo);
+	UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnCleanPrecachedSoundWavesClicked: Cleaned %d precached sound wave entries."), RemovedCount);
+
+	return FReply::Handled();
+}
+
 FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 {
 	if (!TargetVoiceAsset.IsValid())
 	{
+		UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnPrecacheLinesClicked: Target voice asset is invalid."));
 		return FReply::Handled();
 	}
 
+	UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnPrecacheLinesClicked: Initiating non-blocking line pre-processing for asset '%s'"), *TargetVoiceAsset->GetName());
 	TWeakObjectPtr<UCharacterVoiceAsset> WeakTargetAsset = TargetVoiceAsset;
+
 	EnsureServiceReadyAndExecute([WeakTargetAsset](bool bServiceReady)
 	{
 		if (!bServiceReady)
 		{
+			UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnPrecacheLinesClicked: Service health check failed. Could not connect to OpenVoice REST backend."));
 			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Failed to connect to OpenVoice REST Service. Please verify Python executable and service setup in Project Settings."));
 			return;
 		}
 
 		if (!WeakTargetAsset.IsValid())
 		{
+			UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnPrecacheLinesClicked: Target voice asset is invalid or garbage collected."));
 			return;
 		}
 
 		UCharacterVoiceAsset* Asset = WeakTargetAsset.Get();
 		TArray<FString> DiscoveredBlueprintLines = RetrieveVoiceLinesFromProjectBlueprints(Asset);
+		UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnPrecacheLinesClicked: Discovered %d dialogue lines in Blueprint graph nodes."), DiscoveredBlueprintLines.Num());
 
 		if (DiscoveredBlueprintLines.Num() == 0)
 		{
+			UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnPrecacheLinesClicked: No dialogue lines found in Blueprint graph nodes referencing this asset."));
 			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("No dialogue lines found in Blueprint graph nodes referencing this asset."));
 			return;
 		}
@@ -726,11 +949,13 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 					{
 						NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
 						NotificationItem->SetText(FText::Format(FText::FromString("PlayVoice: Voice line pre-processing finished with {0} errors."), FText::AsNumber(*FailedTasks)));
+						UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnPrecacheLinesClicked: Completed line pre-processing with %d errors."), *FailedTasks);
 					}
 					else
 					{
 						NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
 						NotificationItem->SetText(FText::FromString("PlayVoice: Voice line pre-processing complete!"));
+						UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnPrecacheLinesClicked: Pre-processed all dialogue lines successfully!"));
 					}
 					NotificationItem->SetExpireDuration(4.0f);
 					NotificationItem->ExpireAndFadeout();
@@ -746,8 +971,9 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 
 			for (const FString& LineText : DiscoveredBlueprintLines)
 			{
-				if (Asset->HasPrecachedVoiceLine(LineText, CurrentLangCode))
+				if (!Asset->bRegenerateExistingVoiceLines && Asset->HasPrecachedVoiceLine(LineText, CurrentLangCode))
 				{
+					UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnPrecacheLinesClicked: Skipping line '%s' (already precached)."), *LineText);
 					StepTaskProgress();
 					continue;
 				}
@@ -758,6 +984,20 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 				JsonObj->SetStringField(TEXT("language"), CurrentLangCode);
 				JsonObj->SetNumberField(TEXT("speed"), CurrentSpeed);
 				JsonObj->SetStringField(TEXT("embedding_data"), EmbeddingData);
+
+				TArray<FString> RefAudioFiles = Asset->GetResolvedReferenceAudioFilesForLanguage(CurrentLangCode);
+				TArray<TSharedPtr<FJsonValue>> RefPathValues;
+				for (const FString& RefPath : RefAudioFiles)
+				{
+					RefPathValues.Add(MakeShared<FJsonValueString>(RefPath));
+				}
+				JsonObj->SetArrayField(TEXT("reference_audio_files"), RefPathValues);
+
+				FString GuideFile = Asset->GetResolvedGuideAudioFileForLine(LineText);
+				if (!GuideFile.IsEmpty())
+				{
+					JsonObj->SetStringField(TEXT("guide_audio_file"), GuideFile);
+				}
 
 				FString PayloadStr;
 				TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&PayloadStr);
@@ -775,6 +1015,7 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 					if (!bSynthOk)
 					{
 						(*FailedTasks)++;
+						UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnPrecacheLinesClicked: Failed to synthesize line '%s' for language '%s'."), *LineText, *CurrentLangCode);
 					}
 
 					if (bSynthOk && WeakTargetAsset.IsValid())
@@ -795,6 +1036,7 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 							{
 								FAssetRegistryModule::AssetCreated(SoundWave);
 							}
+							UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnPrecacheLinesClicked: Pre-rendered sound wave asset '%s' successfully."), *LineSanitized);
 						}
 					}
 

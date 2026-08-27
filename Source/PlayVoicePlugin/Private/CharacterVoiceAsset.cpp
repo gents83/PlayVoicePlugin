@@ -115,6 +115,11 @@ FString UCharacterVoiceAsset::MakeCacheKey(const FString& TextLine, const FStrin
 	return FString::Printf(TEXT("%s:%s"), *CleanLang, *CleanText);
 }
 
+void UCharacterVoiceAsset::ClearPrecachedVoiceLines()
+{
+	PrecachedSoundWaves.Empty();
+}
+
 void UCharacterVoiceAsset::CacheVoiceLine(const FString& TextLine, USoundWave* InSoundWave, const FString& LanguageCode)
 {
 	if (!TextLine.IsEmpty() && InSoundWave)
@@ -337,6 +342,35 @@ TArray<FString> UCharacterVoiceAsset::ResolveAudioFilesFromFolderAndFiles(const 
 	}
 
 	return ResolvedFiles;
+}
+
+FString UCharacterVoiceAsset::GetResolvedGuideAudioFileForLine(const FString& TextLine) const
+{
+	FString CleanText = TextLine.TrimStartAndEnd().ToLower();
+	if (CleanText.IsEmpty())
+	{
+		return FString();
+	}
+
+	for (const FVoiceLineGuideTrack& GuideTrack : GuideTracks)
+	{
+		if (GuideTrack.LineText.TrimStartAndEnd().ToLower().Equals(CleanText))
+		{
+			FString PathStr = GuideTrack.GuideAudioFile.FilePath.TrimStartAndEnd();
+			if (!PathStr.IsEmpty())
+			{
+				if (FPaths::IsRelative(PathStr))
+				{
+					PathStr = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), PathStr);
+				}
+				if (IFileManager::Get().FileExists(*PathStr))
+				{
+					return PathStr;
+				}
+			}
+		}
+	}
+	return FString();
 }
 
 TArray<FString> UCharacterVoiceAsset::GetResolvedReferenceAudioFilesForLanguage(const FString& LanguageCode) const
