@@ -94,7 +94,7 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 	];
 }
 
-static void EnsureServiceReadyAndExecute(TFunction<void(bool bReady)> OnComplete, int32 MaxAttempts = 6)
+static void EnsureServiceReadyAndExecute(TFunction<void(bool bReady)> OnComplete, int32 MaxAttempts = 15)
 {
 	FProcHandle ProcHandle;
 	FPlayVoicePluginEditorModule::StartOpenVoiceService(&ProcHandle);

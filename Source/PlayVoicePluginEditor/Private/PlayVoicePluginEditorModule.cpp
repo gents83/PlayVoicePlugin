@@ -11,6 +11,7 @@
 #include "PlayVoiceSettingsCustomization.h"
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
+#include "Interfaces/IPluginManager.h"
 
 #define LOCTEXT_NAMESPACE "FPlayVoicePluginEditorModule"
 
@@ -43,6 +44,51 @@ void FPlayVoicePluginEditorModule::ShutdownModule()
 	}
 }
 
+FString FPlayVoicePluginEditorModule::ResolveResourcePath(const FString& RelativeOrAbsolutePath)
+{
+	if (RelativeOrAbsolutePath.IsEmpty())
+	{
+		return FString();
+	}
+
+	if (!FPaths::IsRelative(RelativeOrAbsolutePath) && IFileManager::Get().FileExists(*RelativeOrAbsolutePath))
+	{
+		return FPaths::ConvertRelativePathToFull(RelativeOrAbsolutePath);
+	}
+
+	// 1. Check Plugin directory
+	TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("PlayVoicePlugin"));
+	if (Plugin.IsValid())
+	{
+		FString PluginPath = FPaths::Combine(Plugin->GetBaseDir(), RelativeOrAbsolutePath);
+		if (IFileManager::Get().FileExists(*PluginPath))
+		{
+			return FPaths::ConvertRelativePathToFull(PluginPath);
+		}
+	}
+
+	// 2. Check Project directory
+	FString ProjectPath = FPaths::Combine(FPaths::ProjectDir(), RelativeOrAbsolutePath);
+	if (IFileManager::Get().FileExists(*ProjectPath))
+	{
+		return FPaths::ConvertRelativePathToFull(ProjectPath);
+	}
+
+	// 3. Check Engine directory
+	FString EnginePath = FPaths::Combine(FPaths::EngineDir(), RelativeOrAbsolutePath);
+	if (IFileManager::Get().FileExists(*EnginePath))
+	{
+		return FPaths::ConvertRelativePathToFull(EnginePath);
+	}
+
+	// Fallback to Plugin directory if plugin found, otherwise Project directory
+	if (Plugin.IsValid())
+	{
+		return FPaths::ConvertRelativePathToFull(FPaths::Combine(Plugin->GetBaseDir(), RelativeOrAbsolutePath));
+	}
+	return FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), RelativeOrAbsolutePath);
+}
+
 static FProcHandle StaticServiceHandle;
 
 bool FPlayVoicePluginEditorModule::StartOpenVoiceService(FProcHandle* OutProcHandle)
@@ -65,11 +111,7 @@ bool FPlayVoicePluginEditorModule::StartOpenVoiceService(FProcHandle* OutProcHan
 		ScriptPath = TEXT("Resources/OpenVoiceService/openvoice_service.py");
 	}
 
-	FString ResolvedScriptPath = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), ScriptPath);
-	if (!IFileManager::Get().FileExists(*ResolvedScriptPath))
-	{
-		ResolvedScriptPath = FPaths::ConvertRelativePathToFull(FPaths::EngineDir(), ScriptPath);
-	}
+	FString ResolvedScriptPath = ResolveResourcePath(ScriptPath);
 
 	FString Host = TEXT("127.0.0.1");
 	int32 Port = 1983;
