@@ -187,6 +187,32 @@ class OpenVoiceEngine:
             except Exception as e:
                 logger.error(f"OpenVoice synthesis exception: {e}")
 
+        # System TTS fallback attempt via pyttsx3 or gTTS if installed
+        try:
+            import pyttsx3
+            tts_engine = pyttsx3.init()
+            temp_dir = tempfile.gettempdir()
+            pyttsx_path = os.path.join(temp_dir, f"{character_name}_pyttsx.wav")
+            tts_engine.save_to_file(text, pyttsx_path)
+            tts_engine.runAndWait()
+            if os.path.exists(pyttsx_path):
+                with open(pyttsx_path, 'rb') as f:
+                    return f.read()
+        except Exception:
+            pass
+
+        try:
+            from gtts import gTTS
+            gtts_obj = gTTS(text=text, lang=language.lower() if language else 'en')
+            temp_dir = tempfile.gettempdir()
+            gtts_path = os.path.join(temp_dir, f"{character_name}_gtts.mp3")
+            gtts_obj.save(gtts_path)
+            if os.path.exists(gtts_path):
+                with open(gtts_path, 'rb') as f:
+                    return f.read()
+        except Exception:
+            pass
+
         # Voice cloning synthesis generator with pitch/harmonic reference modeling
         pitch_freq = 170.0
         if acoustic_profile and acoustic_profile.get("pitch_mean"):

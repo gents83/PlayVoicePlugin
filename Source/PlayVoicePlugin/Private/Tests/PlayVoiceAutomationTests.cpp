@@ -49,6 +49,13 @@ bool FCharacterVoiceAssetCachingTest::RunTest(const FString& Parameters)
 	// AutoLink test
 	VoiceAsset->AutoLinkPrecachedSoundWaves();
 
+	// Test bRegenerateExistingVoiceLines default
+	TestTrue(TEXT("bRegenerateExistingVoiceLines should default to true"), VoiceAsset->bRegenerateExistingVoiceLines);
+
+	// Test ClearPrecachedVoiceLines
+	VoiceAsset->ClearPrecachedVoiceLines();
+	TestFalse(TEXT("Voice line should no longer be cached after clearing"), VoiceAsset->HasPrecachedVoiceLine(TestLine, TEXT("EN")));
+
 	// Disk folder helper test
 	FString AssetDiskFolder = VoiceAsset->GetAssetDiskFolder();
 	TestFalse(TEXT("GetAssetDiskFolder should return non-empty directory path"), AssetDiskFolder.IsEmpty());

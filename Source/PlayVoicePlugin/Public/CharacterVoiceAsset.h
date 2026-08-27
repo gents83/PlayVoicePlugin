@@ -102,6 +102,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	TArray<FCharacterLanguageData> Languages;
 
+	/** Whether to re-generate and overwrite existing voice line audio files during Blueprint pre-processing or model pipeline execution */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
+	bool bRegenerateExistingVoiceLines = true;
+
 	/** Optional guide tracks providing recorded reference audio, speed, and emotions for specific dialogue lines */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	TArray<FVoiceLineGuideTrack> GuideTracks;
@@ -109,6 +113,10 @@ public:
 	/** Map of pre-rendered SoundWaves keyed by normalized text line and language for zero-delay instant playback. Persisted upon saving asset. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "PlayVoice")
 	TMap<FString, TObjectPtr<USoundWave>> PrecachedSoundWaves;
+
+	/** Clears all cached SoundWave entries in PrecachedSoundWaves */
+	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
+	void ClearPrecachedVoiceLines();
 
 	/** Finds the language data for the specified language code (or default if empty). Returns nullptr if not found. */
 	FCharacterLanguageData* FindLanguageData(const FString& InLanguageCode = TEXT(""));

@@ -436,7 +436,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 
 				for (const FString& LineText : DiscoveredBlueprintLines)
 				{
-					if (VoiceAsset->HasPrecachedVoiceLine(LineText, CurrentLangCode))
+					if (!VoiceAsset->bRegenerateExistingVoiceLines && VoiceAsset->HasPrecachedVoiceLine(LineText, CurrentLangCode))
 					{
 						StepTaskProgress();
 						continue;
@@ -752,7 +752,7 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 
 			for (const FString& LineText : DiscoveredBlueprintLines)
 			{
-				if (Asset->HasPrecachedVoiceLine(LineText, CurrentLangCode))
+				if (!Asset->bRegenerateExistingVoiceLines && Asset->HasPrecachedVoiceLine(LineText, CurrentLangCode))
 				{
 					StepTaskProgress();
 					continue;

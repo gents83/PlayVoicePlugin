@@ -115,6 +115,11 @@ FString UCharacterVoiceAsset::MakeCacheKey(const FString& TextLine, const FStrin
 	return FString::Printf(TEXT("%s:%s"), *CleanLang, *CleanText);
 }
 
+void UCharacterVoiceAsset::ClearPrecachedVoiceLines()
+{
+	PrecachedSoundWaves.Empty();
+}
+
 void UCharacterVoiceAsset::CacheVoiceLine(const FString& TextLine, USoundWave* InSoundWave, const FString& LanguageCode)
 {
 	if (!TextLine.IsEmpty() && InSoundWave)
