@@ -154,7 +154,7 @@ FString UPlayVoiceAudioUtils::ExportSoundWaveToTempWAVFile(USoundWave* SoundWave
 #if WITH_EDITORONLY_DATA
 	if (SoundWave->RawData.HasPayloadData())
 	{
-		FSharedBuffer Payload = SoundWave->RawData.FetchPayload();
+		FSharedBuffer Payload = SoundWave->RawData.GetPayload();
 		if (Payload.GetSize() >= 44)
 		{
 			WAVBytes.SetNumUninitialized(Payload.GetSize());
