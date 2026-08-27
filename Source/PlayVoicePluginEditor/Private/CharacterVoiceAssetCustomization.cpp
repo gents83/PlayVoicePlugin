@@ -449,6 +449,12 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 					SynthObj->SetNumberField(TEXT("speed"), CurrentSpeed);
 					SynthObj->SetStringField(TEXT("embedding_data"), EmbeddingData);
 
+					FString GuideFile = VoiceAsset->GetResolvedGuideAudioFileForLine(LineText);
+					if (!GuideFile.IsEmpty())
+					{
+						SynthObj->SetStringField(TEXT("guide_audio_file"), GuideFile);
+					}
+
 					FString SynthPayload;
 					TSharedRef<TJsonWriter<>> SynthWriter = TJsonWriterFactory<>::Create(&SynthPayload);
 					FJsonSerializer::Serialize(SynthObj.ToSharedRef(), SynthWriter);
@@ -758,6 +764,12 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 				JsonObj->SetStringField(TEXT("language"), CurrentLangCode);
 				JsonObj->SetNumberField(TEXT("speed"), CurrentSpeed);
 				JsonObj->SetStringField(TEXT("embedding_data"), EmbeddingData);
+
+				FString GuideFile = Asset->GetResolvedGuideAudioFileForLine(LineText);
+				if (!GuideFile.IsEmpty())
+				{
+					JsonObj->SetStringField(TEXT("guide_audio_file"), GuideFile);
+				}
 
 				FString PayloadStr;
 				TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&PayloadStr);

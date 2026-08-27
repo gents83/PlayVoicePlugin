@@ -114,9 +114,10 @@ class OpenVoiceEngine:
             "model_checkpoint": f"{self.checkpoint_dir}/{character_name}_se.pth"
         }
 
-    def synthesize(self, text: str, character_name: str, language: str = "EN", speed: float = 1.0, embedding_data: Optional[str] = None) -> bytes:
+    def synthesize(self, text: str, character_name: str, language: str = "EN", speed: float = 1.0, embedding_data: Optional[str] = None, guide_audio_file: Optional[str] = None, emotion: Optional[str] = None) -> bytes:
         """
         Synthesizes text into voice matching character reference tone, pitch, and speed.
+        If guide_audio_file is provided, uses the recorded guide track as source speech to transfer custom speed and emotions.
         """
         acoustic_profile = None
         if embedding_data:
@@ -139,8 +140,15 @@ class OpenVoiceEngine:
                 src_path = os.path.join(temp_dir, f"{character_name}_src.wav")
                 out_path = os.path.join(temp_dir, f"{character_name}_out.wav")
 
-                spk_id = speaker_ids.get('EN-Default', list(speaker_ids.values())[0]) if speaker_ids else 0
-                model.tts_to_file(text, spk_id, src_path, speed=speed)
+                # If a valid recorded guide audio track is provided, use it directly as source speech!
+                bUsedGuideTrack = False
+                if guide_audio_file and os.path.exists(guide_audio_file):
+                    src_path = guide_audio_file
+                    bUsedGuideTrack = True
+                    logger.info(f"Using optional recorded guide audio track: {guide_audio_file}")
+                else:
+                    spk_id = speaker_ids.get('EN-Default', list(speaker_ids.values())[0]) if speaker_ids else 0
+                    model.tts_to_file(text, spk_id, src_path, speed=speed)
 
                 if embedding_data:
                     emb = json.loads(embedding_data)
@@ -154,13 +162,13 @@ class OpenVoiceEngine:
 
                         source_se = None
                         source_se_path = os.path.join(self.checkpoint_dir, "base_speakers", "ses", "en-default.pth")
-                        if os.path.exists(source_se_path):
+                        if os.path.exists(source_se_path) and not bUsedGuideTrack:
                             source_se = torch.load(source_se_path, map_location=device)
                         else:
                             try:
                                 source_se, _ = get_se(src_path, self.converter, target_dir=temp_dir, vad=True)
                             except Exception as se_err:
-                                logger.warning(f"Could not extract source_se dynamically from base audio: {se_err}")
+                                logger.warning(f"Could not extract source_se dynamically from source audio: {se_err}")
 
                         if source_se is not None:
                             self.converter.convert(
@@ -185,6 +193,14 @@ class OpenVoiceEngine:
             pitch_freq = float(acoustic_profile["pitch_mean"])
         else:
             pitch_freq = 140.0 + (abs(hash(character_name)) % 100)
+
+        # If optional guide audio file exists, extract its pitch/rms profile for performance reproduction
+        if guide_audio_file and os.path.exists(guide_audio_file):
+            guide_profile = analyze_reference_audio_files([guide_audio_file])
+            if guide_profile and guide_profile.get("pitch_mean"):
+                acoustic_profile = acoustic_profile or {}
+                acoustic_profile["pitch_mean"] = (pitch_freq + float(guide_profile["pitch_mean"])) / 2.0
+                acoustic_profile["rms_mean"] = float(guide_profile.get("rms_mean", 0.25))
 
         return generate_synthetic_wav(text, speed=speed, pitch_freq=pitch_freq, acoustic_profile=acoustic_profile, character_name=character_name)
 
@@ -396,6 +412,8 @@ if HAS_FASTAPI:
         speed: Optional[float] = 1.0
         embedding_data: Optional[str] = None
         reference_audio_files: Optional[List[str]] = []
+        guide_audio_file: Optional[str] = None
+        emotion: Optional[str] = None
 
     class TranscribeRequest(BaseModel):
         audio_file: Optional[str] = ""
@@ -424,7 +442,9 @@ if HAS_FASTAPI:
             character_name=req.character_name,
             language=req.language or "EN",
             speed=req.speed or 1.0,
-            embedding_data=req.embedding_data
+            embedding_data=req.embedding_data,
+            guide_audio_file=req.guide_audio_file,
+            emotion=req.emotion
         )
         return Response(content=wav_bytes, media_type="audio/wav")
 

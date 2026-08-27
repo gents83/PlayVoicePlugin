@@ -339,6 +339,35 @@ TArray<FString> UCharacterVoiceAsset::ResolveAudioFilesFromFolderAndFiles(const 
 	return ResolvedFiles;
 }
 
+FString UCharacterVoiceAsset::GetResolvedGuideAudioFileForLine(const FString& TextLine) const
+{
+	FString CleanText = TextLine.TrimStartAndEnd().ToLower();
+	if (CleanText.IsEmpty())
+	{
+		return FString();
+	}
+
+	for (const FVoiceLineGuideTrack& GuideTrack : GuideTracks)
+	{
+		if (GuideTrack.LineText.TrimStartAndEnd().ToLower().Equals(CleanText))
+		{
+			FString PathStr = GuideTrack.GuideAudioFile.FilePath.TrimStartAndEnd();
+			if (!PathStr.IsEmpty())
+			{
+				if (FPaths::IsRelative(PathStr))
+				{
+					PathStr = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), PathStr);
+				}
+				if (IFileManager::Get().FileExists(*PathStr))
+				{
+					return PathStr;
+				}
+			}
+		}
+	}
+	return FString();
+}
+
 TArray<FString> UCharacterVoiceAsset::GetResolvedReferenceAudioFilesForLanguage(const FString& LanguageCode) const
 {
 	const FCharacterLanguageData* LangData = FindLanguageData(LanguageCode);
