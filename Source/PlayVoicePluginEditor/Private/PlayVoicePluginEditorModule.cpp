@@ -43,8 +43,19 @@ void FPlayVoicePluginEditorModule::ShutdownModule()
 	}
 }
 
+static FProcHandle StaticServiceHandle;
+
 bool FPlayVoicePluginEditorModule::StartOpenVoiceService(FProcHandle* OutProcHandle)
 {
+	if (StaticServiceHandle.IsValid() && FPlatformProcess::IsProcRunning(StaticServiceHandle))
+	{
+		if (OutProcHandle)
+		{
+			*OutProcHandle = StaticServiceHandle;
+		}
+		return true;
+	}
+
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
 	FString PythonExec = Settings && !Settings->PythonExecutable.IsEmpty() ? Settings->PythonExecutable : TEXT("python");
 
@@ -110,6 +121,22 @@ bool FPlayVoicePluginEditorModule::StartOpenVoiceService(FProcHandle* OutProcHan
 		nullptr, // OptionalWorkingDirectory
 		nullptr  // PipeWriteChild
 	);
+
+	if (ProcHandle.IsValid())
+	{
+		StaticServiceHandle = ProcHandle;
+
+		// Brief warm-up sleep to allow Python process to bind to host:port
+		for (int32 Check = 0; Check < 6; ++Check)
+		{
+			if (FPlatformProcess::IsProcRunning(ProcHandle))
+			{
+				FPlatformProcess::Sleep(0.5f);
+				break;
+			}
+			FPlatformProcess::Sleep(0.2f);
+		}
+	}
 
 	if (OutProcHandle)
 	{

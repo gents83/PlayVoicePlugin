@@ -21,7 +21,7 @@
 		"Android",
 		"IOS",
 		"PS5",
-		"XboxSeriesX",
+		"XSX",
 		"Switch"
 	],
 	"Modules": [
@@ -36,7 +36,7 @@
 				"Android",
 				"IOS",
 				"PS5",
-				"XboxSeriesX",
+				"XSX",
 				"Switch"
 			]
 		},
