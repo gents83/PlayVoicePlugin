@@ -331,7 +331,6 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 			}
 		};
 
-		TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = WeakTargetAsset;
 		for (FCharacterLanguageData* LangDataPtr : ConfiguredLanguages)
 		{
 			FCharacterLanguageData& LangData = *LangDataPtr;
@@ -362,7 +361,8 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 			FString CurrentLangCode = LangData.LanguageCode;
 			float CurrentSpeed = LangData.Speed;
 
-			ExtractReq->OnProcessRequestComplete().BindLambda([WeakAsset, BaseUrl, CurrentLangCode, CurrentSpeed, DiscoveredBlueprintLines, StepTaskProgress, FailedTasks](FHttpRequestPtr Req, FHttpResponsePtr Res, bool bExtractSuccess)
+			ExtractReq->OnProcessRequestComplete().BindLambda([WeakTargetAsset, BaseUrl, CurrentLangCode, CurrentSpeed, DiscoveredBlueprintLines, StepTaskProgress, FailedTasks](FHttpRequestPtr Req, FHttpResponsePtr Res, bool bExtractSuccess)
+			ExtractReq->OnProcessRequestComplete().BindLambda([WeakTargetAsset, BaseUrl, CurrentLangCode, CurrentSpeed, DiscoveredBlueprintLines, StepTaskProgress, FailedTasks](FHttpRequestPtr Req, FHttpResponsePtr Res, bool bExtractSuccess)
 			{
 				bool bSuccess = bExtractSuccess && Res.IsValid() && EHttpResponseCodes::IsOk(Res->GetResponseCode());
 				if (!bSuccess)
@@ -370,31 +370,31 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 					(*FailedTasks)++;
 				}
 
-				if (bSuccess && WeakAsset.IsValid())
+				if (bSuccess && WeakTargetAsset.IsValid())
 				{
 					TSharedPtr<FJsonObject> ResObj;
 					TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Res->GetContentAsString());
 					if (FJsonSerializer::Deserialize(Reader, ResObj) && ResObj.IsValid())
 					{
-						FCharacterLanguageData* TargetLangData = WeakAsset->FindLanguageData(CurrentLangCode);
+						FCharacterLanguageData* TargetLangData = WeakTargetAsset->FindLanguageData(CurrentLangCode);
 						if (TargetLangData)
 						{
 							TargetLangData->ToneColorEmbeddingData = ResObj->GetStringField(TEXT("embedding_data"));
 							TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
-							WeakAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
-							WeakAsset->MarkPackageDirty();
+							WeakTargetAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
+							WeakTargetAsset->MarkPackageDirty();
 						}
 					}
 				}
 
 				StepTaskProgress();
 
-				if (!WeakAsset.IsValid() || DiscoveredBlueprintLines.Num() == 0)
+				if (!WeakTargetAsset.IsValid() || DiscoveredBlueprintLines.Num() == 0)
 				{
 					return;
 				}
 
-				UCharacterVoiceAsset* VoiceAsset = WeakAsset.Get();
+				UCharacterVoiceAsset* VoiceAsset = WeakTargetAsset.Get();
 				FCharacterLanguageData* TargetLangData = VoiceAsset->FindLanguageData(CurrentLangCode);
 				FString EmbeddingData = TargetLangData ? TargetLangData->ToneColorEmbeddingData : TEXT("");
 
@@ -426,7 +426,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 					SynthReq->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 					SynthReq->SetContentAsString(SynthPayload);
 
-					SynthReq->OnProcessRequestComplete().BindLambda([WeakAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr SReq, FHttpResponsePtr SRes, bool bSynthSuccess)
+					SynthReq->OnProcessRequestComplete().BindLambda([WeakTargetAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr SReq, FHttpResponsePtr SRes, bool bSynthSuccess)
 					{
 						bool bSynthOk = bSynthSuccess && SRes.IsValid() && EHttpResponseCodes::IsOk(SRes->GetResponseCode());
 						if (!bSynthOk)
@@ -434,9 +434,9 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 							(*FailedTasks)++;
 						}
 
-						if (bSynthOk && WeakAsset.IsValid())
+						if (bSynthOk && WeakTargetAsset.IsValid())
 						{
-							FString LineSanitized = FString::Printf(TEXT("SW_%s_%s_%u"), *WeakAsset->CharacterName.ToString(), *CurrentLangCode, GetTypeHash(LineText));
+							FString LineSanitized = FString::Printf(TEXT("SW_%s_%s_%u"), *WeakTargetAsset->CharacterName.ToString(), *CurrentLangCode, GetTypeHash(LineText));
 							FString SoundWavePackagePath = AssetFolderPath / LineSanitized;
 
 							UPackage* SoundWavePackage = CreatePackage(*SoundWavePackagePath);
@@ -444,9 +444,9 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 
 							if (SoundWave)
 							{
-								WeakAsset->CacheVoiceLine(LineText, SoundWave, CurrentLangCode);
+								WeakTargetAsset->CacheVoiceLine(LineText, SoundWave, CurrentLangCode);
 								SoundWave->MarkPackageDirty();
-								WeakAsset->MarkPackageDirty();
+								WeakTargetAsset->MarkPackageDirty();
 
 								if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
 								{
@@ -491,7 +491,6 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 		}
 
 		UCharacterVoiceAsset* Asset = WeakTargetAsset.Get();
-		TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = WeakTargetAsset;
 		if (Asset->Languages.Num() == 0)
 		{
 			Asset->GetOrAddLanguageData(Asset->DefaultLanguage.IsEmpty() ? TEXT("EN") : Asset->DefaultLanguage);
@@ -561,7 +560,6 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 			}
 		};
 
-		TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = TargetVoiceAsset;
 		for (FCharacterLanguageData* LangDataPtr : ConfiguredLanguages)
 		{
 			FCharacterLanguageData& LangData = *LangDataPtr;
@@ -590,7 +588,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 
 			FString CurrentLangCode = LangData.LanguageCode;
 
-			HttpRequest->OnProcessRequestComplete().BindLambda([WeakAsset, CurrentLangCode, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
+			HttpRequest->OnProcessRequestComplete().BindLambda([WeakTargetAsset, CurrentLangCode, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
 			{
 				bool bSuccess = bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode());
 				if (!bSuccess)
@@ -604,15 +602,15 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 					TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Response->GetContentAsString());
 					if (FJsonSerializer::Deserialize(Reader, ResponseObj) && ResponseObj.IsValid())
 					{
-						if (WeakAsset.IsValid())
+						if (WeakTargetAsset.IsValid())
 						{
-							FCharacterLanguageData* TargetLangData = WeakAsset->FindLanguageData(CurrentLangCode);
+							FCharacterLanguageData* TargetLangData = WeakTargetAsset->FindLanguageData(CurrentLangCode);
 							if (TargetLangData)
 							{
 								TargetLangData->ToneColorEmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
 								TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
-								WeakAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
-								WeakAsset->MarkPackageDirty();
+								WeakTargetAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
+								WeakTargetAsset->MarkPackageDirty();
 							}
 						}
 					}
@@ -650,7 +648,6 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 		}
 
 		UCharacterVoiceAsset* Asset = WeakTargetAsset.Get();
-		TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = WeakTargetAsset;
 		TArray<FString> DiscoveredBlueprintLines = RetrieveVoiceLinesFromProjectBlueprints(Asset);
 
 		if (DiscoveredBlueprintLines.Num() == 0)
@@ -739,7 +736,7 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 				HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 				HttpRequest->SetContentAsString(PayloadStr);
 
-				HttpRequest->OnProcessRequestComplete().BindLambda([WeakAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
+				HttpRequest->OnProcessRequestComplete().BindLambda([WeakTargetAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
 				{
 					bool bSynthOk = bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode());
 					if (!bSynthOk)
@@ -747,9 +744,9 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 						(*FailedTasks)++;
 					}
 
-					if (bSynthOk && WeakAsset.IsValid())
+					if (bSynthOk && WeakTargetAsset.IsValid())
 					{
-						FString LineSanitized = FString::Printf(TEXT("SW_%s_%s_%u"), *WeakAsset->CharacterName.ToString(), *CurrentLangCode, GetTypeHash(LineText));
+						FString LineSanitized = FString::Printf(TEXT("SW_%s_%s_%u"), *WeakTargetAsset->CharacterName.ToString(), *CurrentLangCode, GetTypeHash(LineText));
 						FString SoundWavePackagePath = AssetFolderPath / LineSanitized;
 
 						UPackage* SoundWavePackage = CreatePackage(*SoundWavePackagePath);
@@ -757,9 +754,9 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 
 						if (SoundWave)
 						{
-							WeakAsset->CacheVoiceLine(LineText, SoundWave, CurrentLangCode);
+							WeakTargetAsset->CacheVoiceLine(LineText, SoundWave, CurrentLangCode);
 							SoundWave->MarkPackageDirty();
-							WeakAsset->MarkPackageDirty();
+							WeakTargetAsset->MarkPackageDirty();
 
 							if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
 							{
