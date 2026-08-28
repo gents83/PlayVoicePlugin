@@ -326,7 +326,7 @@ static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
 			}
 
 			// Handle Blueprint variable read nodes
-			const UBlueprint* BP = OwningNode->GetBlueprint();
+			const UBlueprint* BP = OwningNode->GetTypedOuter<UBlueprint>();
 			if (BP && OwningNode->GetClass()->GetName().Contains(TEXT("Variable")))
 			{
 				FString NodeTitle = OwningNode->GetNodeTitle(ENodeTitleType::ListView).ToString();
