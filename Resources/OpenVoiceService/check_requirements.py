@@ -23,6 +23,8 @@ PACKAGE_IMPORT_MAP = {
     "audioop_lts": ["audioop", "pyaudioop", "audioop_lts"],
     "audioop-lts": ["audioop", "pyaudioop", "audioop_lts"],
     "pyaudioop": ["audioop", "pyaudioop", "audioop_lts"],
+    "whisper_timestamped": ["whisper_timestamped"],
+    "whisper-timestamped": ["whisper_timestamped"],
 }
 
 

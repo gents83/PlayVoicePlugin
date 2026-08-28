@@ -11,4 +11,5 @@ requests
 pydub
 wavmark
 faster-whisper
+whisper-timestamped
 audioop-lts
