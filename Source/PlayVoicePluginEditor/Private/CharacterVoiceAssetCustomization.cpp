@@ -572,7 +572,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 
 		const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
 		FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
-		float TimeoutSecs = Settings && Settings->RequestTimeout > 0.0f ? Settings->RequestTimeout : 120.0f;
+		float TimeoutSecs = Settings && Settings->RequestTimeout > 0.0f ? FMath::Max(Settings->RequestTimeout, 300.0f) : 300.0f;
 
 		int32 TotalLangsProcessed = 0;
 		TArray<FCharacterLanguageData*> ConfiguredLanguages;
@@ -851,7 +851,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 
 		const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
 		FString Url = (Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983")) + TEXT("/extract");
-		float TimeoutSecs = Settings && Settings->RequestTimeout > 0.0f ? Settings->RequestTimeout : 120.0f;
+		float TimeoutSecs = Settings && Settings->RequestTimeout > 0.0f ? FMath::Max(Settings->RequestTimeout, 300.0f) : 300.0f;
 
 		int32 ProcessedLangs = 0;
 		TArray<FCharacterLanguageData*> ConfiguredLanguages;
@@ -1130,7 +1130,7 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 
 		const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
 		FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
-		float TimeoutSecs = Settings && Settings->RequestTimeout > 0.0f ? Settings->RequestTimeout : 120.0f;
+		float TimeoutSecs = Settings && Settings->RequestTimeout > 0.0f ? FMath::Max(Settings->RequestTimeout, 300.0f) : 300.0f;
 
 		UPackage* OuterPackage = Asset->GetOutermost();
 		FString AssetFolderPath = FPaths::GetPath(OuterPackage->GetName());

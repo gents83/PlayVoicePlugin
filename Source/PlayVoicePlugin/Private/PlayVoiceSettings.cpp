@@ -10,7 +10,7 @@ UPlayVoiceSettings::UPlayVoiceSettings()
 	, RequirementsFilePath(TEXT("Resources/OpenVoiceService/requirements.txt"))
 	, TargetInstallDir(TEXT(""))
 	, ExtraPipArgs(TEXT(""))
-	, RequestTimeout(30.0f)
+	, RequestTimeout(300.0f)
 	, bAutoPrecacheOnStartup(true)
 	, DefaultSampleRate(24000)
 {
