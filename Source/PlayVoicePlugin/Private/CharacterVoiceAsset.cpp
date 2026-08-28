@@ -500,7 +500,7 @@ void UCharacterVoiceAsset::AutoLinkPrecachedSoundWaves()
 
 	// Link any inner USoundWave objects in this package
 	TArray<UObject*> SubObjects;
-	GetObjectsWithOuter(Package, SubObjects, false);
+	GetObjectsWithOuter(Package, SubObjects, EGetObjectsFlags::None);
 
 	for (UObject* Obj : SubObjects)
 	{
