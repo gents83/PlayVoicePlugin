@@ -40,13 +40,17 @@ def check_requirements(requirements_file: str) -> bool:
 
     missing = []
     for req in lines:
+        # Ignore comments or optional git repository lines
+        if req.startswith('#') or req.startswith('git+') or 'git+https://' in req:
+            continue
+
         # If line contains an optional extra marker (e.g. '; extra == ...'), ignore for base requirements check
         if ';' in req:
             condition_part = req.split(';', 1)[1].strip()
             if 'extra ==' in condition_part or 'extra!=' in condition_part or 'extra' in condition_part:
                 continue
 
-        raw_pkg = req.split(';')[0].split('>=')[0].split('<=')[0].split('==')[0].split('~=')[0].split('!=')[0].strip().lower()
+        raw_pkg = req.split(';')[0].split('@')[0].split('>=')[0].split('<=')[0].split('==')[0].split('~=')[0].split('!=')[0].strip().lower()
         norm_pkg = raw_pkg.replace('-', '_')
 
         if not norm_pkg:
