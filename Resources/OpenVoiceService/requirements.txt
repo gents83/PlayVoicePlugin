@@ -11,3 +11,4 @@ requests
 pydub
 wavmark
 faster-whisper
+pyaudioop
