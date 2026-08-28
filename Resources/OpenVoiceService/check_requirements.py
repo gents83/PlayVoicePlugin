@@ -37,6 +37,9 @@ PACKAGE_IMPORT_MAP = {
     "cutlet": ["cutlet"],
     "inflect": ["inflect"],
     "onnxruntime": ["onnxruntime"],
+    "unidic_lite": ["unidic_lite"],
+    "unidic-lite": ["unidic_lite"],
+    "ipadic": ["ipadic"],
 }
 
 

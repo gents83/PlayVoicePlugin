@@ -36,6 +36,34 @@ if audioop is not None:
     sys.modules['audioop'] = audioop
     sys.modules['pyaudioop'] = audioop
 
+# Monkeypatch MeCab.Tagger for MeloTTS on Windows if unidic-lite/ipadic dictionary is available
+try:
+    import MeCab
+    _orig_mecab_tagger = MeCab.Tagger
+    def _safe_mecab_tagger(args=""):
+        if not args or args == "":
+            try:
+                import unidic_lite
+                return _orig_mecab_tagger(f'-d "{unidic_lite.DICDIR}"')
+            except Exception:
+                try:
+                    import ipadic
+                    return _orig_mecab_tagger(f'-d "{ipadic.DICDIR}"')
+                except Exception:
+                    pass
+        try:
+            return _orig_mecab_tagger(args)
+        except Exception:
+            try:
+                import unidic_lite
+                return _orig_mecab_tagger(f'-d "{unidic_lite.DICDIR}"')
+            except Exception:
+                import ipadic
+                return _orig_mecab_tagger(f'-d "{ipadic.DICDIR}"')
+    MeCab.Tagger = _safe_mecab_tagger
+except Exception:
+    pass
+
 # OpenVoice / Torch / MeloTTS Imports with fallback
 HAS_OPENVOICE = False
 try:
