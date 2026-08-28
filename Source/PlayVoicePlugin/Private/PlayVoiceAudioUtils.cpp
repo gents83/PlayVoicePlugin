@@ -7,6 +7,10 @@
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 
+#if WITH_EDITORONLY_DATA
+#include "EditorFramework/AssetImportData.h"
+#endif
+
 static TArray<uint8> BuildWAVHeaderAndPCMBuffer(const TArray<uint8>& PCMData, int32 SampleRate, int32 NumChannels)
 {
 	uint32 DataSize = PCMData.Num();
@@ -152,13 +156,19 @@ FString UPlayVoiceAudioUtils::ExportSoundWaveToTempWAVFile(USoundWave* SoundWave
 	TArray<uint8> WAVBytes;
 
 #if WITH_EDITORONLY_DATA
-	if (SoundWave->RawData.HasPayloadData())
+	FSharedBuffer Payload = SoundWave->RawData.GetPayload().Get();
+	if (Payload.GetSize() >= 44)
 	{
-		FSharedBuffer Payload = SoundWave->RawData.GetPayload().Get();
-		if (Payload.GetSize() >= 44)
+		WAVBytes.SetNumUninitialized(Payload.GetSize());
+		FMemory::Memcpy(WAVBytes.GetData(), Payload.GetData(), Payload.GetSize());
+	}
+
+	if (WAVBytes.Num() < 44 && SoundWave->AssetImportData)
+	{
+		FString ImportedFile = SoundWave->AssetImportData->GetFirstFilename();
+		if (!ImportedFile.IsEmpty() && IFileManager::Get().FileExists(*ImportedFile))
 		{
-			WAVBytes.SetNumUninitialized(Payload.GetSize());
-			FMemory::Memcpy(WAVBytes.GetData(), Payload.GetData(), Payload.GetSize());
+			return FPaths::ConvertRelativePathToFull(ImportedFile);
 		}
 	}
 #endif

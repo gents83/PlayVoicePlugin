@@ -883,41 +883,50 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 			HttpRequest->OnProcessRequestComplete().BindLambda([WeakTargetAsset, CurrentLangCode, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
 			{
 				bool bSuccess = bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode());
-				if (!bSuccess)
-				{
-					(*FailedTasks)++;
-					UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateModelClicked: Extraction failed for language '%s'."), *CurrentLangCode);
-				}
+				FString ErrorMessage;
 
-				if (bSuccess)
+				if (Response.IsValid())
 				{
 					TSharedPtr<FJsonObject> ResponseObj;
 					TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Response->GetContentAsString());
 					if (FJsonSerializer::Deserialize(Reader, ResponseObj) && ResponseObj.IsValid())
 					{
-								FString Status = ResponseObj->GetStringField(TEXT("status"));
-								if (Status.Equals(TEXT("success"), ESearchCase::IgnoreCase))
+						FString Status = ResponseObj->GetStringField(TEXT("status"));
+						if (Status.Equals(TEXT("success"), ESearchCase::IgnoreCase))
 						{
-									if (WeakTargetAsset.IsValid())
+							if (WeakTargetAsset.IsValid())
 							{
-										FCharacterLanguageData* TargetLangData = WeakTargetAsset->FindLanguageData(CurrentLangCode);
-										if (TargetLangData)
-										{
-											TargetLangData->ToneColorEmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
-											TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
-											WeakTargetAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
-											WeakTargetAsset->MarkPackageDirty();
-											UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateModelClicked: Model saved for language '%s'."), *CurrentLangCode);
-										}
+								FCharacterLanguageData* TargetLangData = WeakTargetAsset->FindLanguageData(CurrentLangCode);
+								if (TargetLangData)
+								{
+									TargetLangData->ToneColorEmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
+									TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
+									WeakTargetAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
+									WeakTargetAsset->MarkPackageDirty();
+									UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateModelClicked: Model saved for language '%s'."), *CurrentLangCode);
+								}
 							}
 						}
-								else
-								{
-									(*FailedTasks)++;
-									FString ErrMsg = ResponseObj->GetStringField(TEXT("message"));
-									UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateModelClicked: Extraction error for language '%s': %s"), *CurrentLangCode, *ErrMsg);
-								}
+						else
+						{
+							ErrorMessage = ResponseObj->HasField(TEXT("message")) ? ResponseObj->GetStringField(TEXT("message")) : TEXT("Unknown service error.");
+						}
 					}
+					else if (!bSuccess)
+					{
+						ErrorMessage = FString::Printf(TEXT("HTTP Request failed with status code %d."), Response->GetResponseCode());
+					}
+				}
+				else
+				{
+					ErrorMessage = TEXT("Could not connect to service endpoint.");
+				}
+
+				if (!ErrorMessage.IsEmpty())
+				{
+					(*FailedTasks)++;
+					UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateModelClicked: Model extraction error for language '%s': %s"), *CurrentLangCode, *ErrorMessage);
+					FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(FString::Printf(TEXT("Model extraction error for language '%s':\n%s"), *CurrentLangCode, *ErrorMessage)));
 				}
 
 				StepTaskProgress();

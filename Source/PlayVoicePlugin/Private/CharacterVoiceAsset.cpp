@@ -263,11 +263,12 @@ TArray<FString> UCharacterVoiceAsset::ResolveAudioFilesFromFolderAndFiles(const 
 			}
 			else if (FullPath.StartsWith(TEXT("/Game/")) || FullPath.StartsWith(TEXT("/Engine/")))
 			{
+				FString PkgName = FPackageName::ObjectPathToPackageName(FullPath);
 				if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
 				{
 					FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 					TArray<FAssetData> AssetList;
-					AssetRegistryModule.Get().GetAssetsByPackageName(FName(*FullPath), AssetList);
+					AssetRegistryModule.Get().GetAssetsByPackageName(FName(*PkgName), AssetList);
 					for (const FAssetData& AssetData : AssetList)
 					{
 						if (AssetData.AssetClassPath.GetAssetName() == FName(TEXT("SoundWave")))
@@ -383,7 +384,17 @@ const FVoiceLineGuideTrack* UCharacterVoiceAsset::FindGuideTrackForLine(const FS
 		return nullptr;
 	}
 
-	const FCharacterLanguageData* LangData = FindLanguageData(LanguageCode);
+	FString TargetLang = LanguageCode.TrimStartAndEnd().ToUpper();
+	if (TargetLang.IsEmpty())
+	{
+		TargetLang = DefaultLanguage.TrimStartAndEnd().ToUpper();
+	}
+	if (TargetLang.IsEmpty())
+	{
+		TargetLang = TEXT("EN");
+	}
+
+	const FCharacterLanguageData* LangData = FindLanguageData(TargetLang);
 	if (LangData)
 	{
 		for (const FVoiceLineGuideTrack& GuideTrack : LangData->GuideTracks)
