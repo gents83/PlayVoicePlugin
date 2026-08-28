@@ -662,6 +662,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 			ExtractReq->SetVerb(TEXT("POST"));
 			ExtractReq->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 			ExtractReq->SetContentAsString(ExtractPayload);
+			ExtractReq->SetTimeout(Settings && Settings->RequestTimeout > 0.0f ? Settings->RequestTimeout : 120.0f);
 
 			FString CurrentLangCode = LangData.LanguageCode;
 			float CurrentSpeed = LangData.Speed;
@@ -768,6 +769,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 					SynthReq->SetVerb(TEXT("POST"));
 					SynthReq->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 					SynthReq->SetContentAsString(SynthPayload);
+					SynthReq->SetTimeout(Settings && Settings->RequestTimeout > 0.0f ? Settings->RequestTimeout : 120.0f);
 
 					SynthReq->OnProcessRequestComplete().BindLambda([WeakTargetAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr SReq, FHttpResponsePtr SRes, bool bSynthSuccess)
 					{
@@ -938,6 +940,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 			HttpRequest->SetVerb(TEXT("POST"));
 			HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 			HttpRequest->SetContentAsString(PayloadStr);
+			HttpRequest->SetTimeout(Settings && Settings->RequestTimeout > 0.0f ? Settings->RequestTimeout : 120.0f);
 
 			FString CurrentLangCode = LangData.LanguageCode;
 
@@ -1231,6 +1234,7 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 				HttpRequest->SetVerb(TEXT("POST"));
 				HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 				HttpRequest->SetContentAsString(PayloadStr);
+				HttpRequest->SetTimeout(Settings && Settings->RequestTimeout > 0.0f ? Settings->RequestTimeout : 120.0f);
 
 				HttpRequest->OnProcessRequestComplete().BindLambda([WeakTargetAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
 				{
