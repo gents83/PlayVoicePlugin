@@ -1,8 +1,9 @@
+--prefer-binary
 torch>=2.0.0
 torchaudio>=2.0.0
-numpy>=1.22.0
+numpy>=1.26.0
 scipy>=1.9.0
-librosa>=0.9.0
+librosa>=0.10.0
 soundfile>=0.12.0
 pydantic>=2.0.0
 fastapi>=0.100.0

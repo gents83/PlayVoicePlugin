@@ -40,7 +40,7 @@ def check_requirements(requirements_file: str) -> bool:
 
     missing = []
     for req in lines:
-        if req.startswith('#'):
+        if req.startswith('#') or req.startswith('--'):
             continue
 
         # If line contains an optional extra marker (e.g. '; extra == ...'), ignore for base requirements check
