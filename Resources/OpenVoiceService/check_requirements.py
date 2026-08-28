@@ -31,6 +31,12 @@ PACKAGE_IMPORT_MAP = {
     "mecab_python3": ["MeCab", "mecab"],
     "mecab-python3": ["MeCab", "mecab"],
     "g2p_en": ["g2p_en"],
+    "cached_path": ["cached_path"],
+    "cached-path": ["cached_path"],
+    "pypinyin": ["pypinyin"],
+    "cutlet": ["cutlet"],
+    "inflect": ["inflect"],
+    "onnxruntime": ["onnxruntime"],
 }
 
 

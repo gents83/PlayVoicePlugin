@@ -23,5 +23,10 @@ transformers
 unidecode
 g2p_en
 mecab-python3
+inflect
+onnxruntime
+cached-path
+pypinyin
+cutlet
 git+https://github.com/myshell-ai/OpenVoice.git
 git+https://github.com/myshell-ai/MeloTTS.git
