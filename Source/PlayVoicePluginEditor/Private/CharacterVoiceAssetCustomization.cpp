@@ -199,24 +199,80 @@ static void EnsureServiceReadyAndExecute(TFunction<void(bool bReady)> OnComplete
 	InitialHealthReq->ProcessRequest();
 }
 
-static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
+static FString SanitizeTextString(const FString& InRaw)
 {
-	if (!Pin || Depth > 5)
+	FString S = InRaw.TrimStartAndEnd();
+	if (S.IsEmpty())
 	{
 		return FString();
 	}
 
-	FString DirectDefault = Pin->GetDefaultAsString();
-	DirectDefault.TrimStartAndEndInline();
-	if (DirectDefault.StartsWith(TEXT("\"")) && DirectDefault.EndsWith(TEXT("\"")) && DirectDefault.Len() >= 2)
+	// Handle FText pin format (SourceString="...", Namespace="...", Key="...")
+	int32 SourceIdx = S.Find(TEXT("SourceString="));
+	if (SourceIdx != INDEX_NONE)
 	{
-		DirectDefault = DirectDefault.Mid(1, DirectDefault.Len() - 2);
-	}
-	if (!DirectDefault.IsEmpty())
-	{
-		return DirectDefault;
+		int32 StartQuote = S.Find(TEXT("\""), ESearchCase::IgnoreCase, ESearchDir::FromStart, SourceIdx);
+		if (StartQuote != INDEX_NONE)
+		{
+			int32 EndQuote = S.Find(TEXT("\""), ESearchCase::IgnoreCase, ESearchDir::FromStart, StartQuote + 1);
+			if (EndQuote != INDEX_NONE)
+			{
+				return S.Mid(StartQuote + 1, EndQuote - StartQuote - 1).TrimStartAndEnd();
+			}
+		}
 	}
 
+	// Handle NSLOCTEXT("...", "...", "Text") or INVTEXT("Text")
+	if (S.StartsWith(TEXT("NSLOCTEXT(")) || S.StartsWith(TEXT("INVTEXT(")))
+	{
+		int32 LastQuoteEnd = S.Find(TEXT("\""), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+		if (LastQuoteEnd != INDEX_NONE)
+		{
+			int32 LastQuoteStart = S.Find(TEXT("\""), ESearchCase::IgnoreCase, ESearchDir::FromEnd, LastQuoteEnd - 1);
+			if (LastQuoteStart != INDEX_NONE && LastQuoteStart < LastQuoteEnd)
+			{
+				return S.Mid(LastQuoteStart + 1, LastQuoteEnd - LastQuoteStart - 1).TrimStartAndEnd();
+			}
+		}
+	}
+
+	// Strip enclosing double quotes
+	if (S.StartsWith(TEXT("\"")) && S.EndsWith(TEXT("\"")) && S.Len() >= 2)
+	{
+		S = S.Mid(1, S.Len() - 2);
+	}
+
+	// Reject raw type or object references (e.g., "(Link=...)", "Class'...'")
+	if (S.StartsWith(TEXT("(")) && S.EndsWith(TEXT(")")))
+	{
+		return FString();
+	}
+	if (S.StartsWith(TEXT("Class'")) || S.StartsWith(TEXT("UserDefinedStruct'")) || S.StartsWith(TEXT("Blueprint'")))
+	{
+		return FString();
+	}
+
+	return S.TrimStartAndEnd();
+}
+
+static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
+{
+	if (!Pin || Depth > 8)
+	{
+		return FString();
+	}
+
+	// 1. If this is an input pin, check its direct default value first
+	if (Pin->Direction == EGPD_Input)
+	{
+		FString DirectVal = SanitizeTextString(Pin->GetDefaultAsString());
+		if (!DirectVal.IsEmpty())
+		{
+			return DirectVal;
+		}
+	}
+
+	// 2. If the pin is linked to upstream pin(s), traverse connected nodes
 	if (Pin->LinkedTo.Num() > 0)
 	{
 		for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
@@ -226,29 +282,76 @@ static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
 				continue;
 			}
 
-			FString LinkedDefault = LinkedPin->GetDefaultAsString();
-			LinkedDefault.TrimStartAndEndInline();
-			if (LinkedDefault.StartsWith(TEXT("\"")) && LinkedDefault.EndsWith(TEXT("\"")) && LinkedDefault.Len() >= 2)
+			const UEdGraphNode* OwningNode = LinkedPin->GetOwningNode();
+			if (!OwningNode)
 			{
-				LinkedDefault = LinkedDefault.Mid(1, LinkedDefault.Len() - 2);
-			}
-			if (!LinkedDefault.IsEmpty())
-			{
-				return LinkedDefault;
+				continue;
 			}
 
-			const UEdGraphNode* OwningNode = LinkedPin->GetOwningNode();
-			if (OwningNode)
+			// Note: Never call LinkedPin->GetDefaultAsString() directly because LinkedPin is an output pin whose default string contains graph metadata or type names.
+
+			// Handle UK2Node_CallFunction (e.g. MakeLiteralString, MakeLiteralText, Conv_TextToString, etc.)
+			if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(OwningNode))
 			{
-				for (const UEdGraphPin* NodePin : OwningNode->Pins)
+				UFunction* TargetFunc = CallNode->GetTargetFunction();
+				FString FuncName = TargetFunc ? TargetFunc->GetName() : TEXT("");
+
+				// If literal string/text/name builder function
+				if (FuncName.Equals(TEXT("MakeLiteralString"), ESearchCase::IgnoreCase) ||
+					FuncName.Equals(TEXT("MakeLiteralText"), ESearchCase::IgnoreCase) ||
+					FuncName.Equals(TEXT("MakeLiteralName"), ESearchCase::IgnoreCase))
 				{
-					if (NodePin && NodePin->Direction == EGPD_Input && NodePin != LinkedPin)
+					if (const UEdGraphPin* ValPin = CallNode->FindPin(TEXT("Value")))
+					{
+						FString Val = ExtractTextFromPin(ValPin, Depth + 1);
+						if (!Val.IsEmpty())
+						{
+							return Val;
+						}
+					}
+				}
+
+				// For conversion functions (Conv_*) or other functions, check input pins
+				for (const UEdGraphPin* NodePin : CallNode->Pins)
+				{
+					if (NodePin && NodePin->Direction == EGPD_Input)
 					{
 						FString InputVal = ExtractTextFromPin(NodePin, Depth + 1);
 						if (!InputVal.IsEmpty())
 						{
 							return InputVal;
 						}
+					}
+				}
+			}
+
+			// Handle Blueprint variable read nodes
+			const UBlueprint* BP = OwningNode->GetBlueprint();
+			if (BP && OwningNode->GetClass()->GetName().Contains(TEXT("Variable")))
+			{
+				FString NodeTitle = OwningNode->GetNodeTitle(ENodeTitleType::ListView).ToString();
+				for (const FBPVariableDescription& VarDesc : BP->NewVariables)
+				{
+					if (NodeTitle.Contains(VarDesc.VarName.ToString()))
+					{
+						FString VarDefault = SanitizeTextString(VarDesc.DefaultValue);
+						if (!VarDefault.IsEmpty())
+						{
+							return VarDefault;
+						}
+					}
+				}
+			}
+
+			// Generic traversal for other nodes: inspect input pins
+			for (const UEdGraphPin* NodePin : OwningNode->Pins)
+			{
+				if (NodePin && NodePin->Direction == EGPD_Input)
+				{
+					FString InputVal = ExtractTextFromPin(NodePin, Depth + 1);
+					if (!InputVal.IsEmpty())
+					{
+						return InputVal;
 					}
 				}
 			}
@@ -264,12 +367,15 @@ TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProject
 
 	if (TargetAsset)
 	{
-		for (const FVoiceLineGuideTrack& GuideTrack : TargetAsset->GuideTracks)
+		for (const FCharacterLanguageData& LangData : TargetAsset->Languages)
 		{
-			FString CleanLine = GuideTrack.LineText.TrimStartAndEnd();
-			if (!CleanLine.IsEmpty())
+			for (const FVoiceLineGuideTrack& GuideTrack : LangData.GuideTracks)
 			{
-				DiscoveredLines.AddUnique(CleanLine);
+				FString CleanLine = GuideTrack.LineText.TrimStartAndEnd();
+				if (!CleanLine.IsEmpty())
+				{
+					DiscoveredLines.AddUnique(CleanLine);
+				}
 			}
 		}
 
@@ -574,10 +680,22 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 					}
 					SynthObj->SetArrayField(TEXT("reference_audio_files"), RefPathValues);
 
-					FString GuideFile = VoiceAsset->GetResolvedGuideAudioFileForLine(LineText);
+					const FVoiceLineGuideTrack* GuideTrack = VoiceAsset->FindGuideTrackForLine(LineText, CurrentLangCode);
+					FString GuideFile = VoiceAsset->GetResolvedGuideAudioFileForLine(LineText, CurrentLangCode);
 					if (!GuideFile.IsEmpty())
 					{
 						SynthObj->SetStringField(TEXT("guide_audio_file"), GuideFile);
+					}
+					if (GuideTrack)
+					{
+						if (!GuideTrack->Emotion.IsEmpty())
+						{
+							SynthObj->SetStringField(TEXT("emotion"), GuideTrack->Emotion);
+						}
+						if (FMath::Abs(GuideTrack->Speed - 1.0f) > 0.01f)
+						{
+							SynthObj->SetNumberField(TEXT("speed"), CurrentSpeed * GuideTrack->Speed);
+						}
 					}
 
 					FString SynthPayload;
@@ -993,10 +1111,22 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 				}
 				JsonObj->SetArrayField(TEXT("reference_audio_files"), RefPathValues);
 
-				FString GuideFile = Asset->GetResolvedGuideAudioFileForLine(LineText);
+				const FVoiceLineGuideTrack* GuideTrack = Asset->FindGuideTrackForLine(LineText, CurrentLangCode);
+				FString GuideFile = Asset->GetResolvedGuideAudioFileForLine(LineText, CurrentLangCode);
 				if (!GuideFile.IsEmpty())
 				{
 					JsonObj->SetStringField(TEXT("guide_audio_file"), GuideFile);
+				}
+				if (GuideTrack)
+				{
+					if (!GuideTrack->Emotion.IsEmpty())
+					{
+						JsonObj->SetStringField(TEXT("emotion"), GuideTrack->Emotion);
+					}
+					if (FMath::Abs(GuideTrack->Speed - 1.0f) > 0.01f)
+					{
+						JsonObj->SetNumberField(TEXT("speed"), CurrentSpeed * GuideTrack->Speed);
+					}
 				}
 
 				FString PayloadStr;

@@ -34,6 +34,7 @@ bool FCharacterVoiceAssetCachingTest::RunTest(const FString& Parameters)
 
 	TestTrue(TEXT("Voice line should be cached for EN"), VoiceAsset->HasPrecachedVoiceLine(TestLine, TEXT("EN")));
 	TestEqual(TEXT("Retrieved sound wave for EN should match cached sound wave"), VoiceAsset->GetPrecachedVoiceLine(TestLine, TEXT("EN")), DummySoundWaveEN);
+	TestEqual(TEXT("Caching a single line should create exactly 1 entry in PrecachedSoundWaves map"), VoiceAsset->PrecachedSoundWaves.Num(), 1);
 
 	// Multi-language caching test
 	USoundWave* DummySoundWaveES = NewObject<USoundWave>();
@@ -41,6 +42,7 @@ bool FCharacterVoiceAssetCachingTest::RunTest(const FString& Parameters)
 
 	TestTrue(TEXT("Voice line should be cached for ES"), VoiceAsset->HasPrecachedVoiceLine(TestLine, TEXT("ES")));
 	TestEqual(TEXT("Retrieved sound wave for ES should match ES sound wave"), VoiceAsset->GetPrecachedVoiceLine(TestLine, TEXT("ES")), DummySoundWaveES);
+	TestEqual(TEXT("Caching two lines across EN and ES should result in exactly 2 entries in PrecachedSoundWaves map"), VoiceAsset->PrecachedSoundWaves.Num(), 2);
 
 	// Case-insensitivity & whitespace trimming test
 	FString MessyLine = TEXT("  HELLO WORLD, THIS IS A TEST LINE.  ");
@@ -105,6 +107,21 @@ bool FCharacterVoiceMultiLanguageTest::RunTest(const FString& Parameters)
 	// Add French language configuration
 	FCharacterLanguageData& FrenchData = VoiceAsset->GetOrAddLanguageData(TEXT("FR"));
 	FrenchData.Speed = 0.9f;
+
+	// Per-language GuideTracks test
+	FVoiceLineGuideTrack GuideEN;
+	GuideEN.LineText = TEXT("Guide line text");
+	GuideEN.Emotion = TEXT("happy");
+	GuideEN.Speed = 1.1f;
+	DefaultData->GuideTracks.Add(GuideEN);
+
+	const FVoiceLineGuideTrack* FoundGuide = VoiceAsset->FindGuideTrackForLine(TEXT("Guide line text"), TEXT("EN"));
+	TestNotNull(TEXT("Guide track should be found in EN language data"), FoundGuide);
+	if (FoundGuide)
+	{
+		TestEqual(TEXT("Guide track emotion should match"), FoundGuide->Emotion, TEXT("happy"));
+		TestEqual(TEXT("Guide track speed should match"), FoundGuide->Speed, 1.1f);
+	}
 
 	TestEqual(TEXT("Asset should now contain 3 language entries"), VoiceAsset->Languages.Num(), 3);
 

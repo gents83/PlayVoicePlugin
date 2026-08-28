@@ -31,6 +31,10 @@ struct PLAYVOICEPLUGIN_API FCharacterLanguageData
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice", meta = (ClampMin = "0.5", ClampMax = "2.0"))
 	float Speed = 1.0f;
 
+	/** Optional guide tracks supplying recorded reference audio, speed, and emotion for specific dialogue lines in this language */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
+	TArray<FVoiceLineGuideTrack> GuideTracks;
+
 	/** Serialized OpenVoice tone color embedding data generated from reference audio for this language */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "PlayVoice")
 	FString ToneColorEmbeddingData;
@@ -106,10 +110,6 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	bool bRegenerateExistingVoiceLines = true;
 
-	/** Optional guide tracks providing recorded reference audio, speed, and emotions for specific dialogue lines */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
-	TArray<FVoiceLineGuideTrack> GuideTracks;
-
 	/** Map of pre-rendered SoundWaves keyed by normalized text line and language for zero-delay instant playback. Persisted upon saving asset. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "PlayVoice")
 	TMap<FString, TObjectPtr<USoundWave>> PrecachedSoundWaves;
@@ -145,9 +145,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	bool LoadModelFromFile(const FString& FilePath = TEXT(""), const FString& LanguageCode = TEXT(""));
 
-	/** Resolves the optional guide track audio file path for a dialogue line if configured */
+	/** Finds the optional guide track configuration for a dialogue line and language if present */
+	const FVoiceLineGuideTrack* FindGuideTrackForLine(const FString& TextLine, const FString& LanguageCode = TEXT("")) const;
+
+	/** Resolves the optional guide track audio file path for a dialogue line and language if configured */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
-	FString GetResolvedGuideAudioFileForLine(const FString& TextLine) const;
+	FString GetResolvedGuideAudioFileForLine(const FString& TextLine, const FString& LanguageCode = TEXT("")) const;
 
 	/** Retrieves all resolved reference audio file paths from ReferenceAudioFiles and ReferenceAudioFolder for a language */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")

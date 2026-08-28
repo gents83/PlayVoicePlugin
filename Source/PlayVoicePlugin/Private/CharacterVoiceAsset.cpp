@@ -110,7 +110,7 @@ FString UCharacterVoiceAsset::MakeCacheKey(const FString& TextLine, const FStrin
 	FString CleanLang = LanguageCode.TrimStartAndEnd().ToUpper();
 	if (CleanLang.IsEmpty())
 	{
-		return CleanText;
+		CleanLang = TEXT("EN");
 	}
 	return FString::Printf(TEXT("%s:%s"), *CleanLang, *CleanText);
 }
@@ -124,26 +124,30 @@ void UCharacterVoiceAsset::CacheVoiceLine(const FString& TextLine, USoundWave* I
 {
 	if (!TextLine.IsEmpty() && InSoundWave)
 	{
-		FString TargetLang = LanguageCode;
+		FString TargetLang = LanguageCode.TrimStartAndEnd().ToUpper();
 		if (TargetLang.IsEmpty())
 		{
-			TargetLang = DefaultLanguage;
+			TargetLang = DefaultLanguage.TrimStartAndEnd().ToUpper();
+		}
+		if (TargetLang.IsEmpty())
+		{
+			TargetLang = TEXT("EN");
 		}
 		FString KeyWithLang = MakeCacheKey(TextLine, TargetLang);
 		PrecachedSoundWaves.Add(KeyWithLang, InSoundWave);
-
-		// Also add plain text key for direct lookups
-		FString PlainKey = TextLine.TrimStartAndEnd().ToLower();
-		PrecachedSoundWaves.Add(PlainKey, InSoundWave);
 	}
 }
 
 USoundWave* UCharacterVoiceAsset::GetPrecachedVoiceLine(const FString& TextLine, const FString& LanguageCode) const
 {
-	FString TargetLang = LanguageCode;
+	FString TargetLang = LanguageCode.TrimStartAndEnd().ToUpper();
 	if (TargetLang.IsEmpty())
 	{
-		TargetLang = DefaultLanguage;
+		TargetLang = DefaultLanguage.TrimStartAndEnd().ToUpper();
+	}
+	if (TargetLang.IsEmpty())
+	{
+		TargetLang = TEXT("EN");
 	}
 
 	FString KeyWithLang = MakeCacheKey(TextLine, TargetLang);
@@ -155,6 +159,7 @@ USoundWave* UCharacterVoiceAsset::GetPrecachedVoiceLine(const FString& TextLine,
 		}
 	}
 
+	// Legacy fallback lookup for un-prefixed keys in older saved assets
 	FString PlainKey = TextLine.TrimStartAndEnd().ToLower();
 	if (const TObjectPtr<USoundWave>* FoundSound = PrecachedSoundWaves.Find(PlainKey))
 	{
@@ -344,29 +349,43 @@ TArray<FString> UCharacterVoiceAsset::ResolveAudioFilesFromFolderAndFiles(const 
 	return ResolvedFiles;
 }
 
-FString UCharacterVoiceAsset::GetResolvedGuideAudioFileForLine(const FString& TextLine) const
+const FVoiceLineGuideTrack* UCharacterVoiceAsset::FindGuideTrackForLine(const FString& TextLine, const FString& LanguageCode) const
 {
 	FString CleanText = TextLine.TrimStartAndEnd().ToLower();
 	if (CleanText.IsEmpty())
 	{
-		return FString();
+		return nullptr;
 	}
 
-	for (const FVoiceLineGuideTrack& GuideTrack : GuideTracks)
+	const FCharacterLanguageData* LangData = FindLanguageData(LanguageCode);
+	if (LangData)
 	{
-		if (GuideTrack.LineText.TrimStartAndEnd().ToLower().Equals(CleanText))
+		for (const FVoiceLineGuideTrack& GuideTrack : LangData->GuideTracks)
 		{
-			FString PathStr = GuideTrack.GuideAudioFile.FilePath.TrimStartAndEnd();
-			if (!PathStr.IsEmpty())
+			if (GuideTrack.LineText.TrimStartAndEnd().ToLower().Equals(CleanText))
 			{
-				if (FPaths::IsRelative(PathStr))
-				{
-					PathStr = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), PathStr);
-				}
-				if (IFileManager::Get().FileExists(*PathStr))
-				{
-					return PathStr;
-				}
+				return &GuideTrack;
+			}
+		}
+	}
+	return nullptr;
+}
+
+FString UCharacterVoiceAsset::GetResolvedGuideAudioFileForLine(const FString& TextLine, const FString& LanguageCode) const
+{
+	const FVoiceLineGuideTrack* GuideTrack = FindGuideTrackForLine(TextLine, LanguageCode);
+	if (GuideTrack)
+	{
+		FString PathStr = GuideTrack->GuideAudioFile.FilePath.TrimStartAndEnd();
+		if (!PathStr.IsEmpty())
+		{
+			if (FPaths::IsRelative(PathStr))
+			{
+				PathStr = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), PathStr);
+			}
+			if (IFileManager::Get().FileExists(*PathStr))
+			{
+				return PathStr;
 			}
 		}
 	}
@@ -461,10 +480,21 @@ void UCharacterVoiceAsset::AutoLinkPrecachedSoundWaves()
 	{
 		if (USoundWave* SoundWave = Cast<USoundWave>(Obj))
 		{
-			FString ObjName = SoundWave->GetName();
-			if (!PrecachedSoundWaves.Contains(ObjName))
+			// Check if already linked as a value
+			bool bAlreadyLinked = false;
+			for (const auto& KVP : PrecachedSoundWaves)
 			{
-				PrecachedSoundWaves.Add(ObjName.ToLower(), SoundWave);
+				if (KVP.Value == SoundWave)
+				{
+					bAlreadyLinked = true;
+					break;
+				}
+			}
+
+			if (!bAlreadyLinked)
+			{
+				FString TargetLang = DefaultLanguage.IsEmpty() ? TEXT("EN") : DefaultLanguage;
+				PrecachedSoundWaves.Add(MakeCacheKey(SoundWave->GetName(), TargetLang), SoundWave);
 			}
 		}
 	}
