@@ -20,6 +20,15 @@ from typing import List, Optional, Dict, Any
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("OpenVoiceService")
 
+# Safe audioop import fallback across Python standard library versions
+try:
+    import audioop
+except ImportError:
+    try:
+        import pyaudioop as audioop
+    except ImportError:
+        audioop = None
+
 # OpenVoice / Torch / MeloTTS Imports with fallback
 HAS_OPENVOICE = False
 try:
