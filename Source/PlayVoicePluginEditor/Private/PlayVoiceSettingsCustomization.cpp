@@ -223,7 +223,7 @@ FReply FPlayVoiceSettingsCustomization::OnLaunchSetupClicked()
 
 	FString UpgradePipArgs = TEXT("-m pip install --upgrade pip");
 
-	FString BaseExtraArgs = ExtraArgs.IsEmpty() ? TEXT("--prefer-binary") : ExtraArgs;
+	FString BaseExtraArgs = ExtraArgs.IsEmpty() ? TEXT("--prefer-binary --no-warn-script-location") : ExtraArgs;
 
 	FString CmdArgs = FString::Printf(TEXT("-m pip install %s -r \"%s\""), *BaseExtraArgs, *ResolvedReqFile);
 	if (!TargetDir.IsEmpty())

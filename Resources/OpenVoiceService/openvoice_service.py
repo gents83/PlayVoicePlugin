@@ -20,6 +20,27 @@ from typing import List, Optional, Dict, Any
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("OpenVoiceService")
 
+# Suppress HuggingFace symlink warnings and allow proxied NLTK downloads
+os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
+os.environ['NLTK_ALLOW_PROXIED_URLOPEN'] = '1'
+
+# Pre-download required NLTK resources (cmudict, averaged_perceptron_tagger) for MeloTTS english cleaner
+try:
+    import nltk
+    for nltk_res in ['cmudict', 'averaged_perceptron_tagger', 'averaged_perceptron_tagger_eng']:
+        try:
+            nltk.data.find(f'corpora/{nltk_res}')
+        except LookupError:
+            try:
+                nltk.data.find(f'taggers/{nltk_res}')
+            except LookupError:
+                try:
+                    nltk.download(nltk_res, quiet=True)
+                except Exception as dl_err:
+                    logger.warning(f"Could not pre-download NLTK resource {nltk_res}: {dl_err}")
+except Exception:
+    pass
+
 # Safe audioop import fallback across Python standard library versions
 try:
     import audioop
