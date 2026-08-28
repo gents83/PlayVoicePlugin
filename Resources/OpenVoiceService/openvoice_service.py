@@ -27,7 +27,14 @@ except ImportError:
     try:
         import pyaudioop as audioop
     except ImportError:
-        audioop = None
+        try:
+            import audioop_lts as audioop
+        except ImportError:
+            audioop = None
+
+if audioop is not None:
+    sys.modules['audioop'] = audioop
+    sys.modules['pyaudioop'] = audioop
 
 # OpenVoice / Torch / MeloTTS Imports with fallback
 HAS_OPENVOICE = False

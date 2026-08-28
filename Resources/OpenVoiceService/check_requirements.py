@@ -22,6 +22,7 @@ PACKAGE_IMPORT_MAP = {
     "openvoice": ["openvoice"],
     "audioop_lts": ["audioop", "pyaudioop", "audioop_lts"],
     "audioop-lts": ["audioop", "pyaudioop", "audioop_lts"],
+    "pyaudioop": ["audioop", "pyaudioop", "audioop_lts"],
 }
 
 
