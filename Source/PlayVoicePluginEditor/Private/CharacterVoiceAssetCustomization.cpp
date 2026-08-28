@@ -850,7 +850,9 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 		}
 
 		const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
-		FString Url = (Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983")) + TEXT("/extract");
+		FString BaseUrl = Settings && !Settings->ServiceUrl.IsEmpty() ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
+		BaseUrl.RemoveFromEnd(TEXT("/"));
+		FString Url = BaseUrl + TEXT("/extract");
 		float TimeoutSecs = Settings && Settings->RequestTimeout > 0.0f ? FMath::Max(Settings->RequestTimeout, 300.0f) : 300.0f;
 
 		int32 ProcessedLangs = 0;
