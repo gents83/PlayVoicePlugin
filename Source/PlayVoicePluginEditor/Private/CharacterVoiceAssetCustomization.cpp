@@ -988,7 +988,7 @@ FReply FCharacterVoiceAssetCustomization::OnCleanPrecachedSoundWavesClicked()
 		if (SoundWave)
 		{
 			UPackage* Pkg = SoundWave->GetOutermost();
-			SoundWave->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional | REN_ForceNoReregister);
+			SoundWave->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional);
 			SoundWave->MarkAsGarbage();
 			if (Pkg && Pkg != GetTransientPackage())
 			{
@@ -997,7 +997,7 @@ FReply FCharacterVoiceAssetCustomization::OnCleanPrecachedSoundWavesClicked()
 		}
 	}
 
-	CollectGarbage(GARBAGE_COLLECTION_KEEP_FLAGS);
+	CollectGarbage(RF_NoFlags);
 
 	for (FString& FilePath : FilePathsToDelete)
 	{
