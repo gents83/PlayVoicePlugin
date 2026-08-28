@@ -132,13 +132,22 @@ class OpenVoiceEngine:
         valid_files = [f for f in reference_files if os.path.exists(f)]
         acoustic_profile = analyze_reference_audio_files(valid_files)
 
-        if HAS_OPENVOICE and valid_files:
+        if not valid_files:
+            err_msg = f"No valid reference audio files found on disk for character '{character_name}' at provided paths: {reference_files}"
+            logger.error(err_msg)
+            return {
+                "status": "error",
+                "message": err_msg,
+                "character_name": character_name
+            }
+
+        if HAS_OPENVOICE and self.converter is not None:
             try:
                 device = "cuda" if torch.cuda.is_available() else "cpu"
                 target_dir = os.path.join(tempfile.gettempdir(), 'processed')
                 os.makedirs(target_dir, exist_ok=True)
                 target_se, audio_name = get_se(valid_files[0], self.converter, target_dir=target_dir, vad=True)
-                if HAS_OPENVOICE and isinstance(target_se, torch.Tensor):
+                if isinstance(target_se, torch.Tensor):
                     se_list = target_se.detach().cpu().numpy().tolist()
                 elif hasattr(target_se, 'tolist'):
                     se_list = target_se.tolist()
@@ -160,41 +169,23 @@ class OpenVoiceEngine:
                     "model_checkpoint": f"{self.checkpoint_dir}/{character_name}_se.pth"
                 }
             except Exception as e:
-                logger.error(f"OpenVoice extraction failed: {e}")
+                logger.warning(f"OpenVoice get_se extraction failed ({e}). Falling back to acoustic profile extraction.")
 
-        # If OpenVoice is not installed, generate fallback acoustic profile embedding
-        if not HAS_OPENVOICE:
-            logger.info(f"OpenVoice engine not present. Generating fallback acoustic profile embedding for '{character_name}'.")
-            embedding_payload = {
-                "character_name": character_name,
-                "num_reference_files": len(valid_files),
-                "valid_reference_files": valid_files,
-                "target_se": [],
-                "acoustic_profile": acoustic_profile,
-                "engine": "Fallback-TTS"
-            }
-            return {
-                "status": "success",
-                "character_name": character_name,
-                "embedding_data": json.dumps(embedding_payload),
-                "model_checkpoint": f"{self.checkpoint_dir}/{character_name}_se.pth"
-            }
-
-        if not valid_files:
-            err_msg = f"No valid reference audio files found on disk for character '{character_name}'."
-            logger.error(err_msg)
-            return {
-                "status": "error",
-                "message": err_msg,
-                "character_name": character_name
-            }
-
-        err_msg = f"Tone color extraction failed for character '{character_name}' using reference audio files."
-        logger.error(err_msg)
+        # Fallback acoustic profile embedding generator if OpenVoice is not present or extraction encountered an error / missing converter
+        logger.info(f"Generating fallback acoustic profile embedding for '{character_name}' (Reference files: {len(valid_files)}).")
+        embedding_payload = {
+            "character_name": character_name,
+            "num_reference_files": len(valid_files),
+            "valid_reference_files": valid_files,
+            "target_se": [],
+            "acoustic_profile": acoustic_profile,
+            "engine": "Fallback-TTS"
+        }
         return {
-            "status": "error",
-            "message": err_msg,
-            "character_name": character_name
+            "status": "success",
+            "character_name": character_name,
+            "embedding_data": json.dumps(embedding_payload),
+            "model_checkpoint": f"{self.checkpoint_dir}/{character_name}_se.pth"
         }
 
     def synthesize(self, text: str, character_name: str, language: str = "EN", speed: float = 1.0, embedding_data: Optional[str] = None, reference_audio_files: Optional[List[str]] = None, guide_audio_file: Optional[str] = None, emotion: Optional[str] = None) -> bytes:
