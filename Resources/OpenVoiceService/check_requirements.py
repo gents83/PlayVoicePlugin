@@ -17,6 +17,40 @@ except ImportError:
 PACKAGE_IMPORT_MAP = {
     "melo_tts": ["melo", "melo_tts", "melotts"],
     "melo-tts": ["melo", "melo_tts", "melotts"],
+    "myshell_openvoice": ["openvoice", "myshell_openvoice"],
+    "myshell-openvoice": ["openvoice", "myshell_openvoice"],
+    "openvoice": ["openvoice"],
+    "audioop_lts": ["audioop", "pyaudioop", "audioop_lts"],
+    "audioop-lts": ["audioop", "pyaudioop", "audioop_lts"],
+    "pyaudioop": ["audioop", "pyaudioop", "audioop_lts"],
+    "whisper_timestamped": ["whisper_timestamped"],
+    "whisper-timestamped": ["whisper_timestamped"],
+    "eng_to_ipa": ["eng_to_ipa"],
+    "eng-to-ipa": ["eng_to_ipa"],
+    "speechrecognition": ["speech_recognition"],
+    "mecab_python3": ["MeCab", "mecab"],
+    "mecab-python3": ["MeCab", "mecab"],
+    "g2p_en": ["g2p_en"],
+    "cached_path": ["cached_path"],
+    "cached-path": ["cached_path"],
+    "pypinyin": ["pypinyin"],
+    "cutlet": ["cutlet"],
+    "pykakasi": ["pykakasi"],
+    "anyascii": ["anyascii"],
+    "inflect": ["inflect"],
+    "onnxruntime": ["onnxruntime"],
+    "g2pkk": ["g2pkk"],
+    "jamo": ["jamo"],
+    "langid": ["langid"],
+    "loguru": ["loguru"],
+    "txtsplit": ["txtsplit"],
+    "unidic": ["unidic"],
+    "gruut": ["gruut"],
+    "tensorboard": ["tensorboard"],
+    "gradio": ["gradio"],
+    "unidic_lite": ["unidic_lite"],
+    "unidic-lite": ["unidic_lite"],
+    "ipadic": ["ipadic"],
 }
 
 
@@ -36,14 +70,33 @@ def check_requirements(requirements_file: str) -> bool:
                 installed.add(name.lower().replace('-', '_'))
 
     missing = []
-    for req in lines:
+
+    # Always check core OpenVoice and MeloTTS packages as well (deduplicated)
+    required_pkgs = []
+    seen = set()
+    for item in lines + ["myshell-openvoice", "melo-tts"]:
+        if item not in seen:
+            seen.add(item)
+            required_pkgs.append(item)
+
+    for req in required_pkgs:
+        if req.startswith('#') or req.startswith('--'):
+            continue
+
         # If line contains an optional extra marker (e.g. '; extra == ...'), ignore for base requirements check
         if ';' in req:
             condition_part = req.split(';', 1)[1].strip()
             if 'extra ==' in condition_part or 'extra!=' in condition_part or 'extra' in condition_part:
                 continue
 
-        raw_pkg = req.split(';')[0].split('>=')[0].split('<=')[0].split('==')[0].split('~=')[0].split('!=')[0].strip().lower()
+        # Extract package or repository module name
+        raw_req = req.split(';')[0].strip()
+        if 'git+' in raw_req or 'github.com' in raw_req:
+            repo_name = raw_req.rstrip('.git').split('/')[-1].lower()
+            raw_pkg = repo_name.replace('_', '-').replace('melotts', 'melo-tts').replace('openvoice', 'myshell-openvoice')
+        else:
+            raw_pkg = raw_req.split('@')[0].split('>=')[0].split('<=')[0].split('==')[0].split('~=')[0].split('!=')[0].strip().lower()
+
         norm_pkg = raw_pkg.replace('-', '_')
 
         if not norm_pkg:
@@ -68,7 +121,7 @@ def check_requirements(requirements_file: str) -> bool:
             except Exception:
                 pass
 
-        if not bInstalled:
+        if not bInstalled and raw_pkg not in missing:
             missing.append(raw_pkg)
 
     if missing:

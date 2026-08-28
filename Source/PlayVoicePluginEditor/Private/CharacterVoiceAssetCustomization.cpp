@@ -22,6 +22,7 @@
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_Knot.h"
 #include "Misc/PackageName.h"
 #include "UObject/Package.h"
 #include "Framework/Notifications/NotificationManager.h"
@@ -115,7 +116,7 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 static void EnsureServiceReadyAndExecute(TFunction<void(bool bReady)> OnComplete, int32 MaxAttempts = 30)
 {
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
-	FString BaseUrl = Settings && !Settings->ServiceUrl.IsEmpty() ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
+	FString BaseUrl = Settings && !Settings->ServiceUrl.IsEmpty() ? Settings->ServiceUrl.TrimStartAndEnd() : TEXT("http://127.0.0.1:1983");
 	BaseUrl.RemoveFromEnd(TEXT("/"));
 
 	// First, test if service is already running and healthy
@@ -199,24 +200,100 @@ static void EnsureServiceReadyAndExecute(TFunction<void(bool bReady)> OnComplete
 	InitialHealthReq->ProcessRequest();
 }
 
-static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
+static FString SanitizeTextString(const FString& InRaw)
 {
-	if (!Pin || Depth > 5)
+	FString S = InRaw.TrimStartAndEnd();
+	if (S.IsEmpty())
 	{
 		return FString();
 	}
 
-	FString DirectDefault = Pin->GetDefaultAsString();
-	DirectDefault.TrimStartAndEndInline();
-	if (DirectDefault.StartsWith(TEXT("\"")) && DirectDefault.EndsWith(TEXT("\"")) && DirectDefault.Len() >= 2)
+	// Reject engine/script default object references or class paths
+	if (S.Contains(TEXT("/Script/")) ||
+		S.Contains(TEXT("Default__")) ||
+		S.Contains(TEXT("KismetTextLibrary")) ||
+		S.Contains(TEXT("KismetStringLibrary")) ||
+		S.StartsWith(TEXT("/Engine/")) ||
+		S.StartsWith(TEXT("Class'")) ||
+		S.StartsWith(TEXT("Function'")) ||
+		S.StartsWith(TEXT("UserDefinedStruct'")) ||
+		S.StartsWith(TEXT("Blueprint'")))
 	{
-		DirectDefault = DirectDefault.Mid(1, DirectDefault.Len() - 2);
-	}
-	if (!DirectDefault.IsEmpty())
-	{
-		return DirectDefault;
+		return FString();
 	}
 
+	// Handle FText pin format (SourceString="...", Namespace="...", Key="...")
+	int32 SourceIdx = S.Find(TEXT("SourceString="));
+	if (SourceIdx != INDEX_NONE)
+	{
+		int32 StartQuote = S.Find(TEXT("\""), ESearchCase::IgnoreCase, ESearchDir::FromStart, SourceIdx);
+		if (StartQuote != INDEX_NONE)
+		{
+			int32 EndQuote = S.Find(TEXT("\""), ESearchCase::IgnoreCase, ESearchDir::FromStart, StartQuote + 1);
+			if (EndQuote != INDEX_NONE)
+			{
+				return S.Mid(StartQuote + 1, EndQuote - StartQuote - 1).TrimStartAndEnd();
+			}
+		}
+	}
+
+	// Handle NSLOCTEXT("...", "...", "Text") or INVTEXT("Text")
+	if (S.StartsWith(TEXT("NSLOCTEXT(")) || S.StartsWith(TEXT("INVTEXT(")))
+	{
+		int32 LastQuoteEnd = S.Find(TEXT("\""), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+		if (LastQuoteEnd != INDEX_NONE)
+		{
+			int32 LastQuoteStart = S.Find(TEXT("\""), ESearchCase::IgnoreCase, ESearchDir::FromEnd, LastQuoteEnd - 1);
+			if (LastQuoteStart != INDEX_NONE && LastQuoteStart < LastQuoteEnd)
+			{
+				return S.Mid(LastQuoteStart + 1, LastQuoteEnd - LastQuoteStart - 1).TrimStartAndEnd();
+			}
+		}
+	}
+
+	// Strip enclosing double quotes
+	if (S.StartsWith(TEXT("\"")) && S.EndsWith(TEXT("\"")) && S.Len() >= 2)
+	{
+		S = S.Mid(1, S.Len() - 2);
+	}
+
+	// Reject raw struct/object representations like "(Link=...)"
+	if (S.StartsWith(TEXT("(")) && S.EndsWith(TEXT(")")))
+	{
+		return FString();
+	}
+
+	return S.TrimStartAndEnd();
+}
+
+static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
+{
+	if (!Pin || Depth > 10)
+	{
+		return FString();
+	}
+
+	// Ignore Target / self / WorldContextObject pins (target objects for function calls, not text inputs)
+	FString PinName = Pin->PinName.ToString();
+	if (PinName.Equals(TEXT("self"), ESearchCase::IgnoreCase) ||
+		PinName.Equals(TEXT("Target"), ESearchCase::IgnoreCase) ||
+		PinName.Equals(TEXT("WorldContextObject"), ESearchCase::IgnoreCase) ||
+		PinName.Equals(TEXT("WorldContext"), ESearchCase::IgnoreCase))
+	{
+		return FString();
+	}
+
+	// 1. If this is an input pin, check its direct default value first
+	if (Pin->Direction == EGPD_Input)
+	{
+		FString DirectVal = SanitizeTextString(Pin->GetDefaultAsString());
+		if (!DirectVal.IsEmpty())
+		{
+			return DirectVal;
+		}
+	}
+
+	// 2. If the pin is linked to upstream pin(s), traverse connected nodes
 	if (Pin->LinkedTo.Num() > 0)
 	{
 		for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
@@ -226,23 +303,110 @@ static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
 				continue;
 			}
 
-			FString LinkedDefault = LinkedPin->GetDefaultAsString();
-			LinkedDefault.TrimStartAndEndInline();
-			if (LinkedDefault.StartsWith(TEXT("\"")) && LinkedDefault.EndsWith(TEXT("\"")) && LinkedDefault.Len() >= 2)
+			const UEdGraphNode* OwningNode = LinkedPin->GetOwningNode();
+			if (!OwningNode)
 			{
-				LinkedDefault = LinkedDefault.Mid(1, LinkedDefault.Len() - 2);
-			}
-			if (!LinkedDefault.IsEmpty())
-			{
-				return LinkedDefault;
+				continue;
 			}
 
-			const UEdGraphNode* OwningNode = LinkedPin->GetOwningNode();
-			if (OwningNode)
+			// Handle Reroute Nodes (UK2Node_Knot)
+			if (const UK2Node_Knot* KnotNode = Cast<UK2Node_Knot>(OwningNode))
 			{
-				for (const UEdGraphPin* NodePin : OwningNode->Pins)
+				if (const UEdGraphPin* KnotInput = KnotNode->GetInputPin())
 				{
-					if (NodePin && NodePin->Direction == EGPD_Input && NodePin != LinkedPin)
+					FString KnotVal = ExtractTextFromPin(KnotInput, Depth + 1);
+					if (!KnotVal.IsEmpty())
+					{
+						return KnotVal;
+					}
+				}
+			}
+
+			// Handle UK2Node_CallFunction (e.g. MakeLiteralString, MakeLiteralText, Conv_TextToString, etc.)
+			if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(OwningNode))
+			{
+				UFunction* TargetFunc = CallNode->GetTargetFunction();
+				FString FuncName = TargetFunc ? TargetFunc->GetName() : TEXT("");
+
+				// If literal string/text/name builder function
+				if (FuncName.Equals(TEXT("MakeLiteralString"), ESearchCase::IgnoreCase) ||
+					FuncName.Equals(TEXT("MakeLiteralText"), ESearchCase::IgnoreCase) ||
+					FuncName.Equals(TEXT("MakeLiteralName"), ESearchCase::IgnoreCase))
+				{
+					if (const UEdGraphPin* ValPin = CallNode->FindPin(TEXT("Value")))
+					{
+						FString Val = ExtractTextFromPin(ValPin, Depth + 1);
+						if (!Val.IsEmpty())
+						{
+							return Val;
+						}
+					}
+				}
+
+				// For conversion functions (Conv_TextToString, Conv_NameToText, etc.), prioritize text input pins
+				TArray<FString> PreferredPinNames = { TEXT("InText"), TEXT("InString"), TEXT("InName"), TEXT("Text"), TEXT("String"), TEXT("Name"), TEXT("Value") };
+				for (const FString& PrefName : PreferredPinNames)
+				{
+					if (const UEdGraphPin* InputPin = CallNode->FindPin(*PrefName))
+					{
+						if (InputPin->Direction == EGPD_Input)
+						{
+							FString InputVal = ExtractTextFromPin(InputPin, Depth + 1);
+							if (!InputVal.IsEmpty())
+							{
+								return InputVal;
+							}
+						}
+					}
+				}
+
+				// Check all other non-target input pins
+				for (const UEdGraphPin* NodePin : CallNode->Pins)
+				{
+					if (NodePin && NodePin->Direction == EGPD_Input)
+					{
+						FString NodePinName = NodePin->PinName.ToString();
+						if (!NodePinName.Equals(TEXT("self"), ESearchCase::IgnoreCase) &&
+							!NodePinName.Equals(TEXT("Target"), ESearchCase::IgnoreCase) &&
+							!NodePinName.Equals(TEXT("WorldContextObject"), ESearchCase::IgnoreCase))
+						{
+							FString InputVal = ExtractTextFromPin(NodePin, Depth + 1);
+							if (!InputVal.IsEmpty())
+							{
+								return InputVal;
+							}
+						}
+					}
+				}
+			}
+
+			// Handle Blueprint variable read nodes
+			const UBlueprint* BP = OwningNode->GetTypedOuter<UBlueprint>();
+			if (BP && OwningNode->GetClass()->GetName().Contains(TEXT("Variable")))
+			{
+				FString NodeTitle = OwningNode->GetNodeTitle(ENodeTitleType::ListView).ToString();
+				for (const FBPVariableDescription& VarDesc : BP->NewVariables)
+				{
+					if (NodeTitle.Contains(VarDesc.VarName.ToString()))
+					{
+						FString VarDefault = SanitizeTextString(VarDesc.DefaultValue);
+						if (!VarDefault.IsEmpty())
+						{
+							return VarDefault;
+						}
+					}
+				}
+			}
+
+			// Generic traversal for other nodes: inspect non-target input pins
+			for (const UEdGraphPin* NodePin : OwningNode->Pins)
+			{
+				if (NodePin && NodePin->Direction == EGPD_Input)
+				{
+					FString NodePinName = NodePin->PinName.ToString();
+					if (!NodePinName.Equals(TEXT("self"), ESearchCase::IgnoreCase) &&
+						!NodePinName.Equals(TEXT("Target"), ESearchCase::IgnoreCase) &&
+						!NodePinName.Equals(TEXT("WorldContextObject"), ESearchCase::IgnoreCase))
 					{
 						FString InputVal = ExtractTextFromPin(NodePin, Depth + 1);
 						if (!InputVal.IsEmpty())
@@ -264,12 +428,15 @@ TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProject
 
 	if (TargetAsset)
 	{
-		for (const FVoiceLineGuideTrack& GuideTrack : TargetAsset->GuideTracks)
+		for (const FCharacterLanguageData& LangData : TargetAsset->Languages)
 		{
-			FString CleanLine = GuideTrack.LineText.TrimStartAndEnd();
-			if (!CleanLine.IsEmpty())
+			for (const FVoiceLineGuideTrack& GuideTrack : LangData.GuideTracks)
 			{
-				DiscoveredLines.AddUnique(CleanLine);
+				FString CleanLine = GuideTrack.LineText.TrimStartAndEnd();
+				if (!CleanLine.IsEmpty())
+				{
+					DiscoveredLines.AddUnique(CleanLine);
+				}
 			}
 		}
 
@@ -404,7 +571,9 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 		UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateAndProcessAllClicked: Discovered %d dialogue lines for pre-processing."), DiscoveredBlueprintLines.Num());
 
 		const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
-		FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
+		FString BaseUrl = Settings && !Settings->ServiceUrl.IsEmpty() ? Settings->ServiceUrl.TrimStartAndEnd() : TEXT("http://127.0.0.1:1983");
+		BaseUrl.RemoveFromEnd(TEXT("/"));
+		float TimeoutSecs = Settings && Settings->RequestTimeout > 0.0f ? FMath::Max(Settings->RequestTimeout, 300.0f) : 300.0f;
 
 		int32 TotalLangsProcessed = 0;
 		TArray<FCharacterLanguageData*> ConfiguredLanguages;
@@ -495,11 +664,12 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 			ExtractReq->SetVerb(TEXT("POST"));
 			ExtractReq->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 			ExtractReq->SetContentAsString(ExtractPayload);
+			ExtractReq->SetTimeout(TimeoutSecs);
 
 			FString CurrentLangCode = LangData.LanguageCode;
 			float CurrentSpeed = LangData.Speed;
 
-			ExtractReq->OnProcessRequestComplete().BindLambda([WeakTargetAsset, BaseUrl, CurrentLangCode, CurrentSpeed, DiscoveredBlueprintLines, StepTaskProgress, FailedTasks](FHttpRequestPtr Req, FHttpResponsePtr Res, bool bExtractSuccess)
+			ExtractReq->OnProcessRequestComplete().BindLambda([ExtractReq, WeakTargetAsset, BaseUrl, CurrentLangCode, CurrentSpeed, TimeoutSecs, DiscoveredBlueprintLines, StepTaskProgress, FailedTasks](FHttpRequestPtr Req, FHttpResponsePtr Res, bool bExtractSuccess)
 			{
 				bool bSuccess = bExtractSuccess && Res.IsValid() && EHttpResponseCodes::IsOk(Res->GetResponseCode());
 				if (!bSuccess)
@@ -574,10 +744,22 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 					}
 					SynthObj->SetArrayField(TEXT("reference_audio_files"), RefPathValues);
 
-					FString GuideFile = VoiceAsset->GetResolvedGuideAudioFileForLine(LineText);
+					const FVoiceLineGuideTrack* GuideTrack = VoiceAsset->FindGuideTrackForLine(LineText, CurrentLangCode);
+					FString GuideFile = VoiceAsset->GetResolvedGuideAudioFileForLine(LineText, CurrentLangCode);
 					if (!GuideFile.IsEmpty())
 					{
 						SynthObj->SetStringField(TEXT("guide_audio_file"), GuideFile);
+					}
+					if (GuideTrack)
+					{
+						if (!GuideTrack->Emotion.IsEmpty())
+						{
+							SynthObj->SetStringField(TEXT("emotion"), GuideTrack->Emotion);
+						}
+						if (FMath::Abs(GuideTrack->Speed - 1.0f) > 0.01f)
+						{
+							SynthObj->SetNumberField(TEXT("speed"), CurrentSpeed * GuideTrack->Speed);
+						}
 					}
 
 					FString SynthPayload;
@@ -589,8 +771,9 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 					SynthReq->SetVerb(TEXT("POST"));
 					SynthReq->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 					SynthReq->SetContentAsString(SynthPayload);
+					SynthReq->SetTimeout(TimeoutSecs);
 
-					SynthReq->OnProcessRequestComplete().BindLambda([WeakTargetAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr SReq, FHttpResponsePtr SRes, bool bSynthSuccess)
+					SynthReq->OnProcessRequestComplete().BindLambda([SynthReq, WeakTargetAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr SReq, FHttpResponsePtr SRes, bool bSynthSuccess)
 					{
 						bool bSynthOk = bSynthSuccess && SRes.IsValid() && EHttpResponseCodes::IsOk(SRes->GetResponseCode());
 						if (!bSynthOk)
@@ -668,7 +851,10 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 		}
 
 		const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
-		FString Url = (Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983")) + TEXT("/extract");
+		FString BaseUrl = Settings && !Settings->ServiceUrl.IsEmpty() ? Settings->ServiceUrl.TrimStartAndEnd() : TEXT("http://127.0.0.1:1983");
+		BaseUrl.RemoveFromEnd(TEXT("/"));
+		FString Url = BaseUrl + TEXT("/extract");
+		float TimeoutSecs = Settings && Settings->RequestTimeout > 0.0f ? FMath::Max(Settings->RequestTimeout, 300.0f) : 300.0f;
 
 		int32 ProcessedLangs = 0;
 		TArray<FCharacterLanguageData*> ConfiguredLanguages;
@@ -759,47 +945,67 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 			HttpRequest->SetVerb(TEXT("POST"));
 			HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 			HttpRequest->SetContentAsString(PayloadStr);
+			HttpRequest->SetTimeout(TimeoutSecs);
 
 			FString CurrentLangCode = LangData.LanguageCode;
 
-			HttpRequest->OnProcessRequestComplete().BindLambda([WeakTargetAsset, CurrentLangCode, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
+			HttpRequest->OnProcessRequestComplete().BindLambda([HttpRequest, WeakTargetAsset, CurrentLangCode, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
 			{
 				bool bSuccess = bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode());
-				if (!bSuccess)
-				{
-					(*FailedTasks)++;
-					UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateModelClicked: Extraction failed for language '%s'."), *CurrentLangCode);
-				}
+				FString ErrorMessage;
 
-				if (bSuccess)
+				if (Response.IsValid())
 				{
 					TSharedPtr<FJsonObject> ResponseObj;
 					TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Response->GetContentAsString());
-					if (FJsonSerializer::Deserialize(Reader, ResponseObj) && ResponseObj.IsValid())
+					bool bParsed = FJsonSerializer::Deserialize(Reader, ResponseObj) && ResponseObj.IsValid();
+
+					if (bSuccess && bParsed)
 					{
-								FString Status = ResponseObj->GetStringField(TEXT("status"));
-								if (Status.Equals(TEXT("success"), ESearchCase::IgnoreCase))
+						FString Status = ResponseObj->HasField(TEXT("status")) ? ResponseObj->GetStringField(TEXT("status")) : TEXT("");
+						if (Status.IsEmpty() || Status.Equals(TEXT("success"), ESearchCase::IgnoreCase))
 						{
-									if (WeakTargetAsset.IsValid())
+							if (WeakTargetAsset.IsValid())
 							{
-										FCharacterLanguageData* TargetLangData = WeakTargetAsset->FindLanguageData(CurrentLangCode);
-										if (TargetLangData)
-										{
-											TargetLangData->ToneColorEmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
-											TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
-											WeakTargetAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
-											WeakTargetAsset->MarkPackageDirty();
-											UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateModelClicked: Model saved for language '%s'."), *CurrentLangCode);
-										}
+								FCharacterLanguageData* TargetLangData = WeakTargetAsset->FindLanguageData(CurrentLangCode);
+								if (TargetLangData)
+								{
+									TargetLangData->ToneColorEmbeddingData = ResponseObj->HasField(TEXT("embedding_data")) ? ResponseObj->GetStringField(TEXT("embedding_data")) : TEXT("");
+									TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
+									WeakTargetAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
+									WeakTargetAsset->MarkPackageDirty();
+									UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateModelClicked: Model saved for language '%s'."), *CurrentLangCode);
+								}
 							}
 						}
-								else
-								{
-									(*FailedTasks)++;
-									FString ErrMsg = ResponseObj->GetStringField(TEXT("message"));
-									UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateModelClicked: Extraction error for language '%s': %s"), *CurrentLangCode, *ErrMsg);
-								}
+						else
+						{
+							ErrorMessage = ResponseObj->HasField(TEXT("message")) ? ResponseObj->GetStringField(TEXT("message")) : TEXT("Unknown service error.");
+						}
 					}
+					else if (bParsed && ResponseObj->HasField(TEXT("detail")))
+					{
+						ErrorMessage = ResponseObj->GetStringField(TEXT("detail"));
+					}
+					else if (bParsed && ResponseObj->HasField(TEXT("message")))
+					{
+						ErrorMessage = ResponseObj->GetStringField(TEXT("message"));
+					}
+					else if (!bSuccess)
+					{
+						ErrorMessage = FString::Printf(TEXT("HTTP Request failed with status code %d."), Response->GetResponseCode());
+					}
+				}
+				else
+				{
+					ErrorMessage = TEXT("Could not connect to service endpoint.");
+				}
+
+				if (!ErrorMessage.IsEmpty())
+				{
+					(*FailedTasks)++;
+					UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateModelClicked: Model extraction error for language '%s': %s"), *CurrentLangCode, *ErrorMessage);
+					FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(FString::Printf(TEXT("Model extraction error for language '%s':\n%s"), *CurrentLangCode, *ErrorMessage)));
 				}
 
 				StepTaskProgress();
@@ -847,16 +1053,39 @@ FReply FCharacterVoiceAssetCustomization::OnCleanPrecachedSoundWavesClicked()
 	Asset->ClearPrecachedVoiceLines();
 	Asset->MarkPackageDirty();
 
+	if (!FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+	{
+		FModuleManager::Get().LoadModule("AssetRegistry");
+	}
+
 	if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
 	{
+		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 		for (USoundWave* SoundWave : SoundWavesToDelete)
 		{
 			if (SoundWave)
 			{
-				FAssetRegistryModule::AssetDeleted(SoundWave);
+				AssetRegistryModule.AssetDeleted(SoundWave);
 			}
 		}
 	}
+
+	// Detach objects and outer packages to transient package so open file locks are released
+	for (USoundWave* SoundWave : SoundWavesToDelete)
+	{
+		if (SoundWave)
+		{
+			UPackage* Pkg = SoundWave->GetOutermost();
+			SoundWave->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional);
+			SoundWave->MarkAsGarbage();
+			if (Pkg && Pkg != GetTransientPackage())
+			{
+				Pkg->MarkAsGarbage();
+			}
+		}
+	}
+
+	CollectGarbage(RF_NoFlags);
 
 	for (FString& FilePath : FilePathsToDelete)
 	{
@@ -913,7 +1142,9 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 		}
 
 		const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
-		FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
+		FString BaseUrl = Settings && !Settings->ServiceUrl.IsEmpty() ? Settings->ServiceUrl.TrimStartAndEnd() : TEXT("http://127.0.0.1:1983");
+		BaseUrl.RemoveFromEnd(TEXT("/"));
+		float TimeoutSecs = Settings && Settings->RequestTimeout > 0.0f ? FMath::Max(Settings->RequestTimeout, 300.0f) : 300.0f;
 
 		UPackage* OuterPackage = Asset->GetOutermost();
 		FString AssetFolderPath = FPaths::GetPath(OuterPackage->GetName());
@@ -993,10 +1224,22 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 				}
 				JsonObj->SetArrayField(TEXT("reference_audio_files"), RefPathValues);
 
-				FString GuideFile = Asset->GetResolvedGuideAudioFileForLine(LineText);
+				const FVoiceLineGuideTrack* GuideTrack = Asset->FindGuideTrackForLine(LineText, CurrentLangCode);
+				FString GuideFile = Asset->GetResolvedGuideAudioFileForLine(LineText, CurrentLangCode);
 				if (!GuideFile.IsEmpty())
 				{
 					JsonObj->SetStringField(TEXT("guide_audio_file"), GuideFile);
+				}
+				if (GuideTrack)
+				{
+					if (!GuideTrack->Emotion.IsEmpty())
+					{
+						JsonObj->SetStringField(TEXT("emotion"), GuideTrack->Emotion);
+					}
+					if (FMath::Abs(GuideTrack->Speed - 1.0f) > 0.01f)
+					{
+						JsonObj->SetNumberField(TEXT("speed"), CurrentSpeed * GuideTrack->Speed);
+					}
 				}
 
 				FString PayloadStr;
@@ -1008,8 +1251,9 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 				HttpRequest->SetVerb(TEXT("POST"));
 				HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 				HttpRequest->SetContentAsString(PayloadStr);
+				HttpRequest->SetTimeout(TimeoutSecs);
 
-				HttpRequest->OnProcessRequestComplete().BindLambda([WeakTargetAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
+				HttpRequest->OnProcessRequestComplete().BindLambda([HttpRequest, WeakTargetAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
 				{
 					bool bSynthOk = bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode());
 					if (!bSynthOk)

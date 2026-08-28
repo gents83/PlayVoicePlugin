@@ -7,6 +7,28 @@
 #include "Sound/SoundWaveProcedural.h"
 #include "CharacterVoiceAsset.generated.h"
 
+USTRUCT(BlueprintType)
+struct PLAYVOICEPLUGIN_API FVoiceLineGuideTrack
+{
+	GENERATED_BODY()
+
+	/** Dialogue text line corresponding to this guide track */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
+	FString LineText;
+
+	/** Optional recorded reference audio guide track (WAV/MP3/FLAC) supplying custom performance, cadence, and emotion */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice", meta = (FilePathFilter = "wav,mp3,flac"))
+	FFilePath GuideAudioFile;
+
+	/** Optional emotion performance tag (e.g. "neutral", "happy", "angry", "sad", "excited") */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
+	FString Emotion = TEXT("neutral");
+
+	/** Speed multiplier override for this specific line (default 1.0) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice", meta = (ClampMin = "0.5", ClampMax = "2.0"))
+	float Speed = 1.0f;
+};
+
 /**
  * Stores settings, reference audio, and OpenVoice model parameters for a specific language.
  */
@@ -31,6 +53,10 @@ struct PLAYVOICEPLUGIN_API FCharacterLanguageData
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice", meta = (ClampMin = "0.5", ClampMax = "2.0"))
 	float Speed = 1.0f;
 
+	/** Optional guide tracks supplying recorded reference audio, speed, and emotion for specific dialogue lines in this language */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
+	TArray<FVoiceLineGuideTrack> GuideTracks;
+
 	/** Serialized OpenVoice tone color embedding data generated from reference audio for this language */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "PlayVoice")
 	FString ToneColorEmbeddingData;
@@ -42,28 +68,6 @@ struct PLAYVOICEPLUGIN_API FCharacterLanguageData
 	/** Whether the OpenVoice model embedding has been successfully generated for this language */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "PlayVoice")
 	bool bIsModelGenerated = false;
-};
-
-USTRUCT(BlueprintType)
-struct PLAYVOICEPLUGIN_API FVoiceLineGuideTrack
-{
-	GENERATED_BODY()
-
-	/** Dialogue text line corresponding to this guide track */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
-	FString LineText;
-
-	/** Optional recorded reference audio guide track (WAV/MP3/FLAC) supplying custom performance, cadence, and emotion */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice", meta = (FilePathFilter = "wav,mp3,flac"))
-	FFilePath GuideAudioFile;
-
-	/** Optional emotion performance tag (e.g. "neutral", "happy", "angry", "sad", "excited") */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
-	FString Emotion = TEXT("neutral");
-
-	/** Speed multiplier override for this specific line (default 1.0) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice", meta = (ClampMin = "0.5", ClampMax = "2.0"))
-	float Speed = 1.0f;
 };
 
 USTRUCT(BlueprintType)
@@ -106,10 +110,6 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	bool bRegenerateExistingVoiceLines = true;
 
-	/** Optional guide tracks providing recorded reference audio, speed, and emotions for specific dialogue lines */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
-	TArray<FVoiceLineGuideTrack> GuideTracks;
-
 	/** Map of pre-rendered SoundWaves keyed by normalized text line and language for zero-delay instant playback. Persisted upon saving asset. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "PlayVoice")
 	TMap<FString, TObjectPtr<USoundWave>> PrecachedSoundWaves;
@@ -145,9 +145,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	bool LoadModelFromFile(const FString& FilePath = TEXT(""), const FString& LanguageCode = TEXT(""));
 
-	/** Resolves the optional guide track audio file path for a dialogue line if configured */
+	/** Finds the optional guide track configuration for a dialogue line and language if present */
+	const FVoiceLineGuideTrack* FindGuideTrackForLine(const FString& TextLine, const FString& LanguageCode = TEXT("")) const;
+
+	/** Resolves the optional guide track audio file path for a dialogue line and language if configured */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
-	FString GetResolvedGuideAudioFileForLine(const FString& TextLine) const;
+	FString GetResolvedGuideAudioFileForLine(const FString& TextLine, const FString& LanguageCode = TEXT("")) const;
 
 	/** Retrieves all resolved reference audio file paths from ReferenceAudioFiles and ReferenceAudioFolder for a language */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
