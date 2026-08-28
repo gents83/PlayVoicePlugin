@@ -13,3 +13,15 @@ wavmark
 faster-whisper
 whisper-timestamped
 audioop-lts
+eng-to-ipa
+num2words
+jieba
+cn2an
+pyttsx3
+speechrecognition
+transformers
+unidecode
+g2p_en
+mecab-python3
+git+https://github.com/myshell-ai/OpenVoice.git
+git+https://github.com/myshell-ai/MeloTTS.git

@@ -25,6 +25,12 @@ PACKAGE_IMPORT_MAP = {
     "pyaudioop": ["audioop", "pyaudioop", "audioop_lts"],
     "whisper_timestamped": ["whisper_timestamped"],
     "whisper-timestamped": ["whisper_timestamped"],
+    "eng_to_ipa": ["eng_to_ipa"],
+    "eng-to-ipa": ["eng_to_ipa"],
+    "speechrecognition": ["speech_recognition"],
+    "mecab_python3": ["MeCab", "mecab"],
+    "mecab-python3": ["MeCab", "mecab"],
+    "g2p_en": ["g2p_en"],
 }
 
 
@@ -45,12 +51,13 @@ def check_requirements(requirements_file: str) -> bool:
 
     missing = []
 
-    # Always check core OpenVoice and MeloTTS packages as well
-    required_pkgs = list(lines)
-    if "myshell-openvoice" not in required_pkgs:
-        required_pkgs.append("myshell-openvoice")
-    if "melo-tts" not in required_pkgs:
-        required_pkgs.append("melo-tts")
+    # Always check core OpenVoice and MeloTTS packages as well (deduplicated)
+    required_pkgs = []
+    seen = set()
+    for item in lines + ["myshell-openvoice", "melo-tts"]:
+        if item not in seen:
+            seen.add(item)
+            required_pkgs.append(item)
 
     for req in required_pkgs:
         if req.startswith('#') or req.startswith('--'):
@@ -94,7 +101,7 @@ def check_requirements(requirements_file: str) -> bool:
             except Exception:
                 pass
 
-        if not bInstalled:
+        if not bInstalled and raw_pkg not in missing:
             missing.append(raw_pkg)
 
     if missing:
