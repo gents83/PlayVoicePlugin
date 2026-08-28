@@ -538,7 +538,8 @@ if HAS_FASTAPI:
 
     class ExtractRequest(BaseModel):
         character_name: str
-        reference_audio_files: List[str]
+        reference_audio_files: Optional[List[str]] = []
+        language: Optional[str] = "EN"
 
     class SynthesizeRequest(BaseModel):
         character_name: str

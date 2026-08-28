@@ -116,7 +116,7 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 static void EnsureServiceReadyAndExecute(TFunction<void(bool bReady)> OnComplete, int32 MaxAttempts = 30)
 {
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
-	FString BaseUrl = Settings && !Settings->ServiceUrl.IsEmpty() ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
+	FString BaseUrl = Settings && !Settings->ServiceUrl.IsEmpty() ? Settings->ServiceUrl.TrimStartAndEnd() : TEXT("http://127.0.0.1:1983");
 	BaseUrl.RemoveFromEnd(TEXT("/"));
 
 	// First, test if service is already running and healthy
@@ -571,7 +571,8 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 		UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateAndProcessAllClicked: Discovered %d dialogue lines for pre-processing."), DiscoveredBlueprintLines.Num());
 
 		const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
-		FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
+		FString BaseUrl = Settings && !Settings->ServiceUrl.IsEmpty() ? Settings->ServiceUrl.TrimStartAndEnd() : TEXT("http://127.0.0.1:1983");
+		BaseUrl.RemoveFromEnd(TEXT("/"));
 		float TimeoutSecs = Settings && Settings->RequestTimeout > 0.0f ? FMath::Max(Settings->RequestTimeout, 300.0f) : 300.0f;
 
 		int32 TotalLangsProcessed = 0;
@@ -668,7 +669,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 			FString CurrentLangCode = LangData.LanguageCode;
 			float CurrentSpeed = LangData.Speed;
 
-			ExtractReq->OnProcessRequestComplete().BindLambda([WeakTargetAsset, BaseUrl, CurrentLangCode, CurrentSpeed, TimeoutSecs, DiscoveredBlueprintLines, StepTaskProgress, FailedTasks](FHttpRequestPtr Req, FHttpResponsePtr Res, bool bExtractSuccess)
+			ExtractReq->OnProcessRequestComplete().BindLambda([ExtractReq, WeakTargetAsset, BaseUrl, CurrentLangCode, CurrentSpeed, TimeoutSecs, DiscoveredBlueprintLines, StepTaskProgress, FailedTasks](FHttpRequestPtr Req, FHttpResponsePtr Res, bool bExtractSuccess)
 			{
 				bool bSuccess = bExtractSuccess && Res.IsValid() && EHttpResponseCodes::IsOk(Res->GetResponseCode());
 				if (!bSuccess)
@@ -772,7 +773,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 					SynthReq->SetContentAsString(SynthPayload);
 					SynthReq->SetTimeout(TimeoutSecs);
 
-					SynthReq->OnProcessRequestComplete().BindLambda([WeakTargetAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr SReq, FHttpResponsePtr SRes, bool bSynthSuccess)
+					SynthReq->OnProcessRequestComplete().BindLambda([SynthReq, WeakTargetAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr SReq, FHttpResponsePtr SRes, bool bSynthSuccess)
 					{
 						bool bSynthOk = bSynthSuccess && SRes.IsValid() && EHttpResponseCodes::IsOk(SRes->GetResponseCode());
 						if (!bSynthOk)
@@ -850,7 +851,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 		}
 
 		const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
-		FString BaseUrl = Settings && !Settings->ServiceUrl.IsEmpty() ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
+		FString BaseUrl = Settings && !Settings->ServiceUrl.IsEmpty() ? Settings->ServiceUrl.TrimStartAndEnd() : TEXT("http://127.0.0.1:1983");
 		BaseUrl.RemoveFromEnd(TEXT("/"));
 		FString Url = BaseUrl + TEXT("/extract");
 		float TimeoutSecs = Settings && Settings->RequestTimeout > 0.0f ? FMath::Max(Settings->RequestTimeout, 300.0f) : 300.0f;
@@ -948,7 +949,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 
 			FString CurrentLangCode = LangData.LanguageCode;
 
-			HttpRequest->OnProcessRequestComplete().BindLambda([WeakTargetAsset, CurrentLangCode, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
+			HttpRequest->OnProcessRequestComplete().BindLambda([HttpRequest, WeakTargetAsset, CurrentLangCode, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
 			{
 				bool bSuccess = bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode());
 				FString ErrorMessage;
@@ -957,17 +958,19 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 				{
 					TSharedPtr<FJsonObject> ResponseObj;
 					TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Response->GetContentAsString());
-					if (FJsonSerializer::Deserialize(Reader, ResponseObj) && ResponseObj.IsValid())
+					bool bParsed = FJsonSerializer::Deserialize(Reader, ResponseObj) && ResponseObj.IsValid();
+
+					if (bSuccess && bParsed)
 					{
-						FString Status = ResponseObj->GetStringField(TEXT("status"));
-						if (Status.Equals(TEXT("success"), ESearchCase::IgnoreCase))
+						FString Status = ResponseObj->HasField(TEXT("status")) ? ResponseObj->GetStringField(TEXT("status")) : TEXT("");
+						if (Status.IsEmpty() || Status.Equals(TEXT("success"), ESearchCase::IgnoreCase))
 						{
 							if (WeakTargetAsset.IsValid())
 							{
 								FCharacterLanguageData* TargetLangData = WeakTargetAsset->FindLanguageData(CurrentLangCode);
 								if (TargetLangData)
 								{
-									TargetLangData->ToneColorEmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
+									TargetLangData->ToneColorEmbeddingData = ResponseObj->HasField(TEXT("embedding_data")) ? ResponseObj->GetStringField(TEXT("embedding_data")) : TEXT("");
 									TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
 									WeakTargetAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
 									WeakTargetAsset->MarkPackageDirty();
@@ -979,6 +982,14 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 						{
 							ErrorMessage = ResponseObj->HasField(TEXT("message")) ? ResponseObj->GetStringField(TEXT("message")) : TEXT("Unknown service error.");
 						}
+					}
+					else if (bParsed && ResponseObj->HasField(TEXT("detail")))
+					{
+						ErrorMessage = ResponseObj->GetStringField(TEXT("detail"));
+					}
+					else if (bParsed && ResponseObj->HasField(TEXT("message")))
+					{
+						ErrorMessage = ResponseObj->GetStringField(TEXT("message"));
 					}
 					else if (!bSuccess)
 					{
@@ -1131,7 +1142,8 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 		}
 
 		const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
-		FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
+		FString BaseUrl = Settings && !Settings->ServiceUrl.IsEmpty() ? Settings->ServiceUrl.TrimStartAndEnd() : TEXT("http://127.0.0.1:1983");
+		BaseUrl.RemoveFromEnd(TEXT("/"));
 		float TimeoutSecs = Settings && Settings->RequestTimeout > 0.0f ? FMath::Max(Settings->RequestTimeout, 300.0f) : 300.0f;
 
 		UPackage* OuterPackage = Asset->GetOutermost();
@@ -1241,7 +1253,7 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 				HttpRequest->SetContentAsString(PayloadStr);
 				HttpRequest->SetTimeout(TimeoutSecs);
 
-				HttpRequest->OnProcessRequestComplete().BindLambda([WeakTargetAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
+				HttpRequest->OnProcessRequestComplete().BindLambda([HttpRequest, WeakTargetAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
 				{
 					bool bSynthOk = bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode());
 					if (!bSynthOk)

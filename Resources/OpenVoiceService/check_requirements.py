@@ -17,6 +17,9 @@ except ImportError:
 PACKAGE_IMPORT_MAP = {
     "melo_tts": ["melo", "melo_tts", "melotts"],
     "melo-tts": ["melo", "melo_tts", "melotts"],
+    "myshell_openvoice": ["openvoice", "myshell_openvoice"],
+    "myshell-openvoice": ["openvoice", "myshell_openvoice"],
+    "openvoice": ["openvoice"],
 }
 
 
