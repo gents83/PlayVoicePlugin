@@ -1,4 +1,5 @@
 --prefer-binary
+--no-deps
 torch>=2.0.0
 torchaudio>=2.0.0
 numpy>=1.26.0
@@ -9,5 +10,8 @@ pydantic>=2.0.0
 fastapi>=0.100.0
 uvicorn>=0.22.0
 requests>=2.28.0
+pydub>=0.25.0
+wavmark>=0.0.3
+faster-whisper>=0.9.0
 git+https://github.com/myshell-ai/OpenVoice.git
 git+https://github.com/myshell-ai/MeloTTS.git
