@@ -116,12 +116,29 @@ class OpenVoiceEngine:
 
         if HAS_OPENVOICE:
             try:
-                converter_path = os.path.join(checkpoint_dir, "converter")
-                if os.path.exists(converter_path):
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                candidate_paths = [
+                    checkpoint_dir,
+                    os.path.join(script_dir, checkpoint_dir),
+                    os.path.join(script_dir, "..", "..", checkpoint_dir),
+                    os.path.join(os.getcwd(), checkpoint_dir)
+                ]
+                resolved_ckpt_dir = None
+                for cand in candidate_paths:
+                    cand_abs = os.path.abspath(cand)
+                    if os.path.exists(os.path.join(cand_abs, "converter")):
+                        resolved_ckpt_dir = cand_abs
+                        break
+
+                if resolved_ckpt_dir:
+                    self.checkpoint_dir = resolved_ckpt_dir
+                    converter_path = os.path.join(resolved_ckpt_dir, "converter")
                     device = "cuda" if torch.cuda.is_available() else "cpu"
                     self.converter = ToneColorConverter(f"{converter_path}/config.json", device=device)
                     self.converter.load_ckpt(f"{converter_path}/checkpoint.pth")
-                    logger.info(f"Loaded OpenVoice ToneColorConverter on {device}")
+                    logger.info(f"Loaded OpenVoice ToneColorConverter on {device} from {converter_path}")
+                else:
+                    logger.info("OpenVoice converter checkpoints not found in candidate paths. Tone color extraction will fall back gracefully to acoustic profile mode.")
             except Exception as e:
                 logger.error(f"Failed loading OpenVoice checkpoints: {e}")
 
