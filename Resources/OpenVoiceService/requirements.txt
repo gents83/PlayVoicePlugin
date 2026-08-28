@@ -28,5 +28,3 @@ onnxruntime
 cached-path
 pypinyin
 cutlet
-git+https://github.com/myshell-ai/OpenVoice.git
-git+https://github.com/myshell-ai/MeloTTS.git
