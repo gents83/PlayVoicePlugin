@@ -40,8 +40,7 @@ def check_requirements(requirements_file: str) -> bool:
 
     missing = []
     for req in lines:
-        # Ignore comments or optional git repository lines
-        if req.startswith('#') or req.startswith('git+') or 'git+https://' in req:
+        if req.startswith('#'):
             continue
 
         # If line contains an optional extra marker (e.g. '; extra == ...'), ignore for base requirements check
@@ -50,7 +49,14 @@ def check_requirements(requirements_file: str) -> bool:
             if 'extra ==' in condition_part or 'extra!=' in condition_part or 'extra' in condition_part:
                 continue
 
-        raw_pkg = req.split(';')[0].split('@')[0].split('>=')[0].split('<=')[0].split('==')[0].split('~=')[0].split('!=')[0].strip().lower()
+        # Extract package or repository module name
+        raw_req = req.split(';')[0].strip()
+        if 'git+' in raw_req or 'github.com' in raw_req:
+            repo_name = raw_req.rstrip('.git').split('/')[-1].lower()
+            raw_pkg = repo_name.replace('_', '-').replace('melotts', 'melo-tts').replace('openvoice', 'myshell-openvoice')
+        else:
+            raw_pkg = raw_req.split('@')[0].split('>=')[0].split('<=')[0].split('==')[0].split('~=')[0].split('!=')[0].strip().lower()
+
         norm_pkg = raw_pkg.replace('-', '_')
 
         if not norm_pkg:

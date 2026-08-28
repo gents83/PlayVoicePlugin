@@ -8,6 +8,5 @@ pydantic>=2.0.0
 fastapi>=0.100.0
 uvicorn>=0.22.0
 requests>=2.28.0
-# Optional OpenVoice and MeloTTS dependencies (can be installed via git if desired):
-# myshell-openvoice @ git+https://github.com/myshell-ai/OpenVoice.git
-# melo-tts @ git+https://github.com/myshell-ai/MeloTTS.git
+git+https://github.com/myshell-ai/OpenVoice.git
+git+https://github.com/myshell-ai/MeloTTS.git
