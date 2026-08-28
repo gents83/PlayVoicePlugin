@@ -104,9 +104,55 @@ FCharacterLanguageData& UCharacterVoiceAsset::GetOrAddLanguageData(const FString
 	return Languages[Index];
 }
 
+static FString CleanVoiceLineTextForCache(const FString& InRaw)
+{
+	FString S = InRaw.TrimStartAndEnd();
+	if (S.IsEmpty())
+	{
+		return FString();
+	}
+
+	// Handle FText pin format (SourceString="...", Namespace="...", Key="...")
+	int32 SourceIdx = S.Find(TEXT("SourceString="));
+	if (SourceIdx != INDEX_NONE)
+	{
+		int32 StartQuote = S.Find(TEXT("\""), ESearchCase::IgnoreCase, ESearchDir::FromStart, SourceIdx);
+		if (StartQuote != INDEX_NONE)
+		{
+			int32 EndQuote = S.Find(TEXT("\""), ESearchCase::IgnoreCase, ESearchDir::FromStart, StartQuote + 1);
+			if (EndQuote != INDEX_NONE)
+			{
+				S = S.Mid(StartQuote + 1, EndQuote - StartQuote - 1).TrimStartAndEnd();
+			}
+		}
+	}
+
+	// Handle NSLOCTEXT("...", "...", "Text") or INVTEXT("Text")
+	if (S.StartsWith(TEXT("NSLOCTEXT(")) || S.StartsWith(TEXT("INVTEXT(")))
+	{
+		int32 LastQuoteEnd = S.Find(TEXT("\""), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+		if (LastQuoteEnd != INDEX_NONE)
+		{
+			int32 LastQuoteStart = S.Find(TEXT("\""), ESearchCase::IgnoreCase, ESearchDir::FromEnd, LastQuoteEnd - 1);
+			if (LastQuoteStart != INDEX_NONE && LastQuoteStart < LastQuoteEnd)
+			{
+				S = S.Mid(LastQuoteStart + 1, LastQuoteEnd - LastQuoteStart - 1).TrimStartAndEnd();
+			}
+		}
+	}
+
+	// Strip enclosing double quotes
+	if (S.StartsWith(TEXT("\"")) && S.EndsWith(TEXT("\"")) && S.Len() >= 2)
+	{
+		S = S.Mid(1, S.Len() - 2);
+	}
+
+	return S.TrimStartAndEnd().ToLower();
+}
+
 FString UCharacterVoiceAsset::MakeCacheKey(const FString& TextLine, const FString& LanguageCode)
 {
-	FString CleanText = TextLine.TrimStartAndEnd().ToLower();
+	FString CleanText = CleanVoiceLineTextForCache(TextLine);
 	FString CleanLang = LanguageCode.TrimStartAndEnd().ToUpper();
 	if (CleanLang.IsEmpty())
 	{
