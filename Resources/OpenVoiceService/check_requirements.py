@@ -39,7 +39,15 @@ def check_requirements(requirements_file: str) -> bool:
                 installed.add(name.lower().replace('-', '_'))
 
     missing = []
-    for req in lines:
+
+    # Always check core OpenVoice and MeloTTS packages as well
+    required_pkgs = list(lines)
+    if "myshell-openvoice" not in required_pkgs:
+        required_pkgs.append("myshell-openvoice")
+    if "melo-tts" not in required_pkgs:
+        required_pkgs.append("melo-tts")
+
+    for req in required_pkgs:
         if req.startswith('#') or req.startswith('--'):
             continue
 

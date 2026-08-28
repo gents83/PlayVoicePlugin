@@ -221,14 +221,18 @@ FReply FPlayVoiceSettingsCustomization::OnLaunchSetupClicked()
 
 	FString ResolvedReqFile = FPlayVoicePluginEditorModule::ResolveResourcePath(ReqFile);
 
-	FString CmdArgs = FString::Printf(TEXT("-m pip install -r \"%s\""), *ResolvedReqFile);
+	FString BaseExtraArgs = ExtraArgs.IsEmpty() ? TEXT("--prefer-binary") : ExtraArgs;
+
+	FString CmdArgs = FString::Printf(TEXT("-m pip install %s -r \"%s\""), *BaseExtraArgs, *ResolvedReqFile);
 	if (!TargetDir.IsEmpty())
 	{
 		CmdArgs += FString::Printf(TEXT(" --target \"%s\""), *TargetDir);
 	}
-	if (!ExtraArgs.IsEmpty())
+
+	FString GitCmdArgs = FString::Printf(TEXT("-m pip install %s --no-deps git+https://github.com/myshell-ai/OpenVoice.git git+https://github.com/myshell-ai/MeloTTS.git"), *BaseExtraArgs);
+	if (!TargetDir.IsEmpty())
 	{
-		CmdArgs += FString::Printf(TEXT(" %s"), *ExtraArgs);
+		GitCmdArgs += FString::Printf(TEXT(" --target \"%s\""), *TargetDir);
 	}
 
 	FNotificationInfo NotificationInfo(FText::FromString("PlayVoice: Installing Python requirements via pip..."));
@@ -246,12 +250,27 @@ FReply FPlayVoiceSettingsCustomization::OnLaunchSetupClicked()
 
 	UE_LOG(LogPlayVoiceSettings, Log, TEXT("Running setup installation: %s %s"), *PythonExec, *CmdArgs);
 
-	Async(EAsyncExecution::Thread, [PythonExec, CmdArgs, NotificationItem]()
+	Async(EAsyncExecution::Thread, [PythonExec, CmdArgs, GitCmdArgs, NotificationItem]()
 	{
 		int32 ReturnCode = -1;
 		FString StdOut;
 		FString StdErr;
 		bool bSuccess = FPlatformProcess::ExecProcess(*PythonExec, *CmdArgs, &ReturnCode, &StdOut, &StdErr);
+
+		if (bSuccess && ReturnCode == 0)
+		{
+			int32 GitReturnCode = -1;
+			FString GitOut;
+			FString GitErr;
+			bool bGitSuccess = FPlatformProcess::ExecProcess(*PythonExec, *GitCmdArgs, &GitReturnCode, &GitOut, &GitErr);
+			StdOut += TEXT("\n") + GitOut;
+			StdErr += TEXT("\n") + GitErr;
+			if (!bGitSuccess || GitReturnCode != 0)
+			{
+				bSuccess = false;
+				ReturnCode = GitReturnCode != 0 ? GitReturnCode : -1;
+			}
+		}
 
 		Async(EAsyncExecution::TaskGraphMainThread, [bSuccess, ReturnCode, StdOut, StdErr, NotificationItem]()
 		{

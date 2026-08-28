@@ -11,5 +11,3 @@ requests
 pydub
 wavmark
 faster-whisper
-git+https://github.com/myshell-ai/OpenVoice.git
-git+https://github.com/myshell-ai/MeloTTS.git
