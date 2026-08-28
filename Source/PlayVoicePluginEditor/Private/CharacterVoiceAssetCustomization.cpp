@@ -22,6 +22,7 @@
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_Knot.h"
 #include "Misc/PackageName.h"
 #include "UObject/Package.h"
 #include "Framework/Notifications/NotificationManager.h"
@@ -207,6 +208,20 @@ static FString SanitizeTextString(const FString& InRaw)
 		return FString();
 	}
 
+	// Reject engine/script default object references or class paths
+	if (S.Contains(TEXT("/Script/")) ||
+		S.Contains(TEXT("Default__")) ||
+		S.Contains(TEXT("KismetTextLibrary")) ||
+		S.Contains(TEXT("KismetStringLibrary")) ||
+		S.StartsWith(TEXT("/Engine/")) ||
+		S.StartsWith(TEXT("Class'")) ||
+		S.StartsWith(TEXT("Function'")) ||
+		S.StartsWith(TEXT("UserDefinedStruct'")) ||
+		S.StartsWith(TEXT("Blueprint'")))
+	{
+		return FString();
+	}
+
 	// Handle FText pin format (SourceString="...", Namespace="...", Key="...")
 	int32 SourceIdx = S.Find(TEXT("SourceString="));
 	if (SourceIdx != INDEX_NONE)
@@ -242,12 +257,8 @@ static FString SanitizeTextString(const FString& InRaw)
 		S = S.Mid(1, S.Len() - 2);
 	}
 
-	// Reject raw type or object references (e.g., "(Link=...)", "Class'...'")
+	// Reject raw struct/object representations like "(Link=...)"
 	if (S.StartsWith(TEXT("(")) && S.EndsWith(TEXT(")")))
-	{
-		return FString();
-	}
-	if (S.StartsWith(TEXT("Class'")) || S.StartsWith(TEXT("UserDefinedStruct'")) || S.StartsWith(TEXT("Blueprint'")))
 	{
 		return FString();
 	}
@@ -257,7 +268,17 @@ static FString SanitizeTextString(const FString& InRaw)
 
 static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
 {
-	if (!Pin || Depth > 8)
+	if (!Pin || Depth > 10)
+	{
+		return FString();
+	}
+
+	// Ignore Target / self / WorldContextObject pins (target objects for function calls, not text inputs)
+	FString PinName = Pin->PinName.ToString();
+	if (PinName.Equals(TEXT("self"), ESearchCase::IgnoreCase) ||
+		PinName.Equals(TEXT("Target"), ESearchCase::IgnoreCase) ||
+		PinName.Equals(TEXT("WorldContextObject"), ESearchCase::IgnoreCase) ||
+		PinName.Equals(TEXT("WorldContext"), ESearchCase::IgnoreCase))
 	{
 		return FString();
 	}
@@ -288,7 +309,18 @@ static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
 				continue;
 			}
 
-			// Note: Never call LinkedPin->GetDefaultAsString() directly because LinkedPin is an output pin whose default string contains graph metadata or type names.
+			// Handle Reroute Nodes (UK2Node_Knot)
+			if (const UK2Node_Knot* KnotNode = Cast<UK2Node_Knot>(OwningNode))
+			{
+				if (const UEdGraphPin* KnotInput = KnotNode->GetInputPin())
+				{
+					FString KnotVal = ExtractTextFromPin(KnotInput, Depth + 1);
+					if (!KnotVal.IsEmpty())
+					{
+						return KnotVal;
+					}
+				}
+			}
 
 			// Handle UK2Node_CallFunction (e.g. MakeLiteralString, MakeLiteralText, Conv_TextToString, etc.)
 			if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(OwningNode))
@@ -311,15 +343,38 @@ static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
 					}
 				}
 
-				// For conversion functions (Conv_*) or other functions, check input pins
+				// For conversion functions (Conv_TextToString, Conv_NameToText, etc.), prioritize text input pins
+				TArray<FString> PreferredPinNames = { TEXT("InText"), TEXT("InString"), TEXT("InName"), TEXT("Text"), TEXT("String"), TEXT("Name"), TEXT("Value") };
+				for (const FString& PrefName : PreferredPinNames)
+				{
+					if (const UEdGraphPin* InputPin = CallNode->FindPin(*PrefName))
+					{
+						if (InputPin->Direction == EGPD_Input)
+						{
+							FString InputVal = ExtractTextFromPin(InputPin, Depth + 1);
+							if (!InputVal.IsEmpty())
+							{
+								return InputVal;
+							}
+						}
+					}
+				}
+
+				// Check all other non-target input pins
 				for (const UEdGraphPin* NodePin : CallNode->Pins)
 				{
 					if (NodePin && NodePin->Direction == EGPD_Input)
 					{
-						FString InputVal = ExtractTextFromPin(NodePin, Depth + 1);
-						if (!InputVal.IsEmpty())
+						FString NodePinName = NodePin->PinName.ToString();
+						if (!NodePinName.Equals(TEXT("self"), ESearchCase::IgnoreCase) &&
+							!NodePinName.Equals(TEXT("Target"), ESearchCase::IgnoreCase) &&
+							!NodePinName.Equals(TEXT("WorldContextObject"), ESearchCase::IgnoreCase))
 						{
-							return InputVal;
+							FString InputVal = ExtractTextFromPin(NodePin, Depth + 1);
+							if (!InputVal.IsEmpty())
+							{
+								return InputVal;
+							}
 						}
 					}
 				}
@@ -343,15 +398,21 @@ static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
 				}
 			}
 
-			// Generic traversal for other nodes: inspect input pins
+			// Generic traversal for other nodes: inspect non-target input pins
 			for (const UEdGraphPin* NodePin : OwningNode->Pins)
 			{
 				if (NodePin && NodePin->Direction == EGPD_Input)
 				{
-					FString InputVal = ExtractTextFromPin(NodePin, Depth + 1);
-					if (!InputVal.IsEmpty())
+					FString NodePinName = NodePin->PinName.ToString();
+					if (!NodePinName.Equals(TEXT("self"), ESearchCase::IgnoreCase) &&
+						!NodePinName.Equals(TEXT("Target"), ESearchCase::IgnoreCase) &&
+						!NodePinName.Equals(TEXT("WorldContextObject"), ESearchCase::IgnoreCase))
 					{
-						return InputVal;
+						FString InputVal = ExtractTextFromPin(NodePin, Depth + 1);
+						if (!InputVal.IsEmpty())
+						{
+							return InputVal;
+						}
 					}
 				}
 			}
