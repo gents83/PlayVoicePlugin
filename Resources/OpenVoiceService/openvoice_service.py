@@ -36,33 +36,27 @@ if audioop is not None:
     sys.modules['audioop'] = audioop
     sys.modules['pyaudioop'] = audioop
 
-# Configure MeCab.Tagger dictionary path for MeloTTS on Windows if unidic-lite/ipadic dictionary is available
+# Configure MeCab mecabrc and unidic DICDIR for MeloTTS if unidic-lite dictionary is available
 try:
+    import unidic_lite
+    import os
+    _mecabrc_file = os.path.join(unidic_lite.DICDIR, 'mecabrc')
+    if os.path.exists(_mecabrc_file):
+        os.environ['MECABRC'] = _mecabrc_file
+    try:
+        import unidic
+        unidic.DICDIR = unidic_lite.DICDIR
+    except Exception:
+        pass
     import MeCab
     _orig_tagger_init = MeCab.Tagger.__init__
     def _safe_tagger_init(self, args=""):
         if not args or args == "":
-            try:
-                import unidic_lite
-                args = f'-d "{unidic_lite.DICDIR}"'
-            except Exception:
-                try:
-                    import ipadic
-                    args = f'-d "{ipadic.DICDIR}"'
-                except Exception:
-                    pass
+            args = f'-d {unidic_lite.DICDIR} -r {_mecabrc_file}'
         try:
             _orig_tagger_init(self, args)
         except Exception:
-            try:
-                import unidic_lite
-                _orig_tagger_init(self, f'-d "{unidic_lite.DICDIR}"')
-            except Exception:
-                try:
-                    import ipadic
-                    _orig_tagger_init(self, f'-d "{ipadic.DICDIR}"')
-                except Exception:
-                    _orig_tagger_init(self, args)
+            _orig_tagger_init(self, f'-d {unidic_lite.DICDIR} -r {_mecabrc_file}')
     MeCab.Tagger.__init__ = _safe_tagger_init
 except Exception:
     pass

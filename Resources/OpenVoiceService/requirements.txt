@@ -12,7 +12,7 @@ pydub
 wavmark
 faster-whisper
 whisper-timestamped
-audioop-lts
+audioop-lts; python_version >= "3.13"
 eng-to-ipa
 num2words
 jieba
@@ -28,5 +28,16 @@ onnxruntime
 cached-path
 pypinyin
 cutlet
+pykakasi
+anyascii
 unidic-lite
 ipadic
+g2pkk
+jamo
+langid
+loguru
+txtsplit
+unidic
+gruut
+tensorboard
+gradio
