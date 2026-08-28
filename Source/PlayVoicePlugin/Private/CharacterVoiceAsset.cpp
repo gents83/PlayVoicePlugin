@@ -242,28 +242,46 @@ TArray<FString> UCharacterVoiceAsset::ResolveAudioFilesFromFolderAndFiles(const 
 {
 	TArray<FString> ResolvedFiles;
 
+	if (!FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+	{
+		FModuleManager::Get().LoadModule("AssetRegistry");
+	}
+
 	for (const FFilePath& FilePath : FilePaths)
 	{
 		if (!FilePath.FilePath.IsEmpty())
 		{
-			FString FullPath = FilePath.FilePath;
-			if (FPaths::IsRelative(FullPath))
+			FString FullPath = FilePath.FilePath.TrimStartAndEnd();
+			if (FPaths::IsRelative(FullPath) && !FullPath.StartsWith(TEXT("/Game/")) && !FullPath.StartsWith(TEXT("/Engine/")))
 			{
 				FullPath = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), FullPath);
 			}
+
 			if (IFileManager::Get().FileExists(*FullPath))
 			{
 				ResolvedFiles.AddUnique(FullPath);
 			}
-			else if (FullPath.StartsWith(TEXT("/Game/")))
+			else if (FullPath.StartsWith(TEXT("/Game/")) || FullPath.StartsWith(TEXT("/Engine/")))
 			{
-				USoundWave* LoadedWave = Cast<USoundWave>(StaticLoadObject(USoundWave::StaticClass(), nullptr, *FullPath));
-				if (LoadedWave)
+				if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
 				{
-					FString ExportedWav = UPlayVoiceAudioUtils::ExportSoundWaveToTempWAVFile(LoadedWave);
-					if (!ExportedWav.IsEmpty())
+					FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+					TArray<FAssetData> AssetList;
+					AssetRegistryModule.Get().GetAssetsByPackageName(FName(*FullPath), AssetList);
+					for (const FAssetData& AssetData : AssetList)
 					{
-						ResolvedFiles.AddUnique(ExportedWav);
+						if (AssetData.AssetClassPath.GetAssetName() == FName(TEXT("SoundWave")))
+						{
+							USoundWave* LoadedWave = Cast<USoundWave>(AssetData.GetAsset());
+							if (LoadedWave)
+							{
+								FString ExportedWav = UPlayVoiceAudioUtils::ExportSoundWaveToTempWAVFile(LoadedWave);
+								if (!ExportedWav.IsEmpty())
+								{
+									ResolvedFiles.AddUnique(ExportedWav);
+								}
+							}
+						}
 					}
 				}
 			}
@@ -292,7 +310,7 @@ TArray<FString> UCharacterVoiceAsset::ResolveAudioFilesFromFolderAndFiles(const 
 				}
 			}
 
-			// Also search for imported Unreal Engine .uasset files in the directory
+			// Search for imported Unreal Engine .uasset files in the directory by checking AssetRegistry class name first
 			TArray<FString> FoundUAssets;
 			IFileManager::Get().FindFilesRecursive(FoundUAssets, *FolderFullPath, TEXT("*.uasset"), true, false, false);
 			for (const FString& UAssetFile : FoundUAssets)
@@ -300,13 +318,25 @@ TArray<FString> UCharacterVoiceAsset::ResolveAudioFilesFromFolderAndFiles(const 
 				FString PackageName;
 				if (FPackageName::TryConvertFilenameToLongPackageName(UAssetFile, PackageName))
 				{
-					USoundWave* LoadedWave = Cast<USoundWave>(StaticLoadObject(USoundWave::StaticClass(), nullptr, *PackageName));
-					if (LoadedWave)
+					if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
 					{
-						FString ExportedWav = UPlayVoiceAudioUtils::ExportSoundWaveToTempWAVFile(LoadedWave);
-						if (!ExportedWav.IsEmpty())
+						FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+						TArray<FAssetData> AssetList;
+						AssetRegistryModule.Get().GetAssetsByPackageName(FName(*PackageName), AssetList);
+						for (const FAssetData& AssetData : AssetList)
 						{
-							ResolvedFiles.AddUnique(ExportedWav);
+							if (AssetData.AssetClassPath.GetAssetName() == FName(TEXT("SoundWave")))
+							{
+								USoundWave* LoadedWave = Cast<USoundWave>(AssetData.GetAsset());
+								if (LoadedWave)
+								{
+									FString ExportedWav = UPlayVoiceAudioUtils::ExportSoundWaveToTempWAVFile(LoadedWave);
+									if (!ExportedWav.IsEmpty())
+									{
+										ResolvedFiles.AddUnique(ExportedWav);
+									}
+								}
+							}
 						}
 					}
 				}
@@ -317,10 +347,6 @@ TArray<FString> UCharacterVoiceAsset::ResolveAudioFilesFromFolderAndFiles(const 
 		FString CleanPath = FolderPath.Path.TrimStartAndEnd();
 		if (CleanPath.StartsWith(TEXT("/Game")))
 		{
-			if (!FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
-			{
-				FModuleManager::Get().LoadModule("AssetRegistry");
-			}
 			if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
 			{
 				FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
@@ -329,7 +355,7 @@ TArray<FString> UCharacterVoiceAsset::ResolveAudioFilesFromFolderAndFiles(const 
 
 				for (const FAssetData& AssetData : AssetList)
 				{
-					if (AssetData.AssetClassPath.GetAssetName() == FName(TEXT("SoundWave")) || AssetData.GetClass() == USoundWave::StaticClass())
+					if (AssetData.AssetClassPath.GetAssetName() == FName(TEXT("SoundWave")))
 					{
 						USoundWave* LoadedWave = Cast<USoundWave>(AssetData.GetAsset());
 						if (LoadedWave)

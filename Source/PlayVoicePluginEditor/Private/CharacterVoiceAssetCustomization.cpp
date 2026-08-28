@@ -965,16 +965,39 @@ FReply FCharacterVoiceAssetCustomization::OnCleanPrecachedSoundWavesClicked()
 	Asset->ClearPrecachedVoiceLines();
 	Asset->MarkPackageDirty();
 
+	if (!FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+	{
+		FModuleManager::Get().LoadModule("AssetRegistry");
+	}
+
 	if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
 	{
+		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 		for (USoundWave* SoundWave : SoundWavesToDelete)
 		{
 			if (SoundWave)
 			{
-				FAssetRegistryModule::AssetDeleted(SoundWave);
+				AssetRegistryModule.AssetDeleted(SoundWave);
 			}
 		}
 	}
+
+	// Detach objects and outer packages to transient package so open file locks are released
+	for (USoundWave* SoundWave : SoundWavesToDelete)
+	{
+		if (SoundWave)
+		{
+			UPackage* Pkg = SoundWave->GetOutermost();
+			SoundWave->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional | REN_ForceNoReregister);
+			SoundWave->MarkAsGarbage();
+			if (Pkg && Pkg != GetTransientPackage())
+			{
+				Pkg->MarkAsGarbage();
+			}
+		}
+	}
+
+	CollectGarbage(GARBAGE_COLLECTION_KEEP_FLAGS);
 
 	for (FString& FilePath : FilePathsToDelete)
 	{
