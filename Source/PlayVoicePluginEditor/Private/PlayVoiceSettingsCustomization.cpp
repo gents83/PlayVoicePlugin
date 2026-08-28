@@ -221,6 +221,8 @@ FReply FPlayVoiceSettingsCustomization::OnLaunchSetupClicked()
 
 	FString ResolvedReqFile = FPlayVoicePluginEditorModule::ResolveResourcePath(ReqFile);
 
+	FString UpgradePipArgs = TEXT("-m pip install --upgrade pip");
+
 	FString BaseExtraArgs = ExtraArgs.IsEmpty() ? TEXT("--prefer-binary") : ExtraArgs;
 
 	FString CmdArgs = FString::Printf(TEXT("-m pip install %s -r \"%s\""), *BaseExtraArgs, *ResolvedReqFile);
@@ -250,8 +252,12 @@ FReply FPlayVoiceSettingsCustomization::OnLaunchSetupClicked()
 
 	UE_LOG(LogPlayVoiceSettings, Log, TEXT("Running setup installation: %s %s"), *PythonExec, *CmdArgs);
 
-	Async(EAsyncExecution::Thread, [PythonExec, CmdArgs, GitCmdArgs, NotificationItem]()
+	Async(EAsyncExecution::Thread, [PythonExec, UpgradePipArgs, CmdArgs, GitCmdArgs, NotificationItem]()
 	{
+		int32 UpCode = -1;
+		FString UpOut, UpErr;
+		FPlatformProcess::ExecProcess(*PythonExec, *UpgradePipArgs, &UpCode, &UpOut, &UpErr);
+
 		int32 ReturnCode = -1;
 		FString StdOut;
 		FString StdErr;

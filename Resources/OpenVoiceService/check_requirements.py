@@ -20,6 +20,8 @@ PACKAGE_IMPORT_MAP = {
     "myshell_openvoice": ["openvoice", "myshell_openvoice"],
     "myshell-openvoice": ["openvoice", "myshell_openvoice"],
     "openvoice": ["openvoice"],
+    "audioop_lts": ["audioop", "pyaudioop", "audioop_lts"],
+    "audioop-lts": ["audioop", "pyaudioop", "audioop_lts"],
 }
 
 
