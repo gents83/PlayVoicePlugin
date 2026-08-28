@@ -572,6 +572,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 
 		const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
 		FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
+		float TimeoutSecs = Settings && Settings->RequestTimeout > 0.0f ? Settings->RequestTimeout : 120.0f;
 
 		int32 TotalLangsProcessed = 0;
 		TArray<FCharacterLanguageData*> ConfiguredLanguages;
@@ -662,12 +663,12 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 			ExtractReq->SetVerb(TEXT("POST"));
 			ExtractReq->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 			ExtractReq->SetContentAsString(ExtractPayload);
-			ExtractReq->SetTimeout(Settings && Settings->RequestTimeout > 0.0f ? Settings->RequestTimeout : 120.0f);
+			ExtractReq->SetTimeout(TimeoutSecs);
 
 			FString CurrentLangCode = LangData.LanguageCode;
 			float CurrentSpeed = LangData.Speed;
 
-			ExtractReq->OnProcessRequestComplete().BindLambda([WeakTargetAsset, BaseUrl, CurrentLangCode, CurrentSpeed, DiscoveredBlueprintLines, StepTaskProgress, FailedTasks](FHttpRequestPtr Req, FHttpResponsePtr Res, bool bExtractSuccess)
+			ExtractReq->OnProcessRequestComplete().BindLambda([WeakTargetAsset, BaseUrl, CurrentLangCode, CurrentSpeed, TimeoutSecs, DiscoveredBlueprintLines, StepTaskProgress, FailedTasks](FHttpRequestPtr Req, FHttpResponsePtr Res, bool bExtractSuccess)
 			{
 				bool bSuccess = bExtractSuccess && Res.IsValid() && EHttpResponseCodes::IsOk(Res->GetResponseCode());
 				if (!bSuccess)
@@ -769,7 +770,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 					SynthReq->SetVerb(TEXT("POST"));
 					SynthReq->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 					SynthReq->SetContentAsString(SynthPayload);
-					SynthReq->SetTimeout(Settings && Settings->RequestTimeout > 0.0f ? Settings->RequestTimeout : 120.0f);
+					SynthReq->SetTimeout(TimeoutSecs);
 
 					SynthReq->OnProcessRequestComplete().BindLambda([WeakTargetAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr SReq, FHttpResponsePtr SRes, bool bSynthSuccess)
 					{
@@ -850,6 +851,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 
 		const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
 		FString Url = (Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983")) + TEXT("/extract");
+		float TimeoutSecs = Settings && Settings->RequestTimeout > 0.0f ? Settings->RequestTimeout : 120.0f;
 
 		int32 ProcessedLangs = 0;
 		TArray<FCharacterLanguageData*> ConfiguredLanguages;
@@ -940,7 +942,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 			HttpRequest->SetVerb(TEXT("POST"));
 			HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 			HttpRequest->SetContentAsString(PayloadStr);
-			HttpRequest->SetTimeout(Settings && Settings->RequestTimeout > 0.0f ? Settings->RequestTimeout : 120.0f);
+			HttpRequest->SetTimeout(TimeoutSecs);
 
 			FString CurrentLangCode = LangData.LanguageCode;
 
@@ -1128,6 +1130,7 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 
 		const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
 		FString BaseUrl = Settings ? Settings->ServiceUrl : TEXT("http://127.0.0.1:1983");
+		float TimeoutSecs = Settings && Settings->RequestTimeout > 0.0f ? Settings->RequestTimeout : 120.0f;
 
 		UPackage* OuterPackage = Asset->GetOutermost();
 		FString AssetFolderPath = FPaths::GetPath(OuterPackage->GetName());
@@ -1234,7 +1237,7 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 				HttpRequest->SetVerb(TEXT("POST"));
 				HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 				HttpRequest->SetContentAsString(PayloadStr);
-				HttpRequest->SetTimeout(Settings && Settings->RequestTimeout > 0.0f ? Settings->RequestTimeout : 120.0f);
+				HttpRequest->SetTimeout(TimeoutSecs);
 
 				HttpRequest->OnProcessRequestComplete().BindLambda([WeakTargetAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
 				{
