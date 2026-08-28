@@ -31,7 +31,7 @@ try:
     HAS_OPENVOICE = True
     logger.info("Successfully initialized OpenVoice and MeloTTS engine.")
 except ImportError:
-    logger.warning("OpenVoice / MeloTTS packages not installed. Running in fallback TTS generation mode.")
+    logger.info("OpenVoice / MeloTTS packages not installed. Running in built-in fallback TTS voice synthesis mode.")
 
 try:
     from fastapi import FastAPI, HTTPException, Response
