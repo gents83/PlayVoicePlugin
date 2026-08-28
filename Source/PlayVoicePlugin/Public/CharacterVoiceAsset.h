@@ -7,6 +7,28 @@
 #include "Sound/SoundWaveProcedural.h"
 #include "CharacterVoiceAsset.generated.h"
 
+USTRUCT(BlueprintType)
+struct PLAYVOICEPLUGIN_API FVoiceLineGuideTrack
+{
+	GENERATED_BODY()
+
+	/** Dialogue text line corresponding to this guide track */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
+	FString LineText;
+
+	/** Optional recorded reference audio guide track (WAV/MP3/FLAC) supplying custom performance, cadence, and emotion */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice", meta = (FilePathFilter = "wav,mp3,flac"))
+	FFilePath GuideAudioFile;
+
+	/** Optional emotion performance tag (e.g. "neutral", "happy", "angry", "sad", "excited") */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
+	FString Emotion = TEXT("neutral");
+
+	/** Speed multiplier override for this specific line (default 1.0) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice", meta = (ClampMin = "0.5", ClampMax = "2.0"))
+	float Speed = 1.0f;
+};
+
 /**
  * Stores settings, reference audio, and OpenVoice model parameters for a specific language.
  */
@@ -46,28 +68,6 @@ struct PLAYVOICEPLUGIN_API FCharacterLanguageData
 	/** Whether the OpenVoice model embedding has been successfully generated for this language */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "PlayVoice")
 	bool bIsModelGenerated = false;
-};
-
-USTRUCT(BlueprintType)
-struct PLAYVOICEPLUGIN_API FVoiceLineGuideTrack
-{
-	GENERATED_BODY()
-
-	/** Dialogue text line corresponding to this guide track */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
-	FString LineText;
-
-	/** Optional recorded reference audio guide track (WAV/MP3/FLAC) supplying custom performance, cadence, and emotion */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice", meta = (FilePathFilter = "wav,mp3,flac"))
-	FFilePath GuideAudioFile;
-
-	/** Optional emotion performance tag (e.g. "neutral", "happy", "angry", "sad", "excited") */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
-	FString Emotion = TEXT("neutral");
-
-	/** Speed multiplier override for this specific line (default 1.0) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice", meta = (ClampMin = "0.5", ClampMax = "2.0"))
-	float Speed = 1.0f;
 };
 
 USTRUCT(BlueprintType)
