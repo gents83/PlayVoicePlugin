@@ -644,6 +644,15 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 			FCharacterLanguageData& LangData = *LangDataPtr;
 			TArray<FString> RefAudioFiles = Asset->GetResolvedReferenceAudioFilesForLanguage(LangData.LanguageCode);
 
+			if (RefAudioFiles.Num() == 0)
+			{
+				(*FailedTasks)++;
+				FString ConfiguredFolderPath = LangData.ReferenceAudioFolder.Path;
+				UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateAndProcessAllClicked: No valid reference audio files (.wav, .mp3, .flac) found on disk for language '%s'. Configured folder: '%s', configured files count: %d. Check that audio files exist on disk at the specified location."), *LangData.LanguageCode, *ConfiguredFolderPath, LangData.ReferenceAudioFiles.Num());
+				StepTaskProgress();
+				continue;
+			}
+
 			TSharedPtr<FJsonObject> ExtractObj = MakeShared<FJsonObject>();
 			ExtractObj->SetStringField(TEXT("character_name"), Asset->CharacterName.ToString());
 			ExtractObj->SetStringField(TEXT("language"), LangData.LanguageCode);
@@ -672,38 +681,65 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 			ExtractReq->OnProcessRequestComplete().BindLambda([ExtractReq, WeakTargetAsset, BaseUrl, CurrentLangCode, CurrentSpeed, TimeoutSecs, DiscoveredBlueprintLines, StepTaskProgress, FailedTasks](FHttpRequestPtr Req, FHttpResponsePtr Res, bool bExtractSuccess)
 			{
 				bool bSuccess = bExtractSuccess && Res.IsValid() && EHttpResponseCodes::IsOk(Res->GetResponseCode());
+				int32 ResponseCode = Res.IsValid() ? Res->GetResponseCode() : 0;
+				FString ResponseContent = Res.IsValid() ? Res->GetContentAsString() : TEXT("");
+				FString ErrorMessage;
+
+				if (!bExtractSuccess || !Res.IsValid())
+				{
+					ErrorMessage = TEXT("Could not connect to OpenVoice REST backend service.");
+				}
+				else if (!EHttpResponseCodes::IsOk(ResponseCode))
+				{
+					ErrorMessage = FString::Printf(TEXT("HTTP request failed with status code %d."), ResponseCode);
+				}
+
+				TSharedPtr<FJsonObject> ResObj;
+				if (!ResponseContent.IsEmpty())
+				{
+					TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ResponseContent);
+					if (FJsonSerializer::Deserialize(Reader, ResObj) && ResObj.IsValid())
+					{
+						if (ResObj->HasField(TEXT("message")))
+						{
+							ErrorMessage = ResObj->GetStringField(TEXT("message"));
+						}
+						else if (ResObj->HasField(TEXT("detail")))
+						{
+							ErrorMessage = ResObj->GetStringField(TEXT("detail"));
+						}
+					}
+				}
+
+				if (bSuccess && ResObj.IsValid() && WeakTargetAsset.IsValid())
+				{
+					FString Status = ResObj->HasField(TEXT("status")) ? ResObj->GetStringField(TEXT("status")) : TEXT("");
+					if (Status.Equals(TEXT("success"), ESearchCase::IgnoreCase))
+					{
+						FCharacterLanguageData* TargetLangData = WeakTargetAsset->FindLanguageData(CurrentLangCode);
+						if (TargetLangData)
+						{
+							TargetLangData->ToneColorEmbeddingData = ResObj->GetStringField(TEXT("embedding_data"));
+							TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
+							WeakTargetAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
+							WeakTargetAsset->MarkPackageDirty();
+							UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateAndProcessAllClicked: Model extraction succeeded for language '%s'."), *CurrentLangCode);
+						}
+					}
+					else
+					{
+						bSuccess = false;
+						if (ResObj->HasField(TEXT("message")))
+						{
+							ErrorMessage = ResObj->GetStringField(TEXT("message"));
+						}
+					}
+				}
+
 				if (!bSuccess)
 				{
 					(*FailedTasks)++;
-					UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateAndProcessAllClicked: Model extraction failed for language '%s'."), *CurrentLangCode);
-				}
-
-				if (bSuccess && WeakTargetAsset.IsValid())
-				{
-					TSharedPtr<FJsonObject> ResObj;
-					TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Res->GetContentAsString());
-					if (FJsonSerializer::Deserialize(Reader, ResObj) && ResObj.IsValid())
-					{
-								FString Status = ResObj->GetStringField(TEXT("status"));
-								if (Status.Equals(TEXT("success"), ESearchCase::IgnoreCase))
-						{
-									FCharacterLanguageData* TargetLangData = WeakTargetAsset->FindLanguageData(CurrentLangCode);
-									if (TargetLangData)
-									{
-										TargetLangData->ToneColorEmbeddingData = ResObj->GetStringField(TEXT("embedding_data"));
-										TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
-										WeakTargetAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
-										WeakTargetAsset->MarkPackageDirty();
-										UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateAndProcessAllClicked: Model extraction succeeded for language '%s'."), *CurrentLangCode);
-									}
-								}
-								else
-								{
-									(*FailedTasks)++;
-									FString ErrMsg = ResObj->GetStringField(TEXT("message"));
-									UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateAndProcessAllClicked: Model extraction error for language '%s': %s"), *CurrentLangCode, *ErrMsg);
-						}
-					}
+					UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateAndProcessAllClicked: Model extraction failed for language '%s' (HTTP Status %d). Cause: %s | Raw response: %s"), *CurrentLangCode, ResponseCode, *ErrorMessage, *ResponseContent);
 				}
 
 				StepTaskProgress();
@@ -776,10 +812,40 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked()
 					SynthReq->OnProcessRequestComplete().BindLambda([SynthReq, WeakTargetAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr SReq, FHttpResponsePtr SRes, bool bSynthSuccess)
 					{
 						bool bSynthOk = bSynthSuccess && SRes.IsValid() && EHttpResponseCodes::IsOk(SRes->GetResponseCode());
+						int32 SynthCode = SRes.IsValid() ? SRes->GetResponseCode() : 0;
+						FString SynthResponseContent = SRes.IsValid() ? SRes->GetContentAsString() : TEXT("");
+						FString SynthErrMsg;
+
+						if (!bSynthSuccess || !SRes.IsValid())
+						{
+							SynthErrMsg = TEXT("Could not connect to service or HTTP request failed.");
+						}
+						else if (!EHttpResponseCodes::IsOk(SynthCode))
+						{
+							SynthErrMsg = FString::Printf(TEXT("HTTP status code %d"), SynthCode);
+						}
+
+						if (!SynthResponseContent.IsEmpty())
+						{
+							TSharedPtr<FJsonObject> SObj;
+							TSharedRef<TJsonReader<>> SReader = TJsonReaderFactory<>::Create(SynthResponseContent);
+							if (FJsonSerializer::Deserialize(SReader, SObj) && SObj.IsValid())
+							{
+								if (SObj->HasField(TEXT("message")))
+								{
+									SynthErrMsg = SObj->GetStringField(TEXT("message"));
+								}
+								else if (SObj->HasField(TEXT("detail")))
+								{
+									SynthErrMsg = SObj->GetStringField(TEXT("detail"));
+								}
+							}
+						}
+
 						if (!bSynthOk)
 						{
 							(*FailedTasks)++;
-							UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateAndProcessAllClicked: Failed to synthesize line '%s' for language '%s'."), *LineText, *CurrentLangCode);
+							UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateAndProcessAllClicked: Failed to synthesize line '%s' for language '%s' (HTTP Status %d). Cause: %s | Response: %s"), *LineText, *CurrentLangCode, SynthCode, *SynthErrMsg, *SynthResponseContent);
 						}
 
 						if (bSynthOk && WeakTargetAsset.IsValid())
@@ -925,6 +991,17 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 			FCharacterLanguageData& LangData = *LangDataPtr;
 			TArray<FString> RefAudioFiles = Asset->GetResolvedReferenceAudioFilesForLanguage(LangData.LanguageCode);
 
+			if (RefAudioFiles.Num() == 0)
+			{
+				(*FailedTasks)++;
+				FString ConfiguredFolderPath = LangData.ReferenceAudioFolder.Path;
+				FString ErrMsg = FString::Printf(TEXT("No valid reference audio files found on disk for language '%s'. Configured folder: '%s', configured files count: %d. Check that audio files exist on disk at specified location."), *LangData.LanguageCode, *ConfiguredFolderPath, LangData.ReferenceAudioFiles.Num());
+				UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateModelClicked: %s"), *ErrMsg);
+				FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(ErrMsg));
+				StepTaskProgress();
+				continue;
+			}
+
 			TSharedPtr<FJsonObject> JsonObj = MakeShared<FJsonObject>();
 			JsonObj->SetStringField(TEXT("character_name"), Asset->CharacterName.ToString());
 			JsonObj->SetStringField(TEXT("language"), LangData.LanguageCode);
@@ -952,59 +1029,68 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 			HttpRequest->OnProcessRequestComplete().BindLambda([HttpRequest, WeakTargetAsset, CurrentLangCode, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
 			{
 				bool bSuccess = bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode());
+				int32 ResponseCode = Response.IsValid() ? Response->GetResponseCode() : 0;
+				FString ResponseContent = Response.IsValid() ? Response->GetContentAsString() : TEXT("");
 				FString ErrorMessage;
 
-				if (Response.IsValid())
-				{
-					TSharedPtr<FJsonObject> ResponseObj;
-					TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Response->GetContentAsString());
-					bool bParsed = FJsonSerializer::Deserialize(Reader, ResponseObj) && ResponseObj.IsValid();
-
-					if (bSuccess && bParsed)
-					{
-						FString Status = ResponseObj->HasField(TEXT("status")) ? ResponseObj->GetStringField(TEXT("status")) : TEXT("");
-						if (Status.IsEmpty() || Status.Equals(TEXT("success"), ESearchCase::IgnoreCase))
-						{
-							if (WeakTargetAsset.IsValid())
-							{
-								FCharacterLanguageData* TargetLangData = WeakTargetAsset->FindLanguageData(CurrentLangCode);
-								if (TargetLangData)
-								{
-									TargetLangData->ToneColorEmbeddingData = ResponseObj->HasField(TEXT("embedding_data")) ? ResponseObj->GetStringField(TEXT("embedding_data")) : TEXT("");
-									TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
-									WeakTargetAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
-									WeakTargetAsset->MarkPackageDirty();
-									UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateModelClicked: Model saved for language '%s'."), *CurrentLangCode);
-								}
-							}
-						}
-						else
-						{
-							ErrorMessage = ResponseObj->HasField(TEXT("message")) ? ResponseObj->GetStringField(TEXT("message")) : TEXT("Unknown service error.");
-						}
-					}
-					else if (bParsed && ResponseObj->HasField(TEXT("detail")))
-					{
-						ErrorMessage = ResponseObj->GetStringField(TEXT("detail"));
-					}
-					else if (bParsed && ResponseObj->HasField(TEXT("message")))
-					{
-						ErrorMessage = ResponseObj->GetStringField(TEXT("message"));
-					}
-					else if (!bSuccess)
-					{
-						ErrorMessage = FString::Printf(TEXT("HTTP Request failed with status code %d."), Response->GetResponseCode());
-					}
-				}
-				else
+				if (!bWasSuccessful || !Response.IsValid())
 				{
 					ErrorMessage = TEXT("Could not connect to service endpoint.");
 				}
+				else if (!EHttpResponseCodes::IsOk(ResponseCode))
+				{
+					ErrorMessage = FString::Printf(TEXT("HTTP request failed with status code %d."), ResponseCode);
+				}
 
-				if (!ErrorMessage.IsEmpty())
+				TSharedPtr<FJsonObject> ResponseObj;
+				if (!ResponseContent.IsEmpty())
+				{
+					TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ResponseContent);
+					if (FJsonSerializer::Deserialize(Reader, ResponseObj) && ResponseObj.IsValid())
+					{
+						if (ResponseObj->HasField(TEXT("message")))
+						{
+							ErrorMessage = ResponseObj->GetStringField(TEXT("message"));
+						}
+						else if (ResponseObj->HasField(TEXT("detail")))
+						{
+							ErrorMessage = ResponseObj->GetStringField(TEXT("detail"));
+						}
+					}
+				}
+
+				if (bSuccess && ResponseObj.IsValid())
+				{
+					FString Status = ResponseObj->HasField(TEXT("status")) ? ResponseObj->GetStringField(TEXT("status")) : TEXT("");
+					if (Status.IsEmpty() || Status.Equals(TEXT("success"), ESearchCase::IgnoreCase))
+					{
+						if (WeakTargetAsset.IsValid())
+						{
+							FCharacterLanguageData* TargetLangData = WeakTargetAsset->FindLanguageData(CurrentLangCode);
+							if (TargetLangData)
+							{
+								TargetLangData->ToneColorEmbeddingData = ResponseObj->HasField(TEXT("embedding_data")) ? ResponseObj->GetStringField(TEXT("embedding_data")) : TEXT("");
+								TargetLangData->bIsModelGenerated = !TargetLangData->ToneColorEmbeddingData.IsEmpty();
+								WeakTargetAsset->SaveModelToFile(TEXT(""), CurrentLangCode);
+								WeakTargetAsset->MarkPackageDirty();
+								UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateModelClicked: Model saved for language '%s'."), *CurrentLangCode);
+							}
+						}
+					}
+					else
+					{
+						bSuccess = false;
+						if (ResponseObj->HasField(TEXT("message")))
+						{
+							ErrorMessage = ResponseObj->GetStringField(TEXT("message"));
+						}
+					}
+				}
+
+				if (!bSuccess)
 				{
 					(*FailedTasks)++;
-					UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateModelClicked: Model extraction error for language '%s': %s"), *CurrentLangCode, *ErrorMessage);
+					UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateModelClicked: Model extraction error for language '%s' (HTTP Status %d): %s | Raw Response: %s"), *CurrentLangCode, ResponseCode, *ErrorMessage, *ResponseContent);
 					FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(FString::Printf(TEXT("Model extraction error for language '%s':\n%s"), *CurrentLangCode, *ErrorMessage)));
 				}
 
@@ -1256,10 +1342,40 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 				HttpRequest->OnProcessRequestComplete().BindLambda([HttpRequest, WeakTargetAsset, LineText, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
 				{
 					bool bSynthOk = bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode());
+					int32 ResponseCode = Response.IsValid() ? Response->GetResponseCode() : 0;
+					FString ResponseContent = Response.IsValid() ? Response->GetContentAsString() : TEXT("");
+					FString ErrorMessage;
+
+					if (!bWasSuccessful || !Response.IsValid())
+					{
+						ErrorMessage = TEXT("Could not connect to service endpoint.");
+					}
+					else if (!EHttpResponseCodes::IsOk(ResponseCode))
+					{
+						ErrorMessage = FString::Printf(TEXT("HTTP status code %d"), ResponseCode);
+					}
+
+					if (!ResponseContent.IsEmpty())
+					{
+						TSharedPtr<FJsonObject> SObj;
+						TSharedRef<TJsonReader<>> SReader = TJsonReaderFactory<>::Create(ResponseContent);
+						if (FJsonSerializer::Deserialize(SReader, SObj) && SObj.IsValid())
+						{
+							if (SObj->HasField(TEXT("message")))
+							{
+								ErrorMessage = SObj->GetStringField(TEXT("message"));
+							}
+							else if (SObj->HasField(TEXT("detail")))
+							{
+								ErrorMessage = SObj->GetStringField(TEXT("detail"));
+							}
+						}
+					}
+
 					if (!bSynthOk)
 					{
 						(*FailedTasks)++;
-						UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnPrecacheLinesClicked: Failed to synthesize line '%s' for language '%s'."), *LineText, *CurrentLangCode);
+						UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnPrecacheLinesClicked: Failed to synthesize line '%s' for language '%s' (HTTP Status %d). Cause: %s | Response: %s"), *LineText, *CurrentLangCode, ResponseCode, *ErrorMessage, *ResponseContent);
 					}
 
 					if (bSynthOk && WeakTargetAsset.IsValid())

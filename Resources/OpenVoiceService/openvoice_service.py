@@ -116,12 +116,29 @@ class OpenVoiceEngine:
 
         if HAS_OPENVOICE:
             try:
-                converter_path = os.path.join(checkpoint_dir, "converter")
-                if os.path.exists(converter_path):
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                candidate_paths = [
+                    checkpoint_dir,
+                    os.path.join(script_dir, checkpoint_dir),
+                    os.path.join(script_dir, "..", "..", checkpoint_dir),
+                    os.path.join(os.getcwd(), checkpoint_dir)
+                ]
+                resolved_ckpt_dir = None
+                for cand in candidate_paths:
+                    cand_abs = os.path.abspath(cand)
+                    if os.path.exists(os.path.join(cand_abs, "converter")):
+                        resolved_ckpt_dir = cand_abs
+                        break
+
+                if resolved_ckpt_dir:
+                    self.checkpoint_dir = resolved_ckpt_dir
+                    converter_path = os.path.join(resolved_ckpt_dir, "converter")
                     device = "cuda" if torch.cuda.is_available() else "cpu"
                     self.converter = ToneColorConverter(f"{converter_path}/config.json", device=device)
                     self.converter.load_ckpt(f"{converter_path}/checkpoint.pth")
-                    logger.info(f"Loaded OpenVoice ToneColorConverter on {device}")
+                    logger.info(f"Loaded OpenVoice ToneColorConverter on {device} from {converter_path}")
+                else:
+                    logger.info("OpenVoice converter checkpoints not found in candidate paths. Tone color extraction will fall back gracefully to acoustic profile mode. (To enable full OpenVoice zero-shot tone color cloning, place 'checkpoints/converter' in your project root).")
             except Exception as e:
                 logger.error(f"Failed loading OpenVoice checkpoints: {e}")
 
@@ -132,13 +149,22 @@ class OpenVoiceEngine:
         valid_files = [f for f in reference_files if os.path.exists(f)]
         acoustic_profile = analyze_reference_audio_files(valid_files)
 
-        if HAS_OPENVOICE and valid_files:
+        if not valid_files:
+            err_msg = f"No valid reference audio files found on disk for character '{character_name}' at provided paths: {reference_files}"
+            logger.error(err_msg)
+            return {
+                "status": "error",
+                "message": err_msg,
+                "character_name": character_name
+            }
+
+        if HAS_OPENVOICE and self.converter is not None:
             try:
                 device = "cuda" if torch.cuda.is_available() else "cpu"
                 target_dir = os.path.join(tempfile.gettempdir(), 'processed')
                 os.makedirs(target_dir, exist_ok=True)
                 target_se, audio_name = get_se(valid_files[0], self.converter, target_dir=target_dir, vad=True)
-                if HAS_OPENVOICE and isinstance(target_se, torch.Tensor):
+                if isinstance(target_se, torch.Tensor):
                     se_list = target_se.detach().cpu().numpy().tolist()
                 elif hasattr(target_se, 'tolist'):
                     se_list = target_se.tolist()
@@ -160,41 +186,23 @@ class OpenVoiceEngine:
                     "model_checkpoint": f"{self.checkpoint_dir}/{character_name}_se.pth"
                 }
             except Exception as e:
-                logger.error(f"OpenVoice extraction failed: {e}")
+                logger.warning(f"OpenVoice get_se extraction failed ({e}). Falling back to acoustic profile extraction.")
 
-        # If OpenVoice is not installed, generate fallback acoustic profile embedding
-        if not HAS_OPENVOICE:
-            logger.info(f"OpenVoice engine not present. Generating fallback acoustic profile embedding for '{character_name}'.")
-            embedding_payload = {
-                "character_name": character_name,
-                "num_reference_files": len(valid_files),
-                "valid_reference_files": valid_files,
-                "target_se": [],
-                "acoustic_profile": acoustic_profile,
-                "engine": "Fallback-TTS"
-            }
-            return {
-                "status": "success",
-                "character_name": character_name,
-                "embedding_data": json.dumps(embedding_payload),
-                "model_checkpoint": f"{self.checkpoint_dir}/{character_name}_se.pth"
-            }
-
-        if not valid_files:
-            err_msg = f"No valid reference audio files found on disk for character '{character_name}'."
-            logger.error(err_msg)
-            return {
-                "status": "error",
-                "message": err_msg,
-                "character_name": character_name
-            }
-
-        err_msg = f"Tone color extraction failed for character '{character_name}' using reference audio files."
-        logger.error(err_msg)
+        # Fallback acoustic profile embedding generator if OpenVoice is not present or extraction encountered an error / missing converter
+        logger.info(f"Generating fallback acoustic profile embedding for '{character_name}' (Reference files: {len(valid_files)}).")
+        embedding_payload = {
+            "character_name": character_name,
+            "num_reference_files": len(valid_files),
+            "valid_reference_files": valid_files,
+            "target_se": [],
+            "acoustic_profile": acoustic_profile,
+            "engine": "Fallback-TTS"
+        }
         return {
-            "status": "error",
-            "message": err_msg,
-            "character_name": character_name
+            "status": "success",
+            "character_name": character_name,
+            "embedding_data": json.dumps(embedding_payload),
+            "model_checkpoint": f"{self.checkpoint_dir}/{character_name}_se.pth"
         }
 
     def synthesize(self, text: str, character_name: str, language: str = "EN", speed: float = 1.0, embedding_data: Optional[str] = None, reference_audio_files: Optional[List[str]] = None, guide_audio_file: Optional[str] = None, emotion: Optional[str] = None) -> bytes:
@@ -378,6 +386,7 @@ def analyze_reference_audio_files(valid_files: List[str]) -> Dict[str, Any]:
     """
     Analyzes reference audio clips to extract mean fundamental pitch (F0),
     pitch variability, energy RMS, and zero crossing rate.
+    Uses fast sub-sampled autocorrelation to ensure instant processing.
     """
     if not valid_files:
         return {}
@@ -385,6 +394,12 @@ def analyze_reference_audio_files(valid_files: List[str]) -> Dict[str, Any]:
     pitches = []
     rms_values = []
     zcrs = []
+
+    try:
+        import numpy as np
+        HAS_NUMPY = True
+    except ImportError:
+        HAS_NUMPY = False
 
     for filepath in valid_files:
         try:
@@ -397,49 +412,84 @@ def analyze_reference_audio_files(valid_files: List[str]) -> Dict[str, Any]:
                     continue
                 frames = wf.readframes(nframes)
 
-                if sampwidth == 2:
-                    raw_samples = struct.unpack(f'<{nframes * nchannels}h', frames)
-                elif sampwidth == 1:
-                    raw_samples = [s - 128 for s in struct.unpack(f'<{nframes * nchannels}B', frames)]
-                else:
-                    continue
-
-                if nchannels > 1:
-                    mono_samples = [sum(raw_samples[i:i+nchannels]) / (nchannels * 32768.0) for i in range(0, len(raw_samples), nchannels)]
-                else:
-                    mono_samples = [s / 32768.0 for s in raw_samples]
-
-                sq_sum = sum(s * s for s in mono_samples)
-                rms = math.sqrt(sq_sum / max(1, len(mono_samples)))
-                rms_values.append(rms)
-
-                win_size = int(framerate * 0.030)
-                hop_size = int(framerate * 0.015)
-                min_lag = max(1, int(framerate / 450))
-                max_lag = min(win_size - 1, int(framerate / 55))
-
-                zero_crossings = 0
-                for idx in range(1, len(mono_samples)):
-                    if (mono_samples[idx] >= 0 and mono_samples[idx-1] < 0) or (mono_samples[idx] < 0 and mono_samples[idx-1] >= 0):
-                        zero_crossings += 1
-                zcrs.append(zero_crossings / max(1, len(mono_samples)))
-
-                for frame_start in range(0, len(mono_samples) - win_size, hop_size):
-                    window = mono_samples[frame_start : frame_start + win_size]
-                    win_energy = sum(s * s for s in window)
-                    if win_energy < 0.001:
+                if HAS_NUMPY:
+                    if sampwidth == 2:
+                        raw = np.frombuffer(frames, dtype=np.int16)
+                    elif sampwidth == 1:
+                        raw = (np.frombuffer(frames, dtype=np.uint8).astype(np.int16) - 128) * 256
+                    else:
                         continue
-                    best_lag = 0
-                    best_corr = -1.0
-                    r0 = win_energy
-                    for lag in range(min_lag, max_lag):
-                        corr = sum(window[k] * window[k + lag] for k in range(win_size - lag))
-                        norm_corr = corr / r0
-                        if norm_corr > best_corr:
-                            best_corr = norm_corr
-                            best_lag = lag
-                    if best_corr > 0.35 and best_lag > 0:
-                        pitches.append(framerate / best_lag)
+
+                    if nchannels > 1:
+                        mono = raw.reshape(-1, nchannels).mean(axis=1) / 32768.0
+                    else:
+                        mono = raw / 32768.0
+
+                    rms_values.append(float(np.sqrt(np.mean(mono**2))))
+                    zcrs.append(float(np.mean(np.abs(np.diff(np.sign(mono))) > 0)))
+
+                    win_size = int(framerate * 0.030)
+                    min_lag = max(1, int(framerate / 450))
+                    max_lag = min(win_size - 1, int(framerate / 55))
+
+                    total_len = len(mono)
+                    if total_len > win_size:
+                        max_frames = 80
+                        hop = max(win_size, total_len // max_frames)
+                        for frame_start in range(0, total_len - win_size, hop):
+                            win = mono[frame_start : frame_start + win_size]
+                            energy = float(np.sum(win**2))
+                            if energy < 0.001:
+                                continue
+                            corr = np.correlate(win, win, mode='full')
+                            corr = corr[len(win)-1:]
+                            lag_corr = corr[min_lag:max_lag] / energy
+                            if len(lag_corr) > 0:
+                                best_idx = int(np.argmax(lag_corr))
+                                if lag_corr[best_idx] > 0.35:
+                                    pitches.append(float(framerate / (min_lag + best_idx)))
+                else:
+                    if sampwidth == 2:
+                        raw_samples = struct.unpack(f'<{nframes * nchannels}h', frames)
+                    elif sampwidth == 1:
+                        raw_samples = [(s - 128) * 256 for s in struct.unpack(f'<{nframes * nchannels}B', frames)]
+                    else:
+                        continue
+
+                    if nchannels > 1:
+                        mono_samples = [sum(raw_samples[i:i+nchannels]) / (nchannels * 32768.0) for i in range(0, len(raw_samples), nchannels)]
+                    else:
+                        mono_samples = [s / 32768.0 for s in raw_samples]
+
+                    sq_sum = sum(s * s for s in mono_samples)
+                    rms_values.append(math.sqrt(sq_sum / max(1, len(mono_samples))))
+
+                    win_size = int(framerate * 0.030)
+                    hop_size = int(framerate * 0.030)
+                    min_lag = max(1, int(framerate / 450))
+                    max_lag = min(win_size - 1, int(framerate / 55))
+
+                    total_possible = max(1, (len(mono_samples) - win_size) // hop_size)
+                    max_frames = min(80, total_possible)
+                    frame_step = max(1, total_possible // max_frames)
+
+                    for frame_idx in range(0, total_possible, frame_step):
+                        frame_start = frame_idx * hop_size
+                        window = mono_samples[frame_start : frame_start + win_size]
+                        win_energy = sum(s * s for s in window)
+                        if win_energy < 0.001:
+                            continue
+                        best_lag = 0
+                        best_corr = -1.0
+                        r0 = win_energy
+                        for lag in range(min_lag, max_lag, 2):
+                            corr = sum(window[k] * window[k + lag] for k in range(0, win_size - lag, 2))
+                            norm_corr = corr / r0
+                            if norm_corr > best_corr:
+                                best_corr = norm_corr
+                                best_lag = lag
+                        if best_corr > 0.25 and best_lag > 0:
+                            pitches.append(framerate / best_lag)
         except Exception as e:
             logger.warning(f"Error analyzing reference audio file '{filepath}': {e}")
 
@@ -627,41 +677,73 @@ if HAS_FASTAPI:
 
     @app.post("/extract")
     def api_extract(req: ExtractRequest):
-        res = engine.extract_tone_color(req.reference_audio_files, req.character_name)
-        if res.get("status") == "error":
-            return JSONResponse(status_code=400, content=res)
-        return JSONResponse(content=res)
+        try:
+            refs = [str(f) for f in req.reference_audio_files if f] if req.reference_audio_files else []
+            res = engine.extract_tone_color(refs, req.character_name or "Character")
+            if res.get("status") == "error":
+                return JSONResponse(status_code=400, content=res)
+            return JSONResponse(content=res)
+        except Exception as e:
+            logger.error(f"Error in api_extract: {e}", exc_info=True)
+            return JSONResponse(status_code=500, content={
+                "status": "error",
+                "message": f"Server extraction exception: {str(e)}",
+                "character_name": req.character_name or "Character"
+            })
 
     @app.post("/synthesize")
     def api_synthesize(req: SynthesizeRequest):
-        if not req.text.strip():
-            raise HTTPException(status_code=400, detail="Text line cannot be empty.")
+        try:
+            if not req.text or not req.text.strip():
+                return JSONResponse(status_code=400, content={
+                    "status": "error",
+                    "message": "Text line cannot be empty."
+                })
 
-        wav_bytes = engine.synthesize(
-            text=req.text,
-            character_name=req.character_name,
-            language=req.language or "EN",
-            speed=req.speed or 1.0,
-            embedding_data=req.embedding_data,
-            reference_audio_files=req.reference_audio_files,
-            guide_audio_file=req.guide_audio_file,
-            emotion=req.emotion
-        )
-        return Response(content=wav_bytes, media_type="audio/wav")
+            refs = [str(f) for f in req.reference_audio_files if f] if req.reference_audio_files else []
+            wav_bytes = engine.synthesize(
+                text=req.text,
+                character_name=req.character_name or "Character",
+                language=req.language or "EN",
+                speed=req.speed or 1.0,
+                embedding_data=req.embedding_data,
+                reference_audio_files=refs,
+                guide_audio_file=req.guide_audio_file,
+                emotion=req.emotion
+            )
+            if not wav_bytes:
+                return JSONResponse(status_code=500, content={
+                    "status": "error",
+                    "message": "Synthesis returned empty audio buffer."
+                })
+            return Response(content=wav_bytes, media_type="audio/wav")
+        except Exception as e:
+            logger.error(f"Error in api_synthesize: {e}", exc_info=True)
+            return JSONResponse(status_code=500, content={
+                "status": "error",
+                "message": f"Server synthesis exception: {str(e)}"
+            })
 
     @app.post("/transcribe")
     def api_transcribe(req: TranscribeRequest):
-        files_to_transcribe = req.reference_audio_files if req.reference_audio_files else ([req.audio_file] if req.audio_file else [])
-        transcriptions = {}
-        for f in files_to_transcribe:
-            if f:
-                transcriptions[f] = engine.transcribe_audio(f)
-        default_text = list(transcriptions.values())[0] if transcriptions else ""
-        return JSONResponse(content={
-            "status": "success",
-            "transcriptions": transcriptions,
-            "transcribed_text": default_text
-        })
+        try:
+            files_to_transcribe = req.reference_audio_files if req.reference_audio_files else ([req.audio_file] if req.audio_file else [])
+            transcriptions = {}
+            for f in files_to_transcribe:
+                if f:
+                    transcriptions[f] = engine.transcribe_audio(str(f))
+            default_text = list(transcriptions.values())[0] if transcriptions else ""
+            return JSONResponse(content={
+                "status": "success",
+                "transcriptions": transcriptions,
+                "transcribed_text": default_text
+            })
+        except Exception as e:
+            logger.error(f"Error in api_transcribe: {e}", exc_info=True)
+            return JSONResponse(status_code=500, content={
+                "status": "error",
+                "message": f"Server transcription exception: {str(e)}"
+            })
 
 
 def main():
