@@ -240,7 +240,31 @@ class OpenVoiceEngine:
                     self.tts_models[language] = TTS(language=language, device=device)
 
                 tts_engine_model = self.tts_models[language]
-                speaker_ids = tts_engine_model.hps.data.spk2id if hasattr(tts_engine_model, 'hps') else {}
+                speaker_ids = {}
+                if hasattr(tts_engine_model, 'hps') and hasattr(tts_engine_model.hps, 'data') and hasattr(tts_engine_model.hps.data, 'spk2id'):
+                    spk2id_obj = tts_engine_model.hps.data.spk2id
+                    if isinstance(spk2id_obj, dict):
+                        speaker_ids = spk2id_obj
+                    elif hasattr(spk2id_obj, 'items'):
+                        try:
+                            speaker_ids = dict(spk2id_obj.items())
+                        except Exception:
+                            pass
+                    elif hasattr(spk2id_obj, '__dict__'):
+                        speaker_ids = dict(spk2id_obj.__dict__)
+
+                spk_id = 0
+                if speaker_ids:
+                    if 'EN-Default' in speaker_ids:
+                        spk_id = speaker_ids['EN-Default']
+                    elif 'EN-US' in speaker_ids:
+                        spk_id = speaker_ids['EN-US']
+                    elif len(speaker_ids) > 0:
+                        spk_id = list(speaker_ids.values())[0]
+                elif hasattr(tts_engine_model, 'hps') and hasattr(tts_engine_model.hps, 'data') and hasattr(tts_engine_model.hps.data, 'spk2id'):
+                    spk2id_obj = tts_engine_model.hps.data.spk2id
+                    if hasattr(spk2id_obj, 'EN-Default'):
+                        spk_id = getattr(spk2id_obj, 'EN-Default')
 
                 temp_dir = tempfile.gettempdir()
                 src_path = os.path.join(temp_dir, f"{character_name}_src.wav")
@@ -252,7 +276,6 @@ class OpenVoiceEngine:
                     bUsedGuideTrack = True
                     logger.info(f"Using optional recorded guide audio track: {guide_audio_file}")
                 else:
-                    spk_id = speaker_ids.get('EN-Default', list(speaker_ids.values())[0]) if speaker_ids else 0
                     tts_engine_model.tts_to_file(text, spk_id, src_path, speed=speed)
 
                 if embedding_data and self.converter:

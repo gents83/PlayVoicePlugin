@@ -198,7 +198,7 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoice(
 			}
 			else
 			{
-				UE_LOG(LogPlayVoice, Warning, TEXT("PlayCharacterVoice: On-the-fly synthesis failed or disabled at runtime for line '%s' (Lang: %s)."), *TextLine, *TargetLang);
+				UE_LOG(LogPlayVoice, Warning, TEXT("PlayCharacterVoice: OpenVoice REST service is not running or dynamic synthesis failed for line '%s' (Lang: %s). Ensure service is running or pre-render dialogue lines."), *TextLine, *TargetLang);
 			}
 		});
 
