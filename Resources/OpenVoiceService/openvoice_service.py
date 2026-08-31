@@ -386,6 +386,7 @@ def analyze_reference_audio_files(valid_files: List[str]) -> Dict[str, Any]:
     """
     Analyzes reference audio clips to extract mean fundamental pitch (F0),
     pitch variability, energy RMS, and zero crossing rate.
+    Uses fast sub-sampled autocorrelation to ensure instant processing.
     """
     if not valid_files:
         return {}
@@ -393,6 +394,12 @@ def analyze_reference_audio_files(valid_files: List[str]) -> Dict[str, Any]:
     pitches = []
     rms_values = []
     zcrs = []
+
+    try:
+        import numpy as np
+        HAS_NUMPY = True
+    except ImportError:
+        HAS_NUMPY = False
 
     for filepath in valid_files:
         try:
@@ -405,49 +412,84 @@ def analyze_reference_audio_files(valid_files: List[str]) -> Dict[str, Any]:
                     continue
                 frames = wf.readframes(nframes)
 
-                if sampwidth == 2:
-                    raw_samples = struct.unpack(f'<{nframes * nchannels}h', frames)
-                elif sampwidth == 1:
-                    raw_samples = [s - 128 for s in struct.unpack(f'<{nframes * nchannels}B', frames)]
-                else:
-                    continue
-
-                if nchannels > 1:
-                    mono_samples = [sum(raw_samples[i:i+nchannels]) / (nchannels * 32768.0) for i in range(0, len(raw_samples), nchannels)]
-                else:
-                    mono_samples = [s / 32768.0 for s in raw_samples]
-
-                sq_sum = sum(s * s for s in mono_samples)
-                rms = math.sqrt(sq_sum / max(1, len(mono_samples)))
-                rms_values.append(rms)
-
-                win_size = int(framerate * 0.030)
-                hop_size = int(framerate * 0.015)
-                min_lag = max(1, int(framerate / 450))
-                max_lag = min(win_size - 1, int(framerate / 55))
-
-                zero_crossings = 0
-                for idx in range(1, len(mono_samples)):
-                    if (mono_samples[idx] >= 0 and mono_samples[idx-1] < 0) or (mono_samples[idx] < 0 and mono_samples[idx-1] >= 0):
-                        zero_crossings += 1
-                zcrs.append(zero_crossings / max(1, len(mono_samples)))
-
-                for frame_start in range(0, len(mono_samples) - win_size, hop_size):
-                    window = mono_samples[frame_start : frame_start + win_size]
-                    win_energy = sum(s * s for s in window)
-                    if win_energy < 0.001:
+                if HAS_NUMPY:
+                    if sampwidth == 2:
+                        raw = np.frombuffer(frames, dtype=np.int16)
+                    elif sampwidth == 1:
+                        raw = (np.frombuffer(frames, dtype=np.uint8).astype(np.int16) - 128) * 256
+                    else:
                         continue
-                    best_lag = 0
-                    best_corr = -1.0
-                    r0 = win_energy
-                    for lag in range(min_lag, max_lag):
-                        corr = sum(window[k] * window[k + lag] for k in range(win_size - lag))
-                        norm_corr = corr / r0
-                        if norm_corr > best_corr:
-                            best_corr = norm_corr
-                            best_lag = lag
-                    if best_corr > 0.35 and best_lag > 0:
-                        pitches.append(framerate / best_lag)
+
+                    if nchannels > 1:
+                        mono = raw.reshape(-1, nchannels).mean(axis=1) / 32768.0
+                    else:
+                        mono = raw / 32768.0
+
+                    rms_values.append(float(np.sqrt(np.mean(mono**2))))
+                    zcrs.append(float(np.mean(np.abs(np.diff(np.sign(mono))) > 0)))
+
+                    win_size = int(framerate * 0.030)
+                    min_lag = max(1, int(framerate / 450))
+                    max_lag = min(win_size - 1, int(framerate / 55))
+
+                    total_len = len(mono)
+                    if total_len > win_size:
+                        max_frames = 80
+                        hop = max(win_size, total_len // max_frames)
+                        for frame_start in range(0, total_len - win_size, hop):
+                            win = mono[frame_start : frame_start + win_size]
+                            energy = float(np.sum(win**2))
+                            if energy < 0.001:
+                                continue
+                            corr = np.correlate(win, win, mode='full')
+                            corr = corr[len(win)-1:]
+                            lag_corr = corr[min_lag:max_lag] / energy
+                            if len(lag_corr) > 0:
+                                best_idx = int(np.argmax(lag_corr))
+                                if lag_corr[best_idx] > 0.35:
+                                    pitches.append(float(framerate / (min_lag + best_idx)))
+                else:
+                    if sampwidth == 2:
+                        raw_samples = struct.unpack(f'<{nframes * nchannels}h', frames)
+                    elif sampwidth == 1:
+                        raw_samples = [(s - 128) * 256 for s in struct.unpack(f'<{nframes * nchannels}B', frames)]
+                    else:
+                        continue
+
+                    if nchannels > 1:
+                        mono_samples = [sum(raw_samples[i:i+nchannels]) / (nchannels * 32768.0) for i in range(0, len(raw_samples), nchannels)]
+                    else:
+                        mono_samples = [s / 32768.0 for s in raw_samples]
+
+                    sq_sum = sum(s * s for s in mono_samples)
+                    rms_values.append(math.sqrt(sq_sum / max(1, len(mono_samples))))
+
+                    win_size = int(framerate * 0.030)
+                    hop_size = int(framerate * 0.030)
+                    min_lag = max(1, int(framerate / 450))
+                    max_lag = min(win_size - 1, int(framerate / 55))
+
+                    total_possible = max(1, (len(mono_samples) - win_size) // hop_size)
+                    max_frames = min(80, total_possible)
+                    frame_step = max(1, total_possible // max_frames)
+
+                    for frame_idx in range(0, total_possible, frame_step):
+                        frame_start = frame_idx * hop_size
+                        window = mono_samples[frame_start : frame_start + win_size]
+                        win_energy = sum(s * s for s in window)
+                        if win_energy < 0.001:
+                            continue
+                        best_lag = 0
+                        best_corr = -1.0
+                        r0 = win_energy
+                        for lag in range(min_lag, max_lag, 2):
+                            corr = sum(window[k] * window[k + lag] for k in range(0, win_size - lag, 2))
+                            norm_corr = corr / r0
+                            if norm_corr > best_corr:
+                                best_corr = norm_corr
+                                best_lag = lag
+                        if best_corr > 0.25 and best_lag > 0:
+                            pitches.append(framerate / best_lag)
         except Exception as e:
             logger.warning(f"Error analyzing reference audio file '{filepath}': {e}")
 
