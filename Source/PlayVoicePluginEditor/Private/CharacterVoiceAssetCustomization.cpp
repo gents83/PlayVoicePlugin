@@ -374,11 +374,11 @@ static bool IsAssetPinMatchingTarget(const UEdGraphPin* AssetPin, const UCharact
 	return true;
 }
 
-static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
+static void ExtractAllTextFromPin(const UEdGraphPin* Pin, TArray<FString>& OutExtractedLines, TSet<const UEdGraphNode*>& VisitedNodes, int32 Depth = 0)
 {
-	if (!Pin || Depth > 10)
+	if (!Pin || Depth > 15)
 	{
-		return FString();
+		return;
 	}
 
 	// Ignore Target / self / WorldContextObject pins (target objects for function calls, not text inputs)
@@ -388,137 +388,164 @@ static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
 		PinName.Equals(TEXT("WorldContextObject"), ESearchCase::IgnoreCase) ||
 		PinName.Equals(TEXT("WorldContext"), ESearchCase::IgnoreCase))
 	{
-		return FString();
+		return;
 	}
 
-	// 1. If the pin is linked to upstream pin(s), traverse connected nodes first
-	if (Pin->LinkedTo.Num() > 0)
+	// 1. Traverse connected upstream pin(s) first
+	for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
 	{
-		for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
+		if (!LinkedPin)
 		{
-			if (!LinkedPin)
-			{
-				continue;
-			}
+			continue;
+		}
 
-			const UEdGraphNode* OwningNode = LinkedPin->GetOwningNode();
-			if (!OwningNode)
-			{
-				continue;
-			}
+		const UEdGraphNode* OwningNode = LinkedPin->GetOwningNode();
+		if (!OwningNode || VisitedNodes.Contains(OwningNode))
+		{
+			continue;
+		}
 
-			// Handle Reroute Nodes (UK2Node_Knot)
-			if (const UK2Node_Knot* KnotNode = Cast<UK2Node_Knot>(OwningNode))
+		VisitedNodes.Add(OwningNode);
+
+		// Handle Reroute Nodes (UK2Node_Knot)
+		if (const UK2Node_Knot* KnotNode = Cast<UK2Node_Knot>(OwningNode))
+		{
+			if (const UEdGraphPin* KnotInput = KnotNode->GetInputPin())
 			{
-				if (const UEdGraphPin* KnotInput = KnotNode->GetInputPin())
+				ExtractAllTextFromPin(KnotInput, OutExtractedLines, VisitedNodes, Depth + 1);
+			}
+		}
+		// Handle Function Call Nodes (UK2Node_CallFunction)
+		else if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(OwningNode))
+		{
+			UFunction* TargetFunc = CallNode->GetTargetFunction();
+			FString FuncName = TargetFunc ? TargetFunc->GetName() : CallNode->FunctionReference.GetMemberName().ToString();
+
+			// If literal string/text/name builder function
+			if (FuncName.Equals(TEXT("MakeLiteralString"), ESearchCase::IgnoreCase) ||
+				FuncName.Equals(TEXT("MakeLiteralText"), ESearchCase::IgnoreCase) ||
+				FuncName.Equals(TEXT("MakeLiteralName"), ESearchCase::IgnoreCase))
+			{
+				if (const UEdGraphPin* ValPin = CallNode->FindPin(TEXT("Value")))
 				{
-					FString KnotVal = ExtractTextFromPin(KnotInput, Depth + 1);
-					if (!KnotVal.IsEmpty())
+					ExtractAllTextFromPin(ValPin, OutExtractedLines, VisitedNodes, Depth + 1);
+				}
+			}
+
+			// Conversion functions
+			TArray<FString> PreferredPinNames = { TEXT("InText"), TEXT("InString"), TEXT("InName"), TEXT("Text"), TEXT("String"), TEXT("Name"), TEXT("Value") };
+			for (const FString& PrefName : PreferredPinNames)
+			{
+				if (const UEdGraphPin* InputPin = CallNode->FindPin(*PrefName))
+				{
+					if (InputPin->Direction == EGPD_Input)
 					{
-						return KnotVal;
+						ExtractAllTextFromPin(InputPin, OutExtractedLines, VisitedNodes, Depth + 1);
 					}
 				}
 			}
 
-			// Handle UK2Node_CallFunction (e.g. MakeLiteralString, MakeLiteralText, Conv_TextToString, etc.)
-			if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(OwningNode))
+			// Inspect target function definition graph if this call node targets a Blueprint function
+			if (TargetFunc)
 			{
-				UFunction* TargetFunc = CallNode->GetTargetFunction();
-				FString FuncName = TargetFunc ? TargetFunc->GetName() : CallNode->FunctionReference.GetMemberName().ToString();
-
-				// If literal string/text/name builder function
-				if (FuncName.Equals(TEXT("MakeLiteralString"), ESearchCase::IgnoreCase) ||
-					FuncName.Equals(TEXT("MakeLiteralText"), ESearchCase::IgnoreCase) ||
-					FuncName.Equals(TEXT("MakeLiteralName"), ESearchCase::IgnoreCase))
+				UBlueprint* FuncBP = TargetFunc->GetTypedOuter<UBlueprint>();
+				if (FuncBP)
 				{
-					if (const UEdGraphPin* ValPin = CallNode->FindPin(TEXT("Value")))
+					for (UEdGraph* FuncGraph : FuncBP->FunctionGraphs)
 					{
-						FString Val = ExtractTextFromPin(ValPin, Depth + 1);
-						if (!Val.IsEmpty())
+						if (!FuncGraph)
 						{
-							return Val;
+							continue;
 						}
-					}
-				}
 
-				// For conversion functions (Conv_TextToString, Conv_NameToText, etc.), prioritize text input pins
-				TArray<FString> PreferredPinNames = { TEXT("InText"), TEXT("InString"), TEXT("InName"), TEXT("Text"), TEXT("String"), TEXT("Name"), TEXT("Value") };
-				for (const FString& PrefName : PreferredPinNames)
-				{
-					if (const UEdGraphPin* InputPin = CallNode->FindPin(*PrefName))
-					{
-						if (InputPin->Direction == EGPD_Input)
+						for (UEdGraphNode* GraphNode : FuncGraph->Nodes)
 						{
-							FString InputVal = ExtractTextFromPin(InputPin, Depth + 1);
-							if (!InputVal.IsEmpty())
+							if (!GraphNode)
 							{
-								return InputVal;
+								continue;
 							}
-						}
-					}
-				}
 
-				// Check all other non-target input pins
-				for (const UEdGraphPin* NodePin : CallNode->Pins)
-				{
-					if (NodePin && NodePin->Direction == EGPD_Input)
-					{
-						FString NodePinName = NodePin->PinName.ToString();
-						if (!NodePinName.Equals(TEXT("self"), ESearchCase::IgnoreCase) &&
-							!NodePinName.Equals(TEXT("Target"), ESearchCase::IgnoreCase) &&
-							!NodePinName.Equals(TEXT("WorldContextObject"), ESearchCase::IgnoreCase))
-						{
-							FString InputVal = ExtractTextFromPin(NodePin, Depth + 1);
-							if (!InputVal.IsEmpty())
+							// Check Function Result (Return) nodes
+							FString NodeClassName = GraphNode->GetClass()->GetName();
+							if (NodeClassName.Contains(TEXT("Result")) || NodeClassName.Contains(TEXT("Return")))
 							{
-								return InputVal;
-							}
-						}
-					}
-				}
-			}
-
-			// Handle Blueprint variable read nodes
-			if (const UK2Node_VariableGet* VarGetNode = Cast<UK2Node_VariableGet>(OwningNode))
-			{
-				const UBlueprint* BP = VarGetNode->GetTypedOuter<UBlueprint>();
-				if (BP)
-				{
-					FName VarName = VarGetNode->VariableReference.GetMemberName();
-					for (const FBPVariableDescription& VarDesc : BP->NewVariables)
-					{
-						if (VarDesc.VarName == VarName)
-						{
-							FString VarDefault = SanitizeTextString(VarDesc.DefaultValue);
-							if (!VarDefault.IsEmpty())
-							{
-								return VarDefault;
-							}
-						}
-					}
-				}
-			}
-			else if (OwningNode->GetClass()->GetName().Contains(TEXT("Variable")))
-			{
-				const UBlueprint* BP = OwningNode->GetTypedOuter<UBlueprint>();
-				if (BP)
-				{
-					FString NodeTitle = OwningNode->GetNodeTitle(ENodeTitleType::ListView).ToString();
-					for (const FBPVariableDescription& VarDesc : BP->NewVariables)
-					{
-						if (NodeTitle.Contains(VarDesc.VarName.ToString()))
-						{
-							FString VarDefault = SanitizeTextString(VarDesc.DefaultValue);
-							if (!VarDefault.IsEmpty())
-							{
-								return VarDefault;
+								for (const UEdGraphPin* RetPin : GraphNode->Pins)
+								{
+									if (RetPin && RetPin->Direction == EGPD_Input)
+									{
+										FString RetPinName = RetPin->PinName.ToString();
+										if (RetPinName.Equals(LinkedPin->PinName.ToString(), ESearchCase::IgnoreCase) ||
+											RetPinName.Contains(TEXT("Text")) ||
+											RetPinName.Contains(TEXT("String")) ||
+											RetPinName.Contains(TEXT("Return")))
+										{
+											ExtractAllTextFromPin(RetPin, OutExtractedLines, VisitedNodes, Depth + 1);
+										}
+									}
+								}
 							}
 						}
 					}
 				}
 			}
 
-			// Generic traversal for other nodes: inspect non-target input pins
+			// Check all non-target input pins
+			for (const UEdGraphPin* NodePin : CallNode->Pins)
+			{
+				if (NodePin && NodePin->Direction == EGPD_Input)
+				{
+					FString NodePinName = NodePin->PinName.ToString();
+					if (!NodePinName.Equals(TEXT("self"), ESearchCase::IgnoreCase) &&
+						!NodePinName.Equals(TEXT("Target"), ESearchCase::IgnoreCase) &&
+						!NodePinName.Equals(TEXT("WorldContextObject"), ESearchCase::IgnoreCase))
+					{
+						ExtractAllTextFromPin(NodePin, OutExtractedLines, VisitedNodes, Depth + 1);
+					}
+				}
+			}
+		}
+		// Handle Variable Read Nodes
+		else if (const UK2Node_VariableGet* VarGetNode = Cast<UK2Node_VariableGet>(OwningNode))
+		{
+			const UBlueprint* BP = VarGetNode->GetTypedOuter<UBlueprint>();
+			if (BP)
+			{
+				FName VarName = VarGetNode->VariableReference.GetMemberName();
+				for (const FBPVariableDescription& VarDesc : BP->NewVariables)
+				{
+					if (VarDesc.VarName == VarName)
+					{
+						FString VarDefault = SanitizeTextString(VarDesc.DefaultValue);
+						if (!VarDefault.IsEmpty())
+						{
+							OutExtractedLines.AddUnique(VarDefault);
+						}
+					}
+				}
+			}
+		}
+		else if (OwningNode->GetClass()->GetName().Contains(TEXT("Variable")))
+		{
+			const UBlueprint* BP = OwningNode->GetTypedOuter<UBlueprint>();
+			if (BP)
+			{
+				FString NodeTitle = OwningNode->GetNodeTitle(ENodeTitleType::ListView).ToString();
+				for (const FBPVariableDescription& VarDesc : BP->NewVariables)
+				{
+					if (NodeTitle.Contains(VarDesc.VarName.ToString()))
+					{
+						FString VarDefault = SanitizeTextString(VarDesc.DefaultValue);
+						if (!VarDefault.IsEmpty())
+						{
+							OutExtractedLines.AddUnique(VarDefault);
+						}
+					}
+				}
+			}
+		}
+		// Generic node traversal (e.g. Select nodes, Struct Break nodes, Macro instances)
+		else
+		{
 			for (const UEdGraphPin* NodePin : OwningNode->Pins)
 			{
 				if (NodePin && NodePin->Direction == EGPD_Input)
@@ -528,28 +555,30 @@ static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
 						!NodePinName.Equals(TEXT("Target"), ESearchCase::IgnoreCase) &&
 						!NodePinName.Equals(TEXT("WorldContextObject"), ESearchCase::IgnoreCase))
 					{
-						FString InputVal = ExtractTextFromPin(NodePin, Depth + 1);
-						if (!InputVal.IsEmpty())
-						{
-							return InputVal;
-						}
+						ExtractAllTextFromPin(NodePin, OutExtractedLines, VisitedNodes, Depth + 1);
 					}
 				}
 			}
 		}
 	}
 
-	// 2. If this is an input pin and not linked or upstream yields nothing, check direct default value
+	// 2. Direct input pin default value check
 	if (Pin->Direction == EGPD_Input)
 	{
 		FString DirectVal = SanitizeTextString(Pin->GetDefaultAsString());
 		if (!DirectVal.IsEmpty())
 		{
-			return DirectVal;
+			OutExtractedLines.AddUnique(DirectVal);
 		}
 	}
+}
 
-	return FString();
+static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
+{
+	TArray<FString> Lines;
+	TSet<const UEdGraphNode*> VisitedNodes;
+	ExtractAllTextFromPin(Pin, Lines, VisitedNodes, Depth);
+	return Lines.Num() > 0 ? Lines[0] : FString();
 }
 
 TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProjectBlueprints(const UCharacterVoiceAsset* TargetAsset, int32* OutMatchingNodesCount, TArray<FString>* OutMatchingBlueprints)
@@ -688,11 +717,8 @@ TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProject
 
 						if (TextPin)
 						{
-							FString ExtractedText = ExtractTextFromPin(TextPin);
-							if (!ExtractedText.IsEmpty())
-							{
-								DiscoveredLines.AddUnique(ExtractedText);
-							}
+							TSet<const UEdGraphNode*> VisitedNodes;
+							ExtractAllTextFromPin(TextPin, DiscoveredLines, VisitedNodes);
 						}
 					}
 				}
