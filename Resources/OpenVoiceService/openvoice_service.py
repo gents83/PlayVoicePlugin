@@ -635,41 +635,73 @@ if HAS_FASTAPI:
 
     @app.post("/extract")
     def api_extract(req: ExtractRequest):
-        res = engine.extract_tone_color(req.reference_audio_files, req.character_name)
-        if res.get("status") == "error":
-            return JSONResponse(status_code=400, content=res)
-        return JSONResponse(content=res)
+        try:
+            refs = [str(f) for f in req.reference_audio_files if f] if req.reference_audio_files else []
+            res = engine.extract_tone_color(refs, req.character_name or "Character")
+            if res.get("status") == "error":
+                return JSONResponse(status_code=400, content=res)
+            return JSONResponse(content=res)
+        except Exception as e:
+            logger.error(f"Error in api_extract: {e}", exc_info=True)
+            return JSONResponse(status_code=500, content={
+                "status": "error",
+                "message": f"Server extraction exception: {str(e)}",
+                "character_name": req.character_name or "Character"
+            })
 
     @app.post("/synthesize")
     def api_synthesize(req: SynthesizeRequest):
-        if not req.text.strip():
-            raise HTTPException(status_code=400, detail="Text line cannot be empty.")
+        try:
+            if not req.text or not req.text.strip():
+                return JSONResponse(status_code=400, content={
+                    "status": "error",
+                    "message": "Text line cannot be empty."
+                })
 
-        wav_bytes = engine.synthesize(
-            text=req.text,
-            character_name=req.character_name,
-            language=req.language or "EN",
-            speed=req.speed or 1.0,
-            embedding_data=req.embedding_data,
-            reference_audio_files=req.reference_audio_files,
-            guide_audio_file=req.guide_audio_file,
-            emotion=req.emotion
-        )
-        return Response(content=wav_bytes, media_type="audio/wav")
+            refs = [str(f) for f in req.reference_audio_files if f] if req.reference_audio_files else []
+            wav_bytes = engine.synthesize(
+                text=req.text,
+                character_name=req.character_name or "Character",
+                language=req.language or "EN",
+                speed=req.speed or 1.0,
+                embedding_data=req.embedding_data,
+                reference_audio_files=refs,
+                guide_audio_file=req.guide_audio_file,
+                emotion=req.emotion
+            )
+            if not wav_bytes:
+                return JSONResponse(status_code=500, content={
+                    "status": "error",
+                    "message": "Synthesis returned empty audio buffer."
+                })
+            return Response(content=wav_bytes, media_type="audio/wav")
+        except Exception as e:
+            logger.error(f"Error in api_synthesize: {e}", exc_info=True)
+            return JSONResponse(status_code=500, content={
+                "status": "error",
+                "message": f"Server synthesis exception: {str(e)}"
+            })
 
     @app.post("/transcribe")
     def api_transcribe(req: TranscribeRequest):
-        files_to_transcribe = req.reference_audio_files if req.reference_audio_files else ([req.audio_file] if req.audio_file else [])
-        transcriptions = {}
-        for f in files_to_transcribe:
-            if f:
-                transcriptions[f] = engine.transcribe_audio(f)
-        default_text = list(transcriptions.values())[0] if transcriptions else ""
-        return JSONResponse(content={
-            "status": "success",
-            "transcriptions": transcriptions,
-            "transcribed_text": default_text
-        })
+        try:
+            files_to_transcribe = req.reference_audio_files if req.reference_audio_files else ([req.audio_file] if req.audio_file else [])
+            transcriptions = {}
+            for f in files_to_transcribe:
+                if f:
+                    transcriptions[f] = engine.transcribe_audio(str(f))
+            default_text = list(transcriptions.values())[0] if transcriptions else ""
+            return JSONResponse(content={
+                "status": "success",
+                "transcriptions": transcriptions,
+                "transcribed_text": default_text
+            })
+        except Exception as e:
+            logger.error(f"Error in api_transcribe: {e}", exc_info=True)
+            return JSONResponse(status_code=500, content={
+                "status": "error",
+                "message": f"Server transcription exception: {str(e)}"
+            })
 
 
 def main():
