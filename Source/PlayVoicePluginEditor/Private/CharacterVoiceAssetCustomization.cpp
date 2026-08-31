@@ -209,8 +209,10 @@ static FString SanitizeTextString(const FString& InRaw)
 		return FString();
 	}
 
-	// Reject engine/script default object references or class paths
-	if (S.Contains(TEXT("/Script/")) ||
+	// Reject booleans, numbers, or engine/script default object references and class paths
+	if (S.Equals(TEXT("true"), ESearchCase::IgnoreCase) ||
+		S.Equals(TEXT("false"), ESearchCase::IgnoreCase) ||
+		S.Contains(TEXT("/Script/")) ||
 		S.Contains(TEXT("Default__")) ||
 		S.Contains(TEXT("KismetTextLibrary")) ||
 		S.Contains(TEXT("KismetStringLibrary")) ||
@@ -219,6 +221,12 @@ static FString SanitizeTextString(const FString& InRaw)
 		S.StartsWith(TEXT("Function'")) ||
 		S.StartsWith(TEXT("UserDefinedStruct'")) ||
 		S.StartsWith(TEXT("Blueprint'")))
+	{
+		return FString();
+	}
+
+	// Reject numeric-only strings, vector formats, or struct representations
+	if (S.IsNumeric() || (S.Contains(TEXT(",")) && S.Contains(TEXT("."))) || S.StartsWith(TEXT("(X=")) || S.StartsWith(TEXT("(") ) )
 	{
 		return FString();
 	}
@@ -531,6 +539,15 @@ TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProject
 
 	if (TargetAsset)
 	{
+		for (const FString& PreprocessLine : TargetAsset->LinesToPreprocess)
+		{
+			FString CleanLine = PreprocessLine.TrimStartAndEnd();
+			if (!CleanLine.IsEmpty())
+			{
+				DiscoveredLines.AddUnique(CleanLine);
+			}
+		}
+
 		for (const FCharacterLanguageData& LangData : TargetAsset->Languages)
 		{
 			for (const FVoiceLineGuideTrack& GuideTrack : LangData.GuideTracks)
@@ -642,6 +659,40 @@ TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProject
 						if (!ExtractedText.IsEmpty())
 						{
 							DiscoveredLines.AddUnique(ExtractedText);
+						}
+						else
+						{
+							// If TextPin is connected to a dynamic node (like Get Config / struct break),
+							// check text/string variables and explicit MakeLiteral text nodes in the graph
+							for (const FBPVariableDescription& VarDesc : Blueprint->NewVariables)
+							{
+								FString VarDefault = SanitizeTextString(VarDesc.DefaultValue);
+								if (!VarDefault.IsEmpty())
+								{
+									DiscoveredLines.AddUnique(VarDefault);
+								}
+							}
+
+							for (UEdGraphNode* GraphNode : Graph->Nodes)
+							{
+								if (UK2Node_CallFunction* LitNode = Cast<UK2Node_CallFunction>(GraphNode))
+								{
+									UFunction* LitFunc = LitNode->GetTargetFunction();
+									FString LitFuncName = LitFunc ? LitFunc->GetName() : LitNode->FunctionReference.GetMemberName().ToString();
+									if (LitFuncName.Equals(TEXT("MakeLiteralString"), ESearchCase::IgnoreCase) ||
+										LitFuncName.Equals(TEXT("MakeLiteralText"), ESearchCase::IgnoreCase))
+									{
+										if (UEdGraphPin* ValPin = LitNode->FindPin(TEXT("Value")))
+										{
+											FString ValText = ExtractTextFromPin(ValPin);
+											if (!ValText.IsEmpty())
+											{
+												DiscoveredLines.AddUnique(ValText);
+											}
+										}
+									}
+								}
+							}
 						}
 					}
 				}

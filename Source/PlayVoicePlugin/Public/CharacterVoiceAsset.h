@@ -106,6 +106,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	TArray<FCharacterLanguageData> Languages;
 
+	/** Dialogue text lines to pre-render and precache for this character voice across all configured languages */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
+	TArray<FString> LinesToPreprocess;
+
 	/** Whether to re-generate and overwrite existing voice line audio files during Blueprint pre-processing or model pipeline execution */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	bool bRegenerateExistingVoiceLines = true;
