@@ -93,13 +93,15 @@ static FProcHandle StaticServiceHandle;
 
 bool FPlayVoicePluginEditorModule::StartOpenVoiceService(FProcHandle* OutProcHandle)
 {
-	if (StaticServiceHandle.IsValid() && FPlatformProcess::IsProcRunning(StaticServiceHandle))
+	// Force terminate any previous running service instance handle to prevent port binding conflicts
+	if (StaticServiceHandle.IsValid())
 	{
-		if (OutProcHandle)
+		if (FPlatformProcess::IsProcRunning(StaticServiceHandle))
 		{
-			*OutProcHandle = StaticServiceHandle;
+			FPlatformProcess::TerminateProc(StaticServiceHandle, true);
 		}
-		return true;
+		FPlatformProcess::CloseProc(StaticServiceHandle);
+		StaticServiceHandle.Reset();
 	}
 
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
