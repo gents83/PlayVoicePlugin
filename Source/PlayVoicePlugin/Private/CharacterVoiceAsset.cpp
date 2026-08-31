@@ -430,27 +430,14 @@ const FVoiceLineGuideTrack* UCharacterVoiceAsset::FindGuideTrackForLine(const FS
 		return nullptr;
 	}
 
-	FString TargetLang = LanguageCode.TrimStartAndEnd().ToUpper();
-	if (TargetLang.IsEmpty())
+	for (const FVoiceLineGuideTrack& GuideTrack : GuideTracks)
 	{
-		TargetLang = DefaultLanguage.TrimStartAndEnd().ToUpper();
-	}
-	if (TargetLang.IsEmpty())
-	{
-		TargetLang = TEXT("EN");
-	}
-
-	const FCharacterLanguageData* LangData = FindLanguageData(TargetLang);
-	if (LangData)
-	{
-		for (const FVoiceLineGuideTrack& GuideTrack : LangData->GuideTracks)
+		if (GuideTrack.LineText.TrimStartAndEnd().ToLower().Equals(CleanText))
 		{
-			if (GuideTrack.LineText.TrimStartAndEnd().ToLower().Equals(CleanText))
-			{
-				return &GuideTrack;
-			}
+			return &GuideTrack;
 		}
 	}
+
 	return nullptr;
 }
 

@@ -17,12 +17,14 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonReader.h"
 #include "Misc/MessageDialog.h"
+#include "AssetRegistry/ARFilter.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/Blueprint.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_Knot.h"
+#include "K2Node_VariableGet.h"
 #include "Misc/PackageName.h"
 #include "UObject/Package.h"
 #include "Framework/Notifications/NotificationManager.h"
@@ -208,8 +210,10 @@ static FString SanitizeTextString(const FString& InRaw)
 		return FString();
 	}
 
-	// Reject engine/script default object references or class paths
-	if (S.Contains(TEXT("/Script/")) ||
+	// Reject booleans, numbers, or engine/script default object references and class paths
+	if (S.Equals(TEXT("true"), ESearchCase::IgnoreCase) ||
+		S.Equals(TEXT("false"), ESearchCase::IgnoreCase) ||
+		S.Contains(TEXT("/Script/")) ||
 		S.Contains(TEXT("Default__")) ||
 		S.Contains(TEXT("KismetTextLibrary")) ||
 		S.Contains(TEXT("KismetStringLibrary")) ||
@@ -218,6 +222,12 @@ static FString SanitizeTextString(const FString& InRaw)
 		S.StartsWith(TEXT("Function'")) ||
 		S.StartsWith(TEXT("UserDefinedStruct'")) ||
 		S.StartsWith(TEXT("Blueprint'")))
+	{
+		return FString();
+	}
+
+	// Reject numeric-only strings, vector formats, or struct representations
+	if (S.IsNumeric() || (S.Contains(TEXT(",")) && S.Contains(TEXT("."))) || S.StartsWith(TEXT("(X=")) || S.StartsWith(TEXT("(") ) )
 	{
 		return FString();
 	}
@@ -237,8 +247,8 @@ static FString SanitizeTextString(const FString& InRaw)
 		}
 	}
 
-	// Handle NSLOCTEXT("...", "...", "Text") or INVTEXT("Text")
-	if (S.StartsWith(TEXT("NSLOCTEXT(")) || S.StartsWith(TEXT("INVTEXT(")))
+	// Handle NSLOCTEXT("...", "...", "Text"), LOCTEXT("...", "Text"), or INVTEXT("Text")
+	if (S.StartsWith(TEXT("NSLOCTEXT(")) || S.StartsWith(TEXT("LOCTEXT(")) || S.StartsWith(TEXT("INVTEXT(")))
 	{
 		int32 LastQuoteEnd = S.Find(TEXT("\""), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
 		if (LastQuoteEnd != INDEX_NONE)
@@ -266,11 +276,109 @@ static FString SanitizeTextString(const FString& InRaw)
 	return S.TrimStartAndEnd();
 }
 
-static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
+static bool IsAssetPinMatchingTarget(const UEdGraphPin* AssetPin, const UCharacterVoiceAsset* TargetAsset, int32 Depth = 0)
 {
-	if (!Pin || Depth > 10)
+	if (!TargetAsset || !AssetPin || Depth > 10)
 	{
-		return FString();
+		return true;
+	}
+
+	// Direct default object check
+	if (AssetPin->DefaultObject == TargetAsset)
+	{
+		return true;
+	}
+
+	// Check string representations of default value (e.g. "RaymanVoice", "CharacterVoiceAsset'/Game/Voices/RaymanVoice.RaymanVoice'")
+	FString PinDefaultStr = AssetPin->GetDefaultAsString();
+	FString TargetName = TargetAsset->GetName();
+	FString TargetPath = TargetAsset->GetPathName();
+
+	if (!PinDefaultStr.IsEmpty())
+	{
+		if (PinDefaultStr.Contains(TargetName) || PinDefaultStr.Contains(TargetPath))
+		{
+			return true;
+		}
+		// If pin default string references a different asset package or path, reject match
+		if (PinDefaultStr.Contains(TEXT("/")) || PinDefaultStr.Contains(TEXT("'")))
+		{
+			return false;
+		}
+	}
+
+	// If default object is set to a DIFFERENT asset, it does not match TargetAsset
+	if (AssetPin->DefaultObject && AssetPin->DefaultObject != TargetAsset)
+	{
+		return false;
+	}
+
+	// If unconnected and no default object set, treat as default fallback match
+	if (AssetPin->LinkedTo.Num() == 0)
+	{
+		return true;
+	}
+
+	// If linked to upstream nodes, inspect connected pins
+	for (const UEdGraphPin* LinkedPin : AssetPin->LinkedTo)
+	{
+		if (!LinkedPin)
+		{
+			continue;
+		}
+
+		const UEdGraphNode* OwningNode = LinkedPin->GetOwningNode();
+		if (!OwningNode)
+		{
+			continue;
+		}
+
+		// Reroute node
+		if (const UK2Node_Knot* KnotNode = Cast<UK2Node_Knot>(OwningNode))
+		{
+			if (const UEdGraphPin* KnotInput = KnotNode->GetInputPin())
+			{
+				if (IsAssetPinMatchingTarget(KnotInput, TargetAsset, Depth + 1))
+				{
+					return true;
+				}
+			}
+		}
+
+		// Variable Get Node
+		if (const UK2Node_VariableGet* VarGetNode = Cast<UK2Node_VariableGet>(OwningNode))
+		{
+			const UBlueprint* BP = VarGetNode->GetTypedOuter<UBlueprint>();
+			if (BP)
+			{
+				FName VarName = VarGetNode->VariableReference.GetMemberName();
+				for (const FBPVariableDescription& VarDesc : BP->NewVariables)
+				{
+					if (VarDesc.VarName == VarName)
+					{
+						if (VarDesc.DefaultValue.Contains(TargetAsset->GetName()) ||
+							VarDesc.DefaultValue.Contains(TargetAsset->GetPathName()) ||
+							VarDesc.DefaultValue.IsEmpty())
+						{
+							return true;
+						}
+					}
+				}
+			}
+			return true;
+		}
+
+		return true;
+	}
+
+	return true;
+}
+
+static void ExtractAllTextFromPin(const UEdGraphPin* Pin, TArray<FString>& OutExtractedLines, TSet<const UEdGraphNode*>& VisitedNodes, int32 Depth = 0)
+{
+	if (!Pin || Depth > 15)
+	{
+		return;
 	}
 
 	// Ignore Target / self / WorldContextObject pins (target objects for function calls, not text inputs)
@@ -280,109 +388,146 @@ static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
 		PinName.Equals(TEXT("WorldContextObject"), ESearchCase::IgnoreCase) ||
 		PinName.Equals(TEXT("WorldContext"), ESearchCase::IgnoreCase))
 	{
-		return FString();
+		return;
 	}
 
-	// 1. If this is an input pin, check its direct default value first
-	if (Pin->Direction == EGPD_Input)
+	// 1. Traverse connected upstream pin(s) first
+	for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
 	{
-		FString DirectVal = SanitizeTextString(Pin->GetDefaultAsString());
-		if (!DirectVal.IsEmpty())
+		if (!LinkedPin)
 		{
-			return DirectVal;
+			continue;
 		}
-	}
 
-	// 2. If the pin is linked to upstream pin(s), traverse connected nodes
-	if (Pin->LinkedTo.Num() > 0)
-	{
-		for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
+		const UEdGraphNode* OwningNode = LinkedPin->GetOwningNode();
+		if (!OwningNode || VisitedNodes.Contains(OwningNode))
 		{
-			if (!LinkedPin)
-			{
-				continue;
-			}
+			continue;
+		}
 
-			const UEdGraphNode* OwningNode = LinkedPin->GetOwningNode();
-			if (!OwningNode)
-			{
-				continue;
-			}
+		VisitedNodes.Add(OwningNode);
 
-			// Handle Reroute Nodes (UK2Node_Knot)
-			if (const UK2Node_Knot* KnotNode = Cast<UK2Node_Knot>(OwningNode))
+		// Handle Reroute Nodes (UK2Node_Knot)
+		if (const UK2Node_Knot* KnotNode = Cast<UK2Node_Knot>(OwningNode))
+		{
+			if (const UEdGraphPin* KnotInput = KnotNode->GetInputPin())
 			{
-				if (const UEdGraphPin* KnotInput = KnotNode->GetInputPin())
+				ExtractAllTextFromPin(KnotInput, OutExtractedLines, VisitedNodes, Depth + 1);
+			}
+		}
+		// Handle Function Call Nodes (UK2Node_CallFunction)
+		else if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(OwningNode))
+		{
+			UFunction* TargetFunc = CallNode->GetTargetFunction();
+			FString FuncName = TargetFunc ? TargetFunc->GetName() : CallNode->FunctionReference.GetMemberName().ToString();
+
+			// If literal string/text/name builder function
+			if (FuncName.Equals(TEXT("MakeLiteralString"), ESearchCase::IgnoreCase) ||
+				FuncName.Equals(TEXT("MakeLiteralText"), ESearchCase::IgnoreCase) ||
+				FuncName.Equals(TEXT("MakeLiteralName"), ESearchCase::IgnoreCase))
+			{
+				if (const UEdGraphPin* ValPin = CallNode->FindPin(TEXT("Value")))
 				{
-					FString KnotVal = ExtractTextFromPin(KnotInput, Depth + 1);
-					if (!KnotVal.IsEmpty())
+					ExtractAllTextFromPin(ValPin, OutExtractedLines, VisitedNodes, Depth + 1);
+				}
+			}
+
+			// Conversion functions
+			TArray<FString> PreferredPinNames = { TEXT("InText"), TEXT("InString"), TEXT("InName"), TEXT("Text"), TEXT("String"), TEXT("Name"), TEXT("Value") };
+			for (const FString& PrefName : PreferredPinNames)
+			{
+				if (const UEdGraphPin* InputPin = CallNode->FindPin(*PrefName))
+				{
+					if (InputPin->Direction == EGPD_Input)
 					{
-						return KnotVal;
+						ExtractAllTextFromPin(InputPin, OutExtractedLines, VisitedNodes, Depth + 1);
 					}
 				}
 			}
 
-			// Handle UK2Node_CallFunction (e.g. MakeLiteralString, MakeLiteralText, Conv_TextToString, etc.)
-			if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(OwningNode))
+			// Inspect target function definition graph if this call node targets a Blueprint function
+			if (TargetFunc)
 			{
-				UFunction* TargetFunc = CallNode->GetTargetFunction();
-				FString FuncName = TargetFunc ? TargetFunc->GetName() : TEXT("");
-
-				// If literal string/text/name builder function
-				if (FuncName.Equals(TEXT("MakeLiteralString"), ESearchCase::IgnoreCase) ||
-					FuncName.Equals(TEXT("MakeLiteralText"), ESearchCase::IgnoreCase) ||
-					FuncName.Equals(TEXT("MakeLiteralName"), ESearchCase::IgnoreCase))
+				UBlueprint* FuncBP = TargetFunc->GetTypedOuter<UBlueprint>();
+				if (FuncBP)
 				{
-					if (const UEdGraphPin* ValPin = CallNode->FindPin(TEXT("Value")))
+					for (UEdGraph* FuncGraph : FuncBP->FunctionGraphs)
 					{
-						FString Val = ExtractTextFromPin(ValPin, Depth + 1);
-						if (!Val.IsEmpty())
+						if (!FuncGraph)
 						{
-							return Val;
+							continue;
 						}
-					}
-				}
 
-				// For conversion functions (Conv_TextToString, Conv_NameToText, etc.), prioritize text input pins
-				TArray<FString> PreferredPinNames = { TEXT("InText"), TEXT("InString"), TEXT("InName"), TEXT("Text"), TEXT("String"), TEXT("Name"), TEXT("Value") };
-				for (const FString& PrefName : PreferredPinNames)
-				{
-					if (const UEdGraphPin* InputPin = CallNode->FindPin(*PrefName))
-					{
-						if (InputPin->Direction == EGPD_Input)
+						for (UEdGraphNode* GraphNode : FuncGraph->Nodes)
 						{
-							FString InputVal = ExtractTextFromPin(InputPin, Depth + 1);
-							if (!InputVal.IsEmpty())
+							if (!GraphNode)
 							{
-								return InputVal;
+								continue;
+							}
+
+							// Check Function Result (Return) nodes
+							FString NodeClassName = GraphNode->GetClass()->GetName();
+							if (NodeClassName.Contains(TEXT("Result")) || NodeClassName.Contains(TEXT("Return")))
+							{
+								for (const UEdGraphPin* RetPin : GraphNode->Pins)
+								{
+									if (RetPin && RetPin->Direction == EGPD_Input)
+									{
+										FString RetPinName = RetPin->PinName.ToString();
+										if (RetPinName.Equals(LinkedPin->PinName.ToString(), ESearchCase::IgnoreCase) ||
+											RetPinName.Contains(TEXT("Text")) ||
+											RetPinName.Contains(TEXT("String")) ||
+											RetPinName.Contains(TEXT("Return")))
+										{
+											ExtractAllTextFromPin(RetPin, OutExtractedLines, VisitedNodes, Depth + 1);
+										}
+									}
+								}
 							}
 						}
 					}
 				}
+			}
 
-				// Check all other non-target input pins
-				for (const UEdGraphPin* NodePin : CallNode->Pins)
+			// Check all non-target input pins
+			for (const UEdGraphPin* NodePin : CallNode->Pins)
+			{
+				if (NodePin && NodePin->Direction == EGPD_Input)
 				{
-					if (NodePin && NodePin->Direction == EGPD_Input)
+					FString NodePinName = NodePin->PinName.ToString();
+					if (!NodePinName.Equals(TEXT("self"), ESearchCase::IgnoreCase) &&
+						!NodePinName.Equals(TEXT("Target"), ESearchCase::IgnoreCase) &&
+						!NodePinName.Equals(TEXT("WorldContextObject"), ESearchCase::IgnoreCase))
 					{
-						FString NodePinName = NodePin->PinName.ToString();
-						if (!NodePinName.Equals(TEXT("self"), ESearchCase::IgnoreCase) &&
-							!NodePinName.Equals(TEXT("Target"), ESearchCase::IgnoreCase) &&
-							!NodePinName.Equals(TEXT("WorldContextObject"), ESearchCase::IgnoreCase))
+						ExtractAllTextFromPin(NodePin, OutExtractedLines, VisitedNodes, Depth + 1);
+					}
+				}
+			}
+		}
+		// Handle Variable Read Nodes
+		else if (const UK2Node_VariableGet* VarGetNode = Cast<UK2Node_VariableGet>(OwningNode))
+		{
+			const UBlueprint* BP = VarGetNode->GetTypedOuter<UBlueprint>();
+			if (BP)
+			{
+				FName VarName = VarGetNode->VariableReference.GetMemberName();
+				for (const FBPVariableDescription& VarDesc : BP->NewVariables)
+				{
+					if (VarDesc.VarName == VarName)
+					{
+						FString VarDefault = SanitizeTextString(VarDesc.DefaultValue);
+						if (!VarDefault.IsEmpty())
 						{
-							FString InputVal = ExtractTextFromPin(NodePin, Depth + 1);
-							if (!InputVal.IsEmpty())
-							{
-								return InputVal;
-							}
+							OutExtractedLines.AddUnique(VarDefault);
 						}
 					}
 				}
 			}
-
-			// Handle Blueprint variable read nodes
+		}
+		else if (OwningNode->GetClass()->GetName().Contains(TEXT("Variable")))
+		{
 			const UBlueprint* BP = OwningNode->GetTypedOuter<UBlueprint>();
-			if (BP && OwningNode->GetClass()->GetName().Contains(TEXT("Variable")))
+			if (BP)
 			{
 				FString NodeTitle = OwningNode->GetNodeTitle(ENodeTitleType::ListView).ToString();
 				for (const FBPVariableDescription& VarDesc : BP->NewVariables)
@@ -392,13 +537,15 @@ static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
 						FString VarDefault = SanitizeTextString(VarDesc.DefaultValue);
 						if (!VarDefault.IsEmpty())
 						{
-							return VarDefault;
+							OutExtractedLines.AddUnique(VarDefault);
 						}
 					}
 				}
 			}
-
-			// Generic traversal for other nodes: inspect non-target input pins
+		}
+		// Generic node traversal (e.g. Select nodes, Struct Break nodes, Macro instances)
+		else
+		{
 			for (const UEdGraphPin* NodePin : OwningNode->Pins)
 			{
 				if (NodePin && NodePin->Direction == EGPD_Input)
@@ -408,35 +555,55 @@ static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
 						!NodePinName.Equals(TEXT("Target"), ESearchCase::IgnoreCase) &&
 						!NodePinName.Equals(TEXT("WorldContextObject"), ESearchCase::IgnoreCase))
 					{
-						FString InputVal = ExtractTextFromPin(NodePin, Depth + 1);
-						if (!InputVal.IsEmpty())
-						{
-							return InputVal;
-						}
+						ExtractAllTextFromPin(NodePin, OutExtractedLines, VisitedNodes, Depth + 1);
 					}
 				}
 			}
 		}
 	}
 
-	return FString();
+	// 2. Direct input pin default value check
+	if (Pin->Direction == EGPD_Input)
+	{
+		FString DirectVal = SanitizeTextString(Pin->GetDefaultAsString());
+		if (!DirectVal.IsEmpty())
+		{
+			OutExtractedLines.AddUnique(DirectVal);
+		}
+	}
 }
 
-TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProjectBlueprints(const UCharacterVoiceAsset* TargetAsset)
+static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
+{
+	TArray<FString> Lines;
+	TSet<const UEdGraphNode*> VisitedNodes;
+	ExtractAllTextFromPin(Pin, Lines, VisitedNodes, Depth);
+	return Lines.Num() > 0 ? Lines[0] : FString();
+}
+
+TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProjectBlueprints(const UCharacterVoiceAsset* TargetAsset, int32* OutMatchingNodesCount, TArray<FString>* OutMatchingBlueprints)
 {
 	TArray<FString> DiscoveredLines;
+	int32 FoundNodesCount = 0;
+	TArray<FString> FoundBPNames;
 
 	if (TargetAsset)
 	{
-		for (const FCharacterLanguageData& LangData : TargetAsset->Languages)
+		for (const FString& PreprocessLine : TargetAsset->LinesToPreprocess)
 		{
-			for (const FVoiceLineGuideTrack& GuideTrack : LangData.GuideTracks)
+			FString CleanLine = PreprocessLine.TrimStartAndEnd();
+			if (!CleanLine.IsEmpty())
 			{
-				FString CleanLine = GuideTrack.LineText.TrimStartAndEnd();
-				if (!CleanLine.IsEmpty())
-				{
-					DiscoveredLines.AddUnique(CleanLine);
-				}
+				DiscoveredLines.AddUnique(CleanLine);
+			}
+		}
+
+		for (const FVoiceLineGuideTrack& GuideTrack : TargetAsset->GuideTracks)
+		{
+			FString CleanLine = GuideTrack.LineText.TrimStartAndEnd();
+			if (!CleanLine.IsEmpty())
+			{
+				DiscoveredLines.AddUnique(CleanLine);
 			}
 		}
 
@@ -455,6 +622,7 @@ TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProject
 			}
 		}
 	}
+
 	if (!FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
 	{
 		FModuleManager::Get().LoadModule("AssetRegistry");
@@ -462,11 +630,29 @@ TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProject
 
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 	TArray<FAssetData> BlueprintAssetList;
-	AssetRegistryModule.Get().GetAssetsByClass(UBlueprint::StaticClass()->GetClassPathName(), BlueprintAssetList, true);
+
+	FARFilter Filter;
+	Filter.bRecursivePaths = true;
+	Filter.PackagePaths.Add(TEXT("/Game"));
+	AssetRegistryModule.Get().GetAssets(Filter, BlueprintAssetList);
 
 	for (const FAssetData& AssetData : BlueprintAssetList)
 	{
+		FString ClassName = AssetData.AssetClassPath.GetAssetName().ToString();
+		if (!ClassName.Contains(TEXT("Blueprint")) && !ClassName.Contains(TEXT("World")))
+		{
+			continue;
+		}
+
 		UBlueprint* Blueprint = Cast<UBlueprint>(AssetData.GetAsset());
+		if (!Blueprint)
+		{
+			Blueprint = Cast<UBlueprint>(AssetData.FastGetAsset());
+		}
+		if (!Blueprint)
+		{
+			Blueprint = Cast<UBlueprint>(StaticLoadObject(UBlueprint::StaticClass(), nullptr, *AssetData.GetObjectPathString()));
+		}
 		if (!Blueprint)
 		{
 			continue;
@@ -491,45 +677,62 @@ TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProject
 				}
 
 				UFunction* TargetFunc = CallNode->GetTargetFunction();
-				if (!TargetFunc)
-				{
-					continue;
-				}
+				FString FuncName = TargetFunc ? TargetFunc->GetName() : CallNode->FunctionReference.GetMemberName().ToString();
 
-				FString FuncName = TargetFunc->GetName();
-				if (FuncName == TEXT("PlayCharacterVoice") || FuncName == TEXT("GenerateVoiceSoundWave") || FuncName == TEXT("PrecacheCharacterVoiceLines") || FuncName == TEXT("PrecacheVoiceLine"))
+				if (FuncName == TEXT("PlayCharacterVoice") ||
+					FuncName == TEXT("GenerateVoiceSoundWave") ||
+					FuncName == TEXT("PrecacheCharacterVoiceLines") ||
+					FuncName == TEXT("PrecacheVoiceLine") ||
+					FuncName == TEXT("PrecacheAllVoiceLines") ||
+					FuncName == TEXT("CacheVoiceLine") ||
+					FuncName == TEXT("GetPrecachedVoiceLine") ||
+					FuncName == TEXT("HasPrecachedVoiceLine"))
 				{
 					UEdGraphPin* AssetPin = CallNode->FindPin(TEXT("CharacterVoiceAsset"));
+					if (!AssetPin)
+					{
+						AssetPin = CallNode->FindPin(TEXT("Target"));
+					}
+
 					UEdGraphPin* TextPin = CallNode->FindPin(TEXT("TextLine"));
-
-					bool bMatchesAsset = false;
-					if (AssetPin)
+					if (!TextPin)
 					{
-						if (AssetPin->DefaultObject == TargetAsset)
-						{
-							bMatchesAsset = true;
-						}
-						else if (!AssetPin->DefaultObject && AssetPin->LinkedTo.Num() == 0)
-						{
-							bMatchesAsset = true;
-						}
+						TextPin = CallNode->FindPin(TEXT("Text"));
 					}
-					else
+					if (!TextPin)
 					{
-						bMatchesAsset = true;
+						TextPin = CallNode->FindPin(TEXT("LineText"));
+					}
+					if (!TextPin)
+					{
+						TextPin = CallNode->FindPin(TEXT("InText"));
 					}
 
-					if (bMatchesAsset && TextPin)
+					bool bMatchesAsset = IsAssetPinMatchingTarget(AssetPin, TargetAsset);
+
+					if (bMatchesAsset)
 					{
-						FString ExtractedText = ExtractTextFromPin(TextPin);
-						if (!ExtractedText.IsEmpty())
+						FoundNodesCount++;
+						FoundBPNames.AddUnique(Blueprint->GetName());
+
+						if (TextPin)
 						{
-							DiscoveredLines.AddUnique(ExtractedText);
+							TSet<const UEdGraphNode*> VisitedNodes;
+							ExtractAllTextFromPin(TextPin, DiscoveredLines, VisitedNodes);
 						}
 					}
 				}
 			}
 		}
+	}
+
+	if (OutMatchingNodesCount)
+	{
+		*OutMatchingNodesCount = FoundNodesCount;
+	}
+	if (OutMatchingBlueprints)
+	{
+		*OutMatchingBlueprints = FoundBPNames;
 	}
 
 	return DiscoveredLines;
@@ -1217,13 +1420,25 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 		}
 
 		UCharacterVoiceAsset* Asset = WeakTargetAsset.Get();
-		TArray<FString> DiscoveredBlueprintLines = RetrieveVoiceLinesFromProjectBlueprints(Asset);
-		UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnPrecacheLinesClicked: Discovered %d dialogue lines in Blueprint graph nodes."), DiscoveredBlueprintLines.Num());
+		int32 MatchingNodesCount = 0;
+		TArray<FString> MatchingBlueprints;
+		TArray<FString> DiscoveredBlueprintLines = RetrieveVoiceLinesFromProjectBlueprints(Asset, &MatchingNodesCount, &MatchingBlueprints);
+		UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnPrecacheLinesClicked: Discovered %d dialogue lines across %d voice node(s) in project Blueprints."), DiscoveredBlueprintLines.Num(), MatchingNodesCount);
 
 		if (DiscoveredBlueprintLines.Num() == 0)
 		{
-			UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnPrecacheLinesClicked: No dialogue lines found in Blueprint graph nodes referencing this asset."));
-			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("No dialogue lines found in Blueprint graph nodes referencing this asset."));
+			FString DialogMsg;
+			if (MatchingNodesCount > 0)
+			{
+				DialogMsg = FString::Printf(TEXT("Found %d PlayVoice node(s) referencing asset '%s' in Blueprint(s): %s.\n\nHowever, the Text Line pin is connected to dynamic runtime values (e.g., function outputs or struct members) which cannot be statically determined at edit time.\n\nPlease add your dialogue text strings directly to the 'Lines To Preprocess' array in the '%s' asset details panel to pre-render sound waves."), MatchingNodesCount, *Asset->GetName(), *FString::Join(MatchingBlueprints, TEXT(", ")), *Asset->GetName());
+				UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnPrecacheLinesClicked: %s"), *DialogMsg);
+			}
+			else
+			{
+				DialogMsg = FString::Printf(TEXT("No dialogue lines found for asset '%s'.\n\nPlease add dialogue text strings directly to the 'Lines To Preprocess' array in the '%s' asset details panel or pass static text literals to PlayCharacterVoice nodes in Blueprints."), *Asset->GetName(), *Asset->GetName());
+				UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnPrecacheLinesClicked: No dialogue lines found in Blueprint graph nodes referencing this asset."));
+			}
+			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(DialogMsg));
 			return;
 		}
 
