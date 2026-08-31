@@ -123,6 +123,10 @@ bool FCharacterVoiceMultiLanguageTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Guide track speed should match"), FoundGuide->Speed, 1.1f);
 	}
 
+	// Verify case-insensitive guide track lookup
+	const FVoiceLineGuideTrack* FoundGuideMessy = VoiceAsset->FindGuideTrackForLine(TEXT("  GUIDE LINE TEXT  "), TEXT("EN"));
+	TestNotNull(TEXT("Guide track lookup should be case and whitespace insensitive"), FoundGuideMessy);
+
 	TestEqual(TEXT("Asset should now contain 3 language entries"), VoiceAsset->Languages.Num(), 3);
 
 	return true;

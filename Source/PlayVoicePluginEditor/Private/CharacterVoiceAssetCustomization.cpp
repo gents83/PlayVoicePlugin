@@ -23,6 +23,7 @@
 #include "EdGraph/EdGraphNode.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_Knot.h"
+#include "K2Node_VariableGet.h"
 #include "Misc/PackageName.h"
 #include "UObject/Package.h"
 #include "Framework/Notifications/NotificationManager.h"
@@ -237,8 +238,8 @@ static FString SanitizeTextString(const FString& InRaw)
 		}
 	}
 
-	// Handle NSLOCTEXT("...", "...", "Text") or INVTEXT("Text")
-	if (S.StartsWith(TEXT("NSLOCTEXT(")) || S.StartsWith(TEXT("INVTEXT(")))
+	// Handle NSLOCTEXT("...", "...", "Text"), LOCTEXT("...", "Text"), or INVTEXT("Text")
+	if (S.StartsWith(TEXT("NSLOCTEXT(")) || S.StartsWith(TEXT("LOCTEXT(")) || S.StartsWith(TEXT("INVTEXT(")))
 	{
 		int32 LastQuoteEnd = S.Find(TEXT("\""), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
 		if (LastQuoteEnd != INDEX_NONE)
@@ -266,6 +267,86 @@ static FString SanitizeTextString(const FString& InRaw)
 	return S.TrimStartAndEnd();
 }
 
+static bool IsAssetPinMatchingTarget(const UEdGraphPin* AssetPin, const UCharacterVoiceAsset* TargetAsset, int32 Depth = 0)
+{
+	if (!TargetAsset || !AssetPin || Depth > 10)
+	{
+		return true;
+	}
+
+	// Direct default object check
+	if (AssetPin->DefaultObject == TargetAsset)
+	{
+		return true;
+	}
+
+	// If default object is set to a DIFFERENT asset, it does not match TargetAsset
+	if (AssetPin->DefaultObject && AssetPin->DefaultObject != TargetAsset)
+	{
+		return false;
+	}
+
+	// If unconnected and no default object set, treat as default fallback match
+	if (AssetPin->LinkedTo.Num() == 0)
+	{
+		return true;
+	}
+
+	// If linked to upstream nodes, inspect connected pins
+	for (const UEdGraphPin* LinkedPin : AssetPin->LinkedTo)
+	{
+		if (!LinkedPin)
+		{
+			continue;
+		}
+
+		const UEdGraphNode* OwningNode = LinkedPin->GetOwningNode();
+		if (!OwningNode)
+		{
+			continue;
+		}
+
+		// Reroute node
+		if (const UK2Node_Knot* KnotNode = Cast<UK2Node_Knot>(OwningNode))
+		{
+			if (const UEdGraphPin* KnotInput = KnotNode->GetInputPin())
+			{
+				if (IsAssetPinMatchingTarget(KnotInput, TargetAsset, Depth + 1))
+				{
+					return true;
+				}
+			}
+		}
+
+		// Variable Get Node
+		if (const UK2Node_VariableGet* VarGetNode = Cast<UK2Node_VariableGet>(OwningNode))
+		{
+			const UBlueprint* BP = VarGetNode->GetTypedOuter<UBlueprint>();
+			if (BP)
+			{
+				FName VarName = VarGetNode->VariableReference.GetMemberName();
+				for (const FBPVariableDescription& VarDesc : BP->NewVariables)
+				{
+					if (VarDesc.VarName == VarName)
+					{
+						if (VarDesc.DefaultValue.Contains(TargetAsset->GetName()) ||
+							VarDesc.DefaultValue.Contains(TargetAsset->GetPathName()) ||
+							VarDesc.DefaultValue.IsEmpty())
+						{
+							return true;
+						}
+					}
+				}
+			}
+			return true;
+		}
+
+		return true;
+	}
+
+	return true;
+}
+
 static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
 {
 	if (!Pin || Depth > 10)
@@ -283,17 +364,7 @@ static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
 		return FString();
 	}
 
-	// 1. If this is an input pin, check its direct default value first
-	if (Pin->Direction == EGPD_Input)
-	{
-		FString DirectVal = SanitizeTextString(Pin->GetDefaultAsString());
-		if (!DirectVal.IsEmpty())
-		{
-			return DirectVal;
-		}
-	}
-
-	// 2. If the pin is linked to upstream pin(s), traverse connected nodes
+	// 1. If the pin is linked to upstream pin(s), traverse connected nodes first
 	if (Pin->LinkedTo.Num() > 0)
 	{
 		for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
@@ -326,7 +397,7 @@ static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
 			if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(OwningNode))
 			{
 				UFunction* TargetFunc = CallNode->GetTargetFunction();
-				FString FuncName = TargetFunc ? TargetFunc->GetName() : TEXT("");
+				FString FuncName = TargetFunc ? TargetFunc->GetName() : CallNode->FunctionReference.GetMemberName().ToString();
 
 				// If literal string/text/name builder function
 				if (FuncName.Equals(TEXT("MakeLiteralString"), ESearchCase::IgnoreCase) ||
@@ -381,18 +452,40 @@ static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
 			}
 
 			// Handle Blueprint variable read nodes
-			const UBlueprint* BP = OwningNode->GetTypedOuter<UBlueprint>();
-			if (BP && OwningNode->GetClass()->GetName().Contains(TEXT("Variable")))
+			if (const UK2Node_VariableGet* VarGetNode = Cast<UK2Node_VariableGet>(OwningNode))
 			{
-				FString NodeTitle = OwningNode->GetNodeTitle(ENodeTitleType::ListView).ToString();
-				for (const FBPVariableDescription& VarDesc : BP->NewVariables)
+				const UBlueprint* BP = VarGetNode->GetTypedOuter<UBlueprint>();
+				if (BP)
 				{
-					if (NodeTitle.Contains(VarDesc.VarName.ToString()))
+					FName VarName = VarGetNode->VariableReference.GetMemberName();
+					for (const FBPVariableDescription& VarDesc : BP->NewVariables)
 					{
-						FString VarDefault = SanitizeTextString(VarDesc.DefaultValue);
-						if (!VarDefault.IsEmpty())
+						if (VarDesc.VarName == VarName)
 						{
-							return VarDefault;
+							FString VarDefault = SanitizeTextString(VarDesc.DefaultValue);
+							if (!VarDefault.IsEmpty())
+							{
+								return VarDefault;
+							}
+						}
+					}
+				}
+			}
+			else if (OwningNode->GetClass()->GetName().Contains(TEXT("Variable")))
+			{
+				const UBlueprint* BP = OwningNode->GetTypedOuter<UBlueprint>();
+				if (BP)
+				{
+					FString NodeTitle = OwningNode->GetNodeTitle(ENodeTitleType::ListView).ToString();
+					for (const FBPVariableDescription& VarDesc : BP->NewVariables)
+					{
+						if (NodeTitle.Contains(VarDesc.VarName.ToString()))
+						{
+							FString VarDefault = SanitizeTextString(VarDesc.DefaultValue);
+							if (!VarDefault.IsEmpty())
+							{
+								return VarDefault;
+							}
 						}
 					}
 				}
@@ -416,6 +509,16 @@ static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
 					}
 				}
 			}
+		}
+	}
+
+	// 2. If this is an input pin and not linked or upstream yields nothing, check direct default value
+	if (Pin->Direction == EGPD_Input)
+	{
+		FString DirectVal = SanitizeTextString(Pin->GetDefaultAsString());
+		if (!DirectVal.IsEmpty())
+		{
+			return DirectVal;
 		}
 	}
 
@@ -455,6 +558,7 @@ TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProject
 			}
 		}
 	}
+
 	if (!FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
 	{
 		FModuleManager::Get().LoadModule("AssetRegistry");
@@ -467,6 +571,14 @@ TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProject
 	for (const FAssetData& AssetData : BlueprintAssetList)
 	{
 		UBlueprint* Blueprint = Cast<UBlueprint>(AssetData.GetAsset());
+		if (!Blueprint)
+		{
+			Blueprint = Cast<UBlueprint>(AssetData.FastGetAsset());
+		}
+		if (!Blueprint)
+		{
+			Blueprint = Cast<UBlueprint>(StaticLoadObject(UBlueprint::StaticClass(), nullptr, *AssetData.GetObjectPathString()));
+		}
 		if (!Blueprint)
 		{
 			continue;
@@ -491,33 +603,38 @@ TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProject
 				}
 
 				UFunction* TargetFunc = CallNode->GetTargetFunction();
-				if (!TargetFunc)
-				{
-					continue;
-				}
+				FString FuncName = TargetFunc ? TargetFunc->GetName() : CallNode->FunctionReference.GetMemberName().ToString();
 
-				FString FuncName = TargetFunc->GetName();
-				if (FuncName == TEXT("PlayCharacterVoice") || FuncName == TEXT("GenerateVoiceSoundWave") || FuncName == TEXT("PrecacheCharacterVoiceLines") || FuncName == TEXT("PrecacheVoiceLine"))
+				if (FuncName == TEXT("PlayCharacterVoice") ||
+					FuncName == TEXT("GenerateVoiceSoundWave") ||
+					FuncName == TEXT("PrecacheCharacterVoiceLines") ||
+					FuncName == TEXT("PrecacheVoiceLine") ||
+					FuncName == TEXT("PrecacheAllVoiceLines") ||
+					FuncName == TEXT("CacheVoiceLine") ||
+					FuncName == TEXT("GetPrecachedVoiceLine") ||
+					FuncName == TEXT("HasPrecachedVoiceLine"))
 				{
 					UEdGraphPin* AssetPin = CallNode->FindPin(TEXT("CharacterVoiceAsset"));
-					UEdGraphPin* TextPin = CallNode->FindPin(TEXT("TextLine"));
+					if (!AssetPin)
+					{
+						AssetPin = CallNode->FindPin(TEXT("Target"));
+					}
 
-					bool bMatchesAsset = false;
-					if (AssetPin)
+					UEdGraphPin* TextPin = CallNode->FindPin(TEXT("TextLine"));
+					if (!TextPin)
 					{
-						if (AssetPin->DefaultObject == TargetAsset)
-						{
-							bMatchesAsset = true;
-						}
-						else if (!AssetPin->DefaultObject && AssetPin->LinkedTo.Num() == 0)
-						{
-							bMatchesAsset = true;
-						}
+						TextPin = CallNode->FindPin(TEXT("Text"));
 					}
-					else
+					if (!TextPin)
 					{
-						bMatchesAsset = true;
+						TextPin = CallNode->FindPin(TEXT("LineText"));
 					}
+					if (!TextPin)
+					{
+						TextPin = CallNode->FindPin(TEXT("InText"));
+					}
+
+					bool bMatchesAsset = IsAssetPinMatchingTarget(AssetPin, TargetAsset);
 
 					if (bMatchesAsset && TextPin)
 					{
