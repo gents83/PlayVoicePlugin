@@ -138,7 +138,7 @@ class OpenVoiceEngine:
                     self.converter.load_ckpt(f"{converter_path}/checkpoint.pth")
                     logger.info(f"Loaded OpenVoice ToneColorConverter on {device} from {converter_path}")
                 else:
-                    logger.info("OpenVoice converter checkpoints not found in candidate paths. Tone color extraction will fall back gracefully to acoustic profile mode.")
+                    logger.info("OpenVoice converter checkpoints not found in candidate paths. Tone color extraction will fall back gracefully to acoustic profile mode. (To enable full OpenVoice zero-shot tone color cloning, place 'checkpoints/converter' in your project root).")
             except Exception as e:
                 logger.error(f"Failed loading OpenVoice checkpoints: {e}")
 
