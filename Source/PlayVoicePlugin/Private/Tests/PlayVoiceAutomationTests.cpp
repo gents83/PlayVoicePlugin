@@ -220,6 +220,7 @@ bool FPlayVoiceSettingsTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("Default bAutoStartServiceOnEditorStartup should be false"), Settings->bAutoStartServiceOnEditorStartup);
 		TestEqual(TEXT("Default sample rate should be 24000"), Settings->DefaultSampleRate, 24000);
 		TestTrue(TEXT("Default AutoPrecacheOnStartup should be true"), Settings->bAutoPrecacheOnStartup);
+		TestTrue(TEXT("Default bEnableOnTheFlySynthesis should be true"), Settings->bEnableOnTheFlySynthesis);
 		TestEqual(TEXT("Default PythonExecutable should be python"), Settings->PythonExecutable, TEXT("python"));
 		TestEqual(TEXT("Default RequirementsFilePath should be Resources/OpenVoiceService/requirements.txt"), Settings->RequirementsFilePath, TEXT("Resources/OpenVoiceService/requirements.txt"));
 	}
@@ -249,6 +250,35 @@ bool FPlayVoiceBlueprintLibraryTest::RunTest(const FString& Parameters)
 	}
 
 	TestTrue(TEXT("IsCharacterVoiceModelGenerated should return true after model flag set"), UPlayVoiceBlueprintLibrary::IsCharacterVoiceModelGenerated(VoiceAsset, TEXT("EN")));
+
+	return true;
+}
+
+// 7. Test UPlayVoiceSubsystem PlayCharacterVoice fallback and dynamic synthesis settings
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlayVoiceOnTheFlySynthesisTest, "PlayVoice.UnitTests.PlayVoiceOnTheFlySynthesis", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FPlayVoiceOnTheFlySynthesisTest::RunTest(const FString& Parameters)
+{
+	UCharacterVoiceAsset* VoiceAsset = NewObject<UCharacterVoiceAsset>();
+	TestNotNull(TEXT("VoiceAsset should be instantiated"), VoiceAsset);
+
+	if (!VoiceAsset)
+	{
+		return false;
+	}
+
+	VoiceAsset->CharacterName = FName("TestHero");
+	FString TestLine = TEXT("Dynamic on the fly synthesis test line");
+
+	// Precached line should return sound instantly
+	USoundWave* DummySoundWave = NewObject<USoundWave>();
+	VoiceAsset->CacheVoiceLine(TestLine, DummySoundWave, TEXT("EN"));
+	TestTrue(TEXT("Voice line should be precached"), VoiceAsset->HasPrecachedVoiceLine(TestLine, TEXT("EN")));
+	TestEqual(TEXT("Precached SoundWave should be returned"), VoiceAsset->GetPrecachedVoiceLine(TestLine, TEXT("EN")), DummySoundWave);
+
+	// Unprecached line should not be in cache initially
+	FString UncachedLine = TEXT("Unprecached dynamic synthesis line");
+	TestFalse(TEXT("Uncached line should initially return false"), VoiceAsset->HasPrecachedVoiceLine(UncachedLine, TEXT("EN")));
 
 	return true;
 }
