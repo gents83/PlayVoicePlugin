@@ -17,6 +17,7 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonReader.h"
 #include "Misc/MessageDialog.h"
+#include "AssetRegistry/ARFilter.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/Blueprint.h"
 #include "EdGraph/EdGraph.h"
@@ -288,6 +289,24 @@ static bool IsAssetPinMatchingTarget(const UEdGraphPin* AssetPin, const UCharact
 		return true;
 	}
 
+	// Check string representations of default value (e.g. "RaymanVoice", "CharacterVoiceAsset'/Game/Voices/RaymanVoice.RaymanVoice'")
+	FString PinDefaultStr = AssetPin->GetDefaultAsString();
+	FString TargetName = TargetAsset->GetName();
+	FString TargetPath = TargetAsset->GetPathName();
+
+	if (!PinDefaultStr.IsEmpty())
+	{
+		if (PinDefaultStr.Contains(TargetName) || PinDefaultStr.Contains(TargetPath))
+		{
+			return true;
+		}
+		// If pin default string references a different asset package or path, reject match
+		if (PinDefaultStr.Contains(TEXT("/")) || PinDefaultStr.Contains(TEXT("'")))
+		{
+			return false;
+		}
+	}
+
 	// If default object is set to a DIFFERENT asset, it does not match TargetAsset
 	if (AssetPin->DefaultObject && AssetPin->DefaultObject != TargetAsset)
 	{
@@ -533,9 +552,11 @@ static FString ExtractTextFromPin(const UEdGraphPin* Pin, int32 Depth = 0)
 	return FString();
 }
 
-TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProjectBlueprints(const UCharacterVoiceAsset* TargetAsset)
+TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProjectBlueprints(const UCharacterVoiceAsset* TargetAsset, int32* OutMatchingNodesCount, TArray<FString>* OutMatchingBlueprints)
 {
 	TArray<FString> DiscoveredLines;
+	int32 FoundNodesCount = 0;
+	TArray<FString> FoundBPNames;
 
 	if (TargetAsset)
 	{
@@ -548,15 +569,12 @@ TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProject
 			}
 		}
 
-		for (const FCharacterLanguageData& LangData : TargetAsset->Languages)
+		for (const FVoiceLineGuideTrack& GuideTrack : TargetAsset->GuideTracks)
 		{
-			for (const FVoiceLineGuideTrack& GuideTrack : LangData.GuideTracks)
+			FString CleanLine = GuideTrack.LineText.TrimStartAndEnd();
+			if (!CleanLine.IsEmpty())
 			{
-				FString CleanLine = GuideTrack.LineText.TrimStartAndEnd();
-				if (!CleanLine.IsEmpty())
-				{
-					DiscoveredLines.AddUnique(CleanLine);
-				}
+				DiscoveredLines.AddUnique(CleanLine);
 			}
 		}
 
@@ -583,10 +601,20 @@ TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProject
 
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 	TArray<FAssetData> BlueprintAssetList;
-	AssetRegistryModule.Get().GetAssetsByClass(UBlueprint::StaticClass()->GetClassPathName(), BlueprintAssetList, true);
+
+	FARFilter Filter;
+	Filter.bRecursivePaths = true;
+	Filter.PackagePaths.Add(TEXT("/Game"));
+	AssetRegistryModule.Get().GetAssets(Filter, BlueprintAssetList);
 
 	for (const FAssetData& AssetData : BlueprintAssetList)
 	{
+		FString ClassName = AssetData.AssetClassPath.GetAssetName().ToString();
+		if (!ClassName.Contains(TEXT("Blueprint")) && !ClassName.Contains(TEXT("World")))
+		{
+			continue;
+		}
+
 		UBlueprint* Blueprint = Cast<UBlueprint>(AssetData.GetAsset());
 		if (!Blueprint)
 		{
@@ -653,51 +681,32 @@ TArray<FString> FCharacterVoiceAssetCustomization::RetrieveVoiceLinesFromProject
 
 					bool bMatchesAsset = IsAssetPinMatchingTarget(AssetPin, TargetAsset);
 
-					if (bMatchesAsset && TextPin)
+					if (bMatchesAsset)
 					{
-						FString ExtractedText = ExtractTextFromPin(TextPin);
-						if (!ExtractedText.IsEmpty())
-						{
-							DiscoveredLines.AddUnique(ExtractedText);
-						}
-						else
-						{
-							// If TextPin is connected to a dynamic node (like Get Config / struct break),
-							// check text/string variables and explicit MakeLiteral text nodes in the graph
-							for (const FBPVariableDescription& VarDesc : Blueprint->NewVariables)
-							{
-								FString VarDefault = SanitizeTextString(VarDesc.DefaultValue);
-								if (!VarDefault.IsEmpty())
-								{
-									DiscoveredLines.AddUnique(VarDefault);
-								}
-							}
+						FoundNodesCount++;
+						FoundBPNames.AddUnique(Blueprint->GetName());
 
-							for (UEdGraphNode* GraphNode : Graph->Nodes)
+						if (TextPin)
+						{
+							FString ExtractedText = ExtractTextFromPin(TextPin);
+							if (!ExtractedText.IsEmpty())
 							{
-								if (UK2Node_CallFunction* LitNode = Cast<UK2Node_CallFunction>(GraphNode))
-								{
-									UFunction* LitFunc = LitNode->GetTargetFunction();
-									FString LitFuncName = LitFunc ? LitFunc->GetName() : LitNode->FunctionReference.GetMemberName().ToString();
-									if (LitFuncName.Equals(TEXT("MakeLiteralString"), ESearchCase::IgnoreCase) ||
-										LitFuncName.Equals(TEXT("MakeLiteralText"), ESearchCase::IgnoreCase))
-									{
-										if (UEdGraphPin* ValPin = LitNode->FindPin(TEXT("Value")))
-										{
-											FString ValText = ExtractTextFromPin(ValPin);
-											if (!ValText.IsEmpty())
-											{
-												DiscoveredLines.AddUnique(ValText);
-											}
-										}
-									}
-								}
+								DiscoveredLines.AddUnique(ExtractedText);
 							}
 						}
 					}
 				}
 			}
 		}
+	}
+
+	if (OutMatchingNodesCount)
+	{
+		*OutMatchingNodesCount = FoundNodesCount;
+	}
+	if (OutMatchingBlueprints)
+	{
+		*OutMatchingBlueprints = FoundBPNames;
 	}
 
 	return DiscoveredLines;
@@ -1385,13 +1394,25 @@ FReply FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked()
 		}
 
 		UCharacterVoiceAsset* Asset = WeakTargetAsset.Get();
-		TArray<FString> DiscoveredBlueprintLines = RetrieveVoiceLinesFromProjectBlueprints(Asset);
-		UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnPrecacheLinesClicked: Discovered %d dialogue lines in Blueprint graph nodes."), DiscoveredBlueprintLines.Num());
+		int32 MatchingNodesCount = 0;
+		TArray<FString> MatchingBlueprints;
+		TArray<FString> DiscoveredBlueprintLines = RetrieveVoiceLinesFromProjectBlueprints(Asset, &MatchingNodesCount, &MatchingBlueprints);
+		UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnPrecacheLinesClicked: Discovered %d dialogue lines across %d voice node(s) in project Blueprints."), DiscoveredBlueprintLines.Num(), MatchingNodesCount);
 
 		if (DiscoveredBlueprintLines.Num() == 0)
 		{
-			UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnPrecacheLinesClicked: No dialogue lines found in Blueprint graph nodes referencing this asset."));
-			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("No dialogue lines found in Blueprint graph nodes referencing this asset."));
+			FString DialogMsg;
+			if (MatchingNodesCount > 0)
+			{
+				DialogMsg = FString::Printf(TEXT("Found %d PlayVoice node(s) referencing asset '%s' in Blueprint(s): %s.\n\nHowever, the Text Line pin is connected to dynamic runtime values (e.g., function outputs or struct members) which cannot be statically determined at edit time.\n\nPlease add your dialogue text strings directly to the 'Lines To Preprocess' array in the '%s' asset details panel to pre-render sound waves."), MatchingNodesCount, *Asset->GetName(), *FString::Join(MatchingBlueprints, TEXT(", ")), *Asset->GetName());
+				UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnPrecacheLinesClicked: %s"), *DialogMsg);
+			}
+			else
+			{
+				DialogMsg = FString::Printf(TEXT("No dialogue lines found for asset '%s'.\n\nPlease add dialogue text strings directly to the 'Lines To Preprocess' array in the '%s' asset details panel or pass static text literals to PlayCharacterVoice nodes in Blueprints."), *Asset->GetName(), *Asset->GetName());
+				UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnPrecacheLinesClicked: No dialogue lines found in Blueprint graph nodes referencing this asset."));
+			}
+			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(DialogMsg));
 			return;
 		}
 

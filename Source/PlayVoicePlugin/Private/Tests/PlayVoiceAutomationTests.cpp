@@ -108,15 +108,15 @@ bool FCharacterVoiceMultiLanguageTest::RunTest(const FString& Parameters)
 	FCharacterLanguageData& FrenchData = VoiceAsset->GetOrAddLanguageData(TEXT("FR"));
 	FrenchData.Speed = 0.9f;
 
-	// Per-language GuideTracks test
+	// GuideTracks test on UCharacterVoiceAsset
 	FVoiceLineGuideTrack GuideEN;
 	GuideEN.LineText = TEXT("Guide line text");
 	GuideEN.Emotion = TEXT("happy");
 	GuideEN.Speed = 1.1f;
-	DefaultData->GuideTracks.Add(GuideEN);
+	VoiceAsset->GuideTracks.Add(GuideEN);
 
 	const FVoiceLineGuideTrack* FoundGuide = VoiceAsset->FindGuideTrackForLine(TEXT("Guide line text"), TEXT("EN"));
-	TestNotNull(TEXT("Guide track should be found in EN language data"), FoundGuide);
+	TestNotNull(TEXT("Guide track should be found in VoiceAsset GuideTracks"), FoundGuide);
 	if (FoundGuide)
 	{
 		TestEqual(TEXT("Guide track emotion should match"), FoundGuide->Emotion, TEXT("happy"));

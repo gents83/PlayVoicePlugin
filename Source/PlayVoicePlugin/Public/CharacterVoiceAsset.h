@@ -53,10 +53,6 @@ struct PLAYVOICEPLUGIN_API FCharacterLanguageData
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice", meta = (ClampMin = "0.5", ClampMax = "2.0"))
 	float Speed = 1.0f;
 
-	/** Optional guide tracks supplying recorded reference audio, speed, and emotion for specific dialogue lines in this language */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
-	TArray<FVoiceLineGuideTrack> GuideTracks;
-
 	/** Serialized OpenVoice tone color embedding data generated from reference audio for this language */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "PlayVoice")
 	FString ToneColorEmbeddingData;
@@ -109,6 +105,10 @@ public:
 	/** Dialogue text lines to pre-render and precache for this character voice across all configured languages */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	TArray<FString> LinesToPreprocess;
+
+	/** Per-line guide tracks supplying recorded reference audio, emotion, and speed overrides for specific dialogue lines */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
+	TArray<FVoiceLineGuideTrack> GuideTracks;
 
 	/** Whether to re-generate and overwrite existing voice line audio files during Blueprint pre-processing or model pipeline execution */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
