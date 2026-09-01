@@ -17,6 +17,7 @@
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Editor.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogPlayVoiceLineEntryCustomization, Log, All);
 
@@ -141,6 +142,22 @@ void FPlayVoiceLineEntryCustomization::CustomizeChildren(TSharedRef<IPropertyHan
 				SNew(SButton)
 				.Text_Lambda([this]()
 				{
+					if (bIsPlayingPreview)
+					{
+						return FText::FromString("Stop Preview");
+					}
+					return FText::FromString("Play Guide Track");
+				})
+				.ToolTipText(FText::FromString("Listen to the recorded or selected audio guide track directly in place."))
+				.OnClicked(this, &FPlayVoiceLineEntryCustomization::OnPlayPreviewClicked)
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(4.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(SButton)
+				.Text_Lambda([this]()
+				{
 					if (bIsRecording)
 					{
 						return FText::FromString("Stop & Save");
@@ -254,6 +271,74 @@ FReply FPlayVoiceLineEntryCustomization::OnRecordGuideTrackClicked()
 	return FReply::Handled();
 }
 
+FReply FPlayVoiceLineEntryCustomization::OnPlayPreviewClicked()
+{
+	if (bIsPlayingPreview)
+	{
+		if (GEditor)
+		{
+			GEditor->ResetPreviewAudioComponent();
+		}
+		bIsPlayingPreview = false;
+		UE_LOG(LogPlayVoiceLineEntryCustomization, Log, TEXT("Stopped audio guide track preview playback."));
+		return FReply::Handled();
+	}
+
+	FString FilePathStr;
+	if (AudioFileHandle.IsValid())
+	{
+		TSharedPtr<IPropertyHandle> PathHandle = AudioFileHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FFilePath, FilePath));
+		if (PathHandle.IsValid())
+		{
+			PathHandle->GetValue(FilePathStr);
+		}
+	}
+
+	USoundWave* TargetSoundWave = nullptr;
+	if (StructPropertyHandle.IsValid())
+	{
+		TSharedPtr<IPropertyHandle> SoundHandle = StructPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, PrecachedSoundWave));
+		if (SoundHandle.IsValid())
+		{
+			UObject* SoundObj = nullptr;
+			SoundHandle->GetValue(SoundObj);
+			TargetSoundWave = Cast<USoundWave>(SoundObj);
+		}
+	}
+
+	if (!TargetSoundWave && !FilePathStr.IsEmpty() && IFileManager::Get().FileExists(*FilePathStr))
+	{
+		TArray<uint8> WAVBytes;
+		if (FFileHelper::LoadFileToArray(WAVBytes, *FilePathStr) && WAVBytes.Num() > 0)
+		{
+			TargetSoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(WAVBytes, GetTransientPackage(), FName(TEXT("PreviewGuideTrack")));
+		}
+	}
+
+	if (!TargetSoundWave)
+	{
+		FNotificationInfo Info(FText::FromString("PlayVoice: No audio guide track file or precached SoundWave available to play."));
+		Info.ExpireDuration = 3.0f;
+		FSlateNotificationManager::Get().AddNotification(Info);
+		UE_LOG(LogPlayVoiceLineEntryCustomization, Warning, TEXT("OnPlayPreviewClicked: No guide track file or sound wave present for entry."));
+		return FReply::Handled();
+	}
+
+	if (GEditor)
+	{
+		GEditor->ResetPreviewAudioComponent();
+		GEditor->PlayPreviewSound(TargetSoundWave);
+		bIsPlayingPreview = true;
+		UE_LOG(LogPlayVoiceLineEntryCustomization, Log, TEXT("Started audio guide track preview playback for path '%s' (SoundWave: %s)"), *FilePathStr, *TargetSoundWave->GetName());
+
+		FNotificationInfo Info(FText::Format(FText::FromString("PlayVoice: Playing guide track preview ({0})..."), FText::FromString(FPaths::GetCleanFilename(FilePathStr))));
+		Info.ExpireDuration = 3.0f;
+		FSlateNotificationManager::Get().AddNotification(Info);
+	}
+
+	return FReply::Handled();
+}
+
 FReply FPlayVoiceLineEntryCustomization::OnStopRecordingClicked()
 {
 	if (bIsRecording)
@@ -315,11 +400,16 @@ FReply FPlayVoiceLineEntryCustomization::OnStopRecordingClicked()
 	{
 		if (AudioFileHandle.IsValid())
 		{
-			TSharedPtr<IPropertyHandle> PathHandle = AudioFileHandle->GetChildHandle(TEXT("FilePath"));
+			TSharedPtr<IPropertyHandle> PathHandle = AudioFileHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FFilePath, FilePath));
 			if (PathHandle.IsValid())
 			{
 				PathHandle->SetValue(FullDiskPath);
 			}
+			AudioFileHandle->NotifyPostChange(EPropertyNotificationInfo::PostEdit);
+		}
+		if (StructPropertyHandle.IsValid())
+		{
+			StructPropertyHandle->NotifyPostChange(EPropertyNotificationInfo::PostEdit);
 		}
 
 		if (TargetVoiceAsset)

@@ -29,8 +29,10 @@ private:
 	void RefreshKeyOptions();
 	FReply OnRecordGuideTrackClicked();
 	FReply OnStopRecordingClicked();
+	FReply OnPlayPreviewClicked();
 
 	bool bIsRecording = false;
+	bool bIsPlayingPreview = false;
 
 	Audio::FAudioCapture AudioCapture;
 	FCriticalSection RecordedPCMSection;
