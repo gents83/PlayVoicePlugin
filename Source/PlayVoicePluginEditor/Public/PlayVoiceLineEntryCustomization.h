@@ -6,6 +6,7 @@
 #include "IPropertyTypeCustomization.h"
 #include "PropertyHandle.h"
 #include "Input/Reply.h"
+#include "AudioCaptureCore.h"
 
 class FPlayVoiceLineEntryCustomization : public IPropertyTypeCustomization
 {
@@ -30,4 +31,10 @@ private:
 	FReply OnStopRecordingClicked();
 
 	bool bIsRecording = false;
+
+	Audio::FAudioCapture AudioCapture;
+	FCriticalSection RecordedPCMSection;
+	TArray<int16> RecordedPCMSamples;
+	int32 CapturedSampleRate = 24000;
+	int32 CapturedChannels = 1;
 };

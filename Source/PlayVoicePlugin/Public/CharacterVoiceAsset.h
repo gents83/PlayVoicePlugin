@@ -39,27 +39,6 @@ struct PLAYVOICEPLUGIN_API FPlayVoiceLineEntry
 	TObjectPtr<USoundWave> PrecachedSoundWave = nullptr;
 };
 
-USTRUCT(BlueprintType)
-struct PLAYVOICEPLUGIN_API FVoiceLineGuideTrack
-{
-	GENERATED_BODY()
-
-	/** Dialogue text line corresponding to this guide track */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
-	FString LineText;
-
-	/** Optional recorded reference audio guide track (WAV/MP3/FLAC) supplying custom performance, cadence, and emotion */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice", meta = (FilePathFilter = "wav,mp3,flac"))
-	FFilePath GuideAudioFile;
-
-	/** Optional emotion performance tag (e.g. "neutral", "happy", "angry", "sad", "excited") */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
-	FString Emotion = TEXT("neutral");
-
-	/** Speed multiplier override for this specific line (default 1.0) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice", meta = (ClampMin = "0.5", ClampMax = "2.0"))
-	float Speed = 1.0f;
-};
 
 /**
  * Stores settings, reference audio, and OpenVoice model parameters for a specific language.
@@ -138,26 +117,6 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	TArray<FPlayVoiceLineEntry> VoiceLines;
 
-	/** Dialogue text lines to pre-render and precache for this character voice across all configured languages */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
-	TArray<FString> LinesToPreprocess;
-
-	/** Per-line guide tracks supplying recorded reference audio, emotion, and speed overrides for specific dialogue lines */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
-	TArray<FVoiceLineGuideTrack> GuideTracks;
-
-	/** Whether to re-generate and overwrite existing voice line audio files during Blueprint pre-processing or model pipeline execution */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
-	bool bRegenerateExistingVoiceLines = true;
-
-	/** Map of pre-rendered SoundWaves keyed by normalized text line and language for zero-delay instant playback. Persisted upon saving asset. */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "PlayVoice")
-	TMap<FString, TObjectPtr<USoundWave>> PrecachedSoundWaves;
-
-	/** Map of pre-rendered SoundWaves keyed by String Table Key and language for instant Key-based playback. Persisted upon saving asset. */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "PlayVoice")
-	TMap<FString, TObjectPtr<USoundWave>> PrecachedKeySoundWaves;
-
 	/** Clears all cached SoundWave entries in PrecachedSoundWaves and PrecachedKeySoundWaves */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	void ClearPrecachedVoiceLines();
@@ -223,12 +182,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	bool LoadModelFromFile(const FString& FilePath = TEXT(""), const FString& LanguageCode = TEXT(""));
 
-	/** Finds the optional guide track configuration for a dialogue line and language if present */
-	const FVoiceLineGuideTrack* FindGuideTrackForLine(const FString& TextLine, const FString& LanguageCode = TEXT("")) const;
-
-	/** Resolves the optional guide track audio file path for a dialogue line and language if configured */
-	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
-	FString GetResolvedGuideAudioFileForLine(const FString& TextLine, const FString& LanguageCode = TEXT("")) const;
 
 	/** Retrieves all resolved reference audio file paths from ReferenceAudioFiles and ReferenceAudioFolder for a language */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")

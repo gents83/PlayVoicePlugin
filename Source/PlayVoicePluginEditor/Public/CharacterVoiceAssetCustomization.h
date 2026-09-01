@@ -14,22 +14,10 @@ public:
 
 	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
 
-public:
-	/** Scans all Blueprint assets in the project and extracts dialogue lines used in PlayVoice nodes matching TargetAsset */
-	static TArray<FString> RetrieveVoiceLinesFromProjectBlueprints(const class UCharacterVoiceAsset* TargetAsset, int32* OutMatchingNodesCount = nullptr, TArray<FString>* OutMatchingBlueprints = nullptr);
-
 private:
-	FReply OnGenerateAndProcessAllClicked();
 	FReply OnGenerateModelClicked();
 	FReply OnGenerateFromVoiceLinesClicked();
-	FReply OnPrecacheLinesClicked();
 	FReply OnCleanPrecachedSoundWavesClicked();
-
-	FReply OnRecordButtonClicked(int32 EntryIndex);
-	FReply OnStopRecordingButtonClicked(int32 EntryIndex);
-
-	bool bIsRecording = false;
-	int32 ActiveRecordingIndex = INDEX_NONE;
 
 	TWeakObjectPtr<class UCharacterVoiceAsset> TargetVoiceAsset;
 };

@@ -16,6 +16,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogPlayVoiceLineEntryCustomization, Log, All);
 
@@ -204,19 +205,81 @@ void FPlayVoiceLineEntryCustomization::RefreshKeyOptions()
 
 FReply FPlayVoiceLineEntryCustomization::OnRecordGuideTrackClicked()
 {
-	bIsRecording = true;
+	{
+		FScopeLock Lock(&RecordedPCMSection);
+		RecordedPCMSamples.Reset();
+	}
 
-	FNotificationInfo NotificationInfo(FText::FromString("PlayVoice: Recording guide audio track... Click 'Stop & Save' when finished."));
-	NotificationInfo.ExpireDuration = 3.0f;
-	FSlateNotificationManager::Get().AddNotification(NotificationInfo);
+	Audio::FAudioCaptureDeviceParams Params;
+	bool bStreamOpened = AudioCapture.OpenCaptureDevice(Params, [this](const float* AudioData, int32 NumFrames, int32 NumChannels, int32 SampleRate, double SampleTime, bool bOverflow)
+	{
+		if (AudioData && NumFrames > 0 && NumChannels > 0)
+		{
+			FScopeLock Lock(&RecordedPCMSection);
+			CapturedSampleRate = SampleRate;
+			CapturedChannels = NumChannels;
 
-	UE_LOG(LogPlayVoiceLineEntryCustomization, Log, TEXT("Started guide track recording in FPlayVoiceLineEntryCustomization"));
+			for (int32 Frame = 0; Frame < NumFrames; ++Frame)
+			{
+				float MonoSample = 0.0f;
+				for (int32 Ch = 0; Ch < NumChannels; ++Ch)
+				{
+					MonoSample += AudioData[Frame * NumChannels + Ch];
+				}
+				MonoSample /= static_cast<float>(NumChannels);
+				int16 IntSample = static_cast<int16>(FMath::Clamp(MonoSample, -1.0f, 1.0f) * 32767.0f);
+				RecordedPCMSamples.Add(IntSample);
+			}
+		}
+	}, 1024);
+
+	if (bStreamOpened)
+	{
+		AudioCapture.StartStream();
+		bIsRecording = true;
+
+		FNotificationInfo NotificationInfo(FText::FromString("PlayVoice: Recording microphone guide track... Click 'Stop & Save' when finished."));
+		NotificationInfo.ExpireDuration = 3.0f;
+		FSlateNotificationManager::Get().AddNotification(NotificationInfo);
+		UE_LOG(LogPlayVoiceLineEntryCustomization, Log, TEXT("Started FAudioCapture stream for guide track recording"));
+	}
+	else
+	{
+		UE_LOG(LogPlayVoiceLineEntryCustomization, Warning, TEXT("Failed to open audio capture device. Falling back to synthetic guide buffer."));
+		bIsRecording = true;
+	}
+
 	return FReply::Handled();
 }
 
 FReply FPlayVoiceLineEntryCustomization::OnStopRecordingClicked()
 {
-	bIsRecording = false;
+	if (bIsRecording)
+	{
+		AudioCapture.StopStream();
+		AudioCapture.CloseCaptureDevice();
+		bIsRecording = false;
+	}
+
+	TArray<int16> PCM16Data;
+	int32 SR = 24000;
+	{
+		FScopeLock Lock(&RecordedPCMSection);
+		PCM16Data = RecordedPCMSamples;
+		SR = CapturedSampleRate > 0 ? CapturedSampleRate : 24000;
+	}
+
+	if (PCM16Data.Num() == 0)
+	{
+		PCM16Data.SetNumZeroed(24000);
+		SR = 24000;
+	}
+
+	TArray<uint8> PCMBytes;
+	PCMBytes.SetNumUninitialized(PCM16Data.Num() * sizeof(int16));
+	FMemory::Memcpy(PCMBytes.GetData(), PCM16Data.GetData(), PCMBytes.Num());
+
+	TArray<uint8> WAVBytes = UPlayVoiceAudioUtils::CreateWAVBufferFromPCM(PCMBytes, SR, 1);
 
 	FName KeyVal = NAME_None;
 	if (KeyHandle.IsValid())
@@ -225,17 +288,19 @@ FReply FPlayVoiceLineEntryCustomization::OnStopRecordingClicked()
 	}
 
 	FString CleanKeyName = !KeyVal.IsNone() ? KeyVal.ToString().Replace(TEXT("."), TEXT("_")) : TEXT("Line");
-
 	FString SavedDir = FPaths::ProjectSavedDir() / TEXT("PlayVoice/VoiceRecording");
+
+	UCharacterVoiceAsset* TargetVoiceAsset = nullptr;
 	if (StructPropertyHandle.IsValid())
 	{
 		TArray<UObject*> OuterObjects;
 		StructPropertyHandle->GetOuterObjects(OuterObjects);
 		if (OuterObjects.Num() > 0 && OuterObjects[0])
 		{
-			if (UCharacterVoiceAsset* VoiceAsset = Cast<UCharacterVoiceAsset>(OuterObjects[0]))
+			TargetVoiceAsset = Cast<UCharacterVoiceAsset>(OuterObjects[0]);
+			if (TargetVoiceAsset)
 			{
-				SavedDir = VoiceAsset->GetVoiceRecordingFolderOnDisk();
+				SavedDir = TargetVoiceAsset->GetVoiceRecordingFolderOnDisk();
 			}
 		}
 	}
@@ -244,21 +309,6 @@ FReply FPlayVoiceLineEntryCustomization::OnStopRecordingClicked()
 	FString FileName = FString::Printf(TEXT("REC_%s_%u.wav"), *CleanKeyName, FDateTime::Now().GetTicks());
 	FString FullDiskPath = FPaths::Combine(SavedDir, FileName);
 
-	// Generate reference PCM WAV audio buffer
-	TArray<uint8> PCMData;
-	PCMData.SetNumZeroed(48000); // 1.0s of 24kHz 16-bit mono PCM
-
-	int16* Samples = reinterpret_cast<int16*>(PCMData.GetData());
-	int32 NumSamples = 24000;
-	for (int32 s = 0; s < NumSamples; ++s)
-	{
-		double Time = static_cast<double>(s) / 24000.0;
-		double Env = FMath::Sin(3.14159 * Time);
-		double Tone = FMath::Sin(2.0 * 3.14159 * 220.0 * Time);
-		Samples[s] = static_cast<int16>(32767.0 * 0.25 * Env * Tone);
-	}
-
-	TArray<uint8> WAVBytes = UPlayVoiceAudioUtils::CreateWAVBufferFromPCM(PCMData, 24000, 1);
 	if (FFileHelper::SaveArrayToFile(WAVBytes, *FullDiskPath))
 	{
 		if (AudioFileHandle.IsValid())
@@ -270,7 +320,31 @@ FReply FPlayVoiceLineEntryCustomization::OnStopRecordingClicked()
 			}
 		}
 
-		FNotificationInfo SuccessNotification(FText::Format(FText::FromString("PlayVoice: Saved guide audio track to VoiceRecording/{0}"), FText::FromString(FileName)));
+		if (TargetVoiceAsset)
+		{
+			UPackage* OuterPackage = TargetVoiceAsset->GetOutermost();
+			FString AssetFolderPath = FPaths::GetPath(OuterPackage->GetName());
+			FString KeySanitized = FString::Printf(TEXT("SW_%s_%s_%s"), *TargetVoiceAsset->CharacterName.ToString(), *TargetVoiceAsset->DefaultLanguage, *CleanKeyName);
+			FString PackagePath = AssetFolderPath / KeySanitized;
+
+			UPackage* SoundWavePackage = CreatePackage(*PackagePath);
+			USoundWave* SoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(WAVBytes, SoundWavePackage, FName(*KeySanitized));
+
+			if (SoundWave)
+			{
+				TargetVoiceAsset->CacheVoiceLineForKey(KeyVal, SoundWave, TargetVoiceAsset->DefaultLanguage);
+				SoundWave->MarkPackageDirty();
+				TargetVoiceAsset->MarkPackageDirty();
+
+				if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+				{
+					FAssetRegistryModule::AssetCreated(SoundWave);
+				}
+				UE_LOG(LogPlayVoiceLineEntryCustomization, Log, TEXT("Registered recorded guide track as precached SoundWave asset '%s'"), *KeySanitized);
+			}
+		}
+
+		FNotificationInfo SuccessNotification(FText::Format(FText::FromString("PlayVoice: Saved guide track and created precached SoundWave: VoiceRecording/{0}"), FText::FromString(FileName)));
 		SuccessNotification.ExpireDuration = 4.0f;
 		FSlateNotificationManager::Get().AddNotification(SuccessNotification);
 

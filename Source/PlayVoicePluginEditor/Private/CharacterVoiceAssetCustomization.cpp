@@ -59,21 +59,6 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 
 	IDetailCategoryBuilder& OpenVoiceCategory = DetailBuilder.EditCategory("OpenVoice Model Actions", FText::FromString("OpenVoice Model Actions"));
 
-	OpenVoiceCategory.AddCustomRow(FText::FromString("Generate Model and Process Lines"))
-	.NameContent()
-	[
-		SNew(STextBlock)
-		.Text(FText::FromString("Full Pipeline (One-Click)"))
-		.Font(IDetailLayoutBuilder::GetDetailFont())
-	]
-	.ValueContent()
-	[
-		SNew(SButton)
-		.Text(FText::FromString("Generate Model & Process All Lines"))
-		.ToolTipText(FText::FromString("One-click pipeline: Auto-discovers Blueprint voice lines, extracts model embeddings for all configured languages, transcribes, synthesizes, and saves generated audio assets."))
-		.OnClicked(this, &FCharacterVoiceAssetCustomization::OnGenerateAndProcessAllClicked)
-	];
-
 	OpenVoiceCategory.AddCustomRow(FText::FromString("Generate Model"))
 	.NameContent()
 	[
@@ -104,139 +89,6 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 		.OnClicked(this, &FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked)
 	];
 
-	IDetailCategoryBuilder& VoiceLinesCategory = DetailBuilder.EditCategory("Voice Lines & String Table Keys", FText::FromString("Voice Lines & String Table Keys"));
-
-	if (TargetVoiceAsset.IsValid())
-	{
-		UCharacterVoiceAsset* Asset = TargetVoiceAsset.Get();
-		for (int32 i = 0; i < Asset->VoiceLines.Num(); ++i)
-		{
-			FPlayVoiceLineEntry& Entry = Asset->VoiceLines[i];
-			FString KeyName = !Entry.Key.IsNone() ? Entry.Key.ToString() : FString::Printf(TEXT("Entry %d"), i + 1);
-
-			TSharedPtr<TArray<TSharedPtr<FName>>> KeyOptions = MakeShared<TArray<TSharedPtr<FName>>>();
-			TSharedPtr<FName> CurrentlySelectedKey;
-
-			if (Entry.StringTable)
-			{
-				FStringTableConstRef TableRef = Entry.StringTable->GetStringTable();
-				TableRef->EnumerateSourceStrings([KeyOptions, &Entry, &CurrentlySelectedKey](const FString& KeyString, const FString& SourceString)
-				{
-					FName KeyNameVal(*KeyString);
-					TSharedPtr<FName> OptionName = MakeShared<FName>(KeyNameVal);
-					KeyOptions->Add(OptionName);
-					if (KeyNameVal == Entry.Key)
-					{
-						CurrentlySelectedKey = OptionName;
-					}
-					return true;
-				});
-			}
-
-			if (!CurrentlySelectedKey.IsValid() && !Entry.Key.IsNone())
-			{
-				CurrentlySelectedKey = MakeShared<FName>(Entry.Key);
-				KeyOptions->Add(CurrentlySelectedKey);
-			}
-
-			FString DisplayLabel = FString::Printf(TEXT("[%d] Text: %s"), i + 1, *Entry.TextLine);
-
-			VoiceLinesCategory.AddCustomRow(FText::FromString(KeyName))
-			.NameContent()
-			[
-				SNew(STextBlock)
-				.Text(FText::FromString(DisplayLabel))
-				.Font(IDetailLayoutBuilder::GetDetailFont())
-			]
-			.ValueContent()
-			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.Padding(2.0f)
-				[
-					SNew(SComboBox<TSharedPtr<FName>>)
-					.OptionsSource(KeyOptions.Get())
-					.OnGenerateWidget_Lambda([](TSharedPtr<FName> InItem)
-					{
-						return SNew(STextBlock).Text(FText::FromName(InItem.IsValid() ? *InItem : NAME_None));
-					})
-					.OnSelectionChanged_Lambda([this, i, KeyOptions](TSharedPtr<FName> NewChoice, ESelectInfo::Type SelectInfo)
-					{
-						if (NewChoice.IsValid() && TargetVoiceAsset.IsValid() && TargetVoiceAsset->VoiceLines.IsValidIndex(i))
-						{
-							FPlayVoiceLineEntry& SelectedEntry = TargetVoiceAsset->VoiceLines[i];
-							SelectedEntry.Key = *NewChoice;
-							if (SelectedEntry.StringTable)
-							{
-								FStringTableConstRef TableRef = SelectedEntry.StringTable->GetStringTable();
-								FStringTableEntryConstPtr TableEntry = TableRef->FindEntry(FTextKey(SelectedEntry.Key.ToString()));
-								if (TableEntry.IsValid())
-								{
-									SelectedEntry.TextLine = TableEntry->GetSourceString();
-								}
-							}
-							TargetVoiceAsset->MarkPackageDirty();
-						}
-					})
-					[
-						SNew(STextBlock)
-						.Text_Lambda([this, i]()
-						{
-							if (TargetVoiceAsset.IsValid() && TargetVoiceAsset->VoiceLines.IsValidIndex(i))
-							{
-								FName CurrentK = TargetVoiceAsset->VoiceLines[i].Key;
-								return FText::FromName(!CurrentK.IsNone() ? CurrentK : FName(TEXT("Select Key...")));
-							}
-							return FText::FromString("Select Key...");
-						})
-					]
-				]
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.Padding(2.0f)
-				[
-					SNew(SButton)
-					.Text_Lambda([this, i]()
-					{
-						if (bIsRecording && ActiveRecordingIndex == i)
-						{
-							return FText::FromString("Stop & Save Recording");
-						}
-						return FText::FromString("Record Guide Track");
-					})
-					.ToolTipText(FText::FromString("Record microphone reference audio track for speed and emotion guide, saving directly to the VoiceRecording folder."))
-					.OnClicked_Lambda([this, i]()
-					{
-						if (bIsRecording && ActiveRecordingIndex == i)
-						{
-							return OnStopRecordingButtonClicked(i);
-						}
-						else
-						{
-							return OnRecordButtonClicked(i);
-						}
-					})
-				]
-			];
-		}
-	}
-
-	OpenVoiceCategory.AddCustomRow(FText::FromString("Precache Voice Lines"))
-	.NameContent()
-	[
-		SNew(STextBlock)
-		.Text(FText::FromString("Zero-Delay Pre-rendering"))
-		.Font(IDetailLayoutBuilder::GetDetailFont())
-	]
-	.ValueContent()
-	[
-		SNew(SButton)
-		.Text(FText::FromString("Pre-process Blueprint Voice Lines"))
-		.ToolTipText(FText::FromString("Scans all Blueprint nodes for dialogue lines and pre-renders sound wave assets across all configured languages to eliminate in-game latency."))
-		.OnClicked(this, &FCharacterVoiceAssetCustomization::OnPrecacheLinesClicked)
-	];
-
 	OpenVoiceCategory.AddCustomRow(FText::FromString("Clean Precached Sound Waves"))
 	.NameContent()
 	[
@@ -248,7 +100,7 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 	[
 		SNew(SButton)
 		.Text(FText::FromString("Clean Precached Sound Waves"))
-		.ToolTipText(FText::FromString("Clears precached voice lines map from UCharacterVoiceAsset and deletes generated USoundWave package files from disk and project."))
+		.ToolTipText(FText::FromString("Clears precached voice lines entries on UCharacterVoiceAsset and deletes generated USoundWave package files from disk and project."))
 		.OnClicked(this, &FCharacterVoiceAssetCustomization::OnCleanPrecachedSoundWavesClicked)
 	];
 }
@@ -1734,16 +1586,17 @@ FReply FCharacterVoiceAssetCustomization::OnCleanPrecachedSoundWavesClicked()
 	}
 
 	UCharacterVoiceAsset* Asset = TargetVoiceAsset.Get();
-	int32 RemovedCount = Asset->PrecachedSoundWaves.Num();
-	UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnCleanPrecachedSoundWavesClicked: Initiating precached sound wave cleanup for asset '%s' (%d entries)"), *Asset->GetName(), RemovedCount);
+	int32 RemovedCount = 0;
+	UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnCleanPrecachedSoundWavesClicked: Initiating precached sound wave cleanup for asset '%s'"), *Asset->GetName());
 
 	TArray<USoundWave*> SoundWavesToDelete;
 	TArray<FString> FilePathsToDelete;
 
-	for (auto& KVP : Asset->PrecachedSoundWaves)
+	for (FPlayVoiceLineEntry& Entry : Asset->VoiceLines)
 	{
-		if (USoundWave* SoundWave = KVP.Value.Get())
+		if (USoundWave* SoundWave = Entry.PrecachedSoundWave.Get())
 		{
+			RemovedCount++;
 			SoundWavesToDelete.AddUnique(SoundWave);
 			UPackage* Pkg = SoundWave->GetOutermost();
 			if (Pkg && Pkg != GetTransientPackage())
@@ -1754,10 +1607,10 @@ FReply FCharacterVoiceAssetCustomization::OnCleanPrecachedSoundWavesClicked()
 					FilePathsToDelete.AddUnique(PkgFilename);
 				}
 			}
+			Entry.PrecachedSoundWave = nullptr;
 		}
 	}
 
-	Asset->ClearPrecachedVoiceLines();
 	Asset->MarkPackageDirty();
 
 	if (!FModuleManager::Get().IsModuleLoaded("AssetRegistry"))

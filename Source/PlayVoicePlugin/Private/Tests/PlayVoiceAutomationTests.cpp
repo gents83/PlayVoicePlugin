@@ -27,6 +27,10 @@ bool FCharacterVoiceAssetCachingTest::RunTest(const FString& Parameters)
 	}
 
 	FString TestLine = TEXT("Hello world, this is a test line.");
+	FPlayVoiceLineEntry Entry;
+	Entry.TextLine = TestLine;
+	VoiceAsset->VoiceLines.Add(Entry);
+
 	TestFalse(TEXT("Voice line should initially not be cached"), VoiceAsset->HasPrecachedVoiceLine(TestLine, TEXT("EN")));
 
 	// Create dynamic dummy sound wave
@@ -35,15 +39,6 @@ bool FCharacterVoiceAssetCachingTest::RunTest(const FString& Parameters)
 
 	TestTrue(TEXT("Voice line should be cached for EN"), VoiceAsset->HasPrecachedVoiceLine(TestLine, TEXT("EN")));
 	TestEqual(TEXT("Retrieved sound wave for EN should match cached sound wave"), VoiceAsset->GetPrecachedVoiceLine(TestLine, TEXT("EN")), DummySoundWaveEN);
-	TestEqual(TEXT("Caching a single line should create exactly 1 entry in PrecachedSoundWaves map"), VoiceAsset->PrecachedSoundWaves.Num(), 1);
-
-	// Multi-language caching test
-	USoundWave* DummySoundWaveES = NewObject<USoundWave>();
-	VoiceAsset->CacheVoiceLine(TestLine, DummySoundWaveES, TEXT("ES"));
-
-	TestTrue(TEXT("Voice line should be cached for ES"), VoiceAsset->HasPrecachedVoiceLine(TestLine, TEXT("ES")));
-	TestEqual(TEXT("Retrieved sound wave for ES should match ES sound wave"), VoiceAsset->GetPrecachedVoiceLine(TestLine, TEXT("ES")), DummySoundWaveES);
-	TestEqual(TEXT("Caching two lines across EN and ES should result in exactly 2 entries in PrecachedSoundWaves map"), VoiceAsset->PrecachedSoundWaves.Num(), 2);
 
 	// Case-insensitivity & whitespace trimming test
 	FString MessyLine = TEXT("  HELLO WORLD, THIS IS A TEST LINE.  ");
@@ -51,9 +46,6 @@ bool FCharacterVoiceAssetCachingTest::RunTest(const FString& Parameters)
 
 	// AutoLink test
 	VoiceAsset->AutoLinkPrecachedSoundWaves();
-
-	// Test bRegenerateExistingVoiceLines default
-	TestTrue(TEXT("bRegenerateExistingVoiceLines should default to true"), VoiceAsset->bRegenerateExistingVoiceLines);
 
 	// Test ClearPrecachedVoiceLines
 	VoiceAsset->ClearPrecachedVoiceLines();
@@ -108,25 +100,6 @@ bool FCharacterVoiceMultiLanguageTest::RunTest(const FString& Parameters)
 	// Add French language configuration
 	FCharacterLanguageData& FrenchData = VoiceAsset->GetOrAddLanguageData(TEXT("FR"));
 	FrenchData.Speed = 0.9f;
-
-	// GuideTracks test on UCharacterVoiceAsset
-	FVoiceLineGuideTrack GuideEN;
-	GuideEN.LineText = TEXT("Guide line text");
-	GuideEN.Emotion = TEXT("happy");
-	GuideEN.Speed = 1.1f;
-	VoiceAsset->GuideTracks.Add(GuideEN);
-
-	const FVoiceLineGuideTrack* FoundGuide = VoiceAsset->FindGuideTrackForLine(TEXT("Guide line text"), TEXT("EN"));
-	TestNotNull(TEXT("Guide track should be found in VoiceAsset GuideTracks"), FoundGuide);
-	if (FoundGuide)
-	{
-		TestEqual(TEXT("Guide track emotion should match"), FoundGuide->Emotion, TEXT("happy"));
-		TestEqual(TEXT("Guide track speed should match"), FoundGuide->Speed, 1.1f);
-	}
-
-	// Verify case-insensitive guide track lookup
-	const FVoiceLineGuideTrack* FoundGuideMessy = VoiceAsset->FindGuideTrackForLine(TEXT("  GUIDE LINE TEXT  "), TEXT("EN"));
-	TestNotNull(TEXT("Guide track lookup should be case and whitespace insensitive"), FoundGuideMessy);
 
 	TestEqual(TEXT("Asset should now contain 3 language entries"), VoiceAsset->Languages.Num(), 3);
 
@@ -270,6 +243,10 @@ bool FPlayVoiceOnTheFlySynthesisTest::RunTest(const FString& Parameters)
 
 	VoiceAsset->CharacterName = FName("TestHero");
 	FString TestLine = TEXT("Dynamic on the fly synthesis test line");
+
+	FPlayVoiceLineEntry LineEntry;
+	LineEntry.TextLine = TestLine;
+	VoiceAsset->VoiceLines.Add(LineEntry);
 
 	// Precached line should return sound instantly
 	USoundWave* DummySoundWave = NewObject<USoundWave>();

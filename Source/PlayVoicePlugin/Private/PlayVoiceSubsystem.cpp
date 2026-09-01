@@ -48,12 +48,10 @@ void UPlayVoiceSubsystem::PrecacheAllVoiceLines(UCharacterVoiceAsset* CharacterV
 		return;
 	}
 
-	FString TargetLang = LanguageCode.IsEmpty() ? CharacterVoiceAsset->DefaultLanguage : LanguageCode;
-
 	int32 PrecachedCount = 0;
-	for (const auto& Pair : CharacterVoiceAsset->PrecachedSoundWaves)
+	for (const FPlayVoiceLineEntry& Entry : CharacterVoiceAsset->VoiceLines)
 	{
-		if (Pair.Value != nullptr)
+		if (Entry.PrecachedSoundWave != nullptr)
 		{
 			PrecachedCount++;
 		}
