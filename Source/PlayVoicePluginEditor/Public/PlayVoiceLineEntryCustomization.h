@@ -30,6 +30,7 @@ private:
 	FReply OnRecordGuideTrackClicked();
 	FReply OnStopRecordingClicked();
 	FReply OnPlayPreviewClicked();
+	FReply OnBrowseAssetClicked();
 
 	bool bIsRecording = false;
 	bool bIsPlayingPreview = false;
