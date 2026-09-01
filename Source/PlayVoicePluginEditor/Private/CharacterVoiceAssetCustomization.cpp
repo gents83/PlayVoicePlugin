@@ -10,6 +10,8 @@
 #include "DetailWidgetRow.h"
 #include "DetailCategoryBuilder.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SComboBox.h"
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 #include "HttpModule.h"
 #include "Interfaces/IHttpRequest.h"
@@ -102,48 +104,120 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 		.OnClicked(this, &FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked)
 	];
 
-	IDetailCategoryBuilder& RecordingCategory = DetailBuilder.EditCategory("Voice Lines Audio Recording", FText::FromString("Voice Lines Audio Recording"));
+	IDetailCategoryBuilder& VoiceLinesCategory = DetailBuilder.EditCategory("Voice Lines & String Table Keys", FText::FromString("Voice Lines & String Table Keys"));
 
 	if (TargetVoiceAsset.IsValid())
 	{
 		UCharacterVoiceAsset* Asset = TargetVoiceAsset.Get();
 		for (int32 i = 0; i < Asset->VoiceLines.Num(); ++i)
 		{
-			const FPlayVoiceLineEntry& Entry = Asset->VoiceLines[i];
+			FPlayVoiceLineEntry& Entry = Asset->VoiceLines[i];
 			FString KeyName = !Entry.Key.IsNone() ? Entry.Key.ToString() : FString::Printf(TEXT("Entry %d"), i + 1);
 
-			FString LabelText = FString::Printf(TEXT("[%d] %s"), i + 1, *KeyName);
+			TSharedPtr<TArray<TSharedPtr<FName>>> KeyOptions = MakeShared<TArray<TSharedPtr<FName>>>();
+			TSharedPtr<FName> CurrentlySelectedKey;
 
-			RecordingCategory.AddCustomRow(FText::FromString(KeyName))
+			if (Entry.StringTable)
+			{
+				FStringTableConstRef TableRef = Entry.StringTable->GetStringTable();
+				TableRef->EnumerateKeys([KeyOptions, &Entry, &CurrentlySelectedKey](const FStringTable& Table, const FStringKey& KeyStr)
+				{
+					FName KeyNameVal(*KeyStr.GetString());
+					TSharedPtr<FName> OptionName = MakeShared<FName>(KeyNameVal);
+					KeyOptions->Add(OptionName);
+					if (KeyNameVal == Entry.Key)
+					{
+						CurrentlySelectedKey = OptionName;
+					}
+					return true;
+				});
+			}
+
+			if (!CurrentlySelectedKey.IsValid() && !Entry.Key.IsNone())
+			{
+				CurrentlySelectedKey = MakeShared<FName>(Entry.Key);
+				KeyOptions->Add(CurrentlySelectedKey);
+			}
+
+			FString DisplayLabel = FString::Printf(TEXT("[%d] Text: %s"), i + 1, *Entry.TextLine);
+
+			VoiceLinesCategory.AddCustomRow(FText::FromString(KeyName))
 			.NameContent()
 			[
 				SNew(STextBlock)
-				.Text(FText::FromString(LabelText))
+				.Text(FText::FromString(DisplayLabel))
 				.Font(IDetailLayoutBuilder::GetDetailFont())
 			]
 			.ValueContent()
 			[
-				SNew(SButton)
-				.Text_Lambda([this, i]()
-				{
-					if (bIsRecording && ActiveRecordingIndex == i)
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(2.0f)
+				[
+					SNew(SComboBox<TSharedPtr<FName>>)
+					.OptionsSource(KeyOptions.Get())
+					.OnGenerateWidget_Lambda([](TSharedPtr<FName> InItem)
 					{
-						return FText::FromString("Stop & Save Recording");
-					}
-					return FText::FromString("Record Guide Audio Track");
-				})
-				.ToolTipText(FText::FromString("Record microphone reference audio track for speed and emotion guide, saving directly to the VoiceRecording folder."))
-				.OnClicked_Lambda([this, i]()
-				{
-					if (bIsRecording && ActiveRecordingIndex == i)
+						return SNew(STextBlock).Text(FText::FromName(InItem.IsValid() ? *InItem : NAME_None));
+					})
+					.OnSelectionChanged_Lambda([this, i, KeyOptions](TSharedPtr<FName> NewChoice, ESelectInfo::Type SelectInfo)
 					{
-						return OnStopRecordingButtonClicked(i);
-					}
-					else
+						if (NewChoice.IsValid() && TargetVoiceAsset.IsValid() && TargetVoiceAsset->VoiceLines.IsValidIndex(i))
+						{
+							FPlayVoiceLineEntry& SelectedEntry = TargetVoiceAsset->VoiceLines[i];
+							SelectedEntry.Key = *NewChoice;
+							if (SelectedEntry.StringTable)
+							{
+								FStringTableConstRef TableRef = SelectedEntry.StringTable->GetStringTable();
+								FStringTableEntryConstPtr TableEntry = TableRef->FindEntry(FTextKey(SelectedEntry.Key.ToString()));
+								if (TableEntry.IsValid())
+								{
+									SelectedEntry.TextLine = TableEntry->GetSourceString();
+								}
+							}
+							TargetVoiceAsset->MarkPackageDirty();
+						}
+					})
+					[
+						SNew(STextBlock)
+						.Text_Lambda([this, i]()
+						{
+							if (TargetVoiceAsset.IsValid() && TargetVoiceAsset->VoiceLines.IsValidIndex(i))
+							{
+								FName CurrentK = TargetVoiceAsset->VoiceLines[i].Key;
+								return FText::FromName(!CurrentK.IsNone() ? CurrentK : FName(TEXT("Select Key...")));
+							}
+							return FText::FromString("Select Key...");
+						})
+					]
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(2.0f)
+				[
+					SNew(SButton)
+					.Text_Lambda([this, i]()
 					{
-						return OnRecordButtonClicked(i);
-					}
-				})
+						if (bIsRecording && ActiveRecordingIndex == i)
+						{
+							return FText::FromString("Stop & Save Recording");
+						}
+						return FText::FromString("Record Guide Track");
+					})
+					.ToolTipText(FText::FromString("Record microphone reference audio track for speed and emotion guide, saving directly to the VoiceRecording folder."))
+					.OnClicked_Lambda([this, i]()
+					{
+						if (bIsRecording && ActiveRecordingIndex == i)
+						{
+							return OnStopRecordingButtonClicked(i);
+						}
+						else
+						{
+							return OnRecordButtonClicked(i);
+						}
+					})
+				]
 			];
 		}
 	}

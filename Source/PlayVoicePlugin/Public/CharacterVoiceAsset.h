@@ -18,16 +18,16 @@ struct PLAYVOICEPLUGIN_API FPlayVoiceLineEntry
 {
 	GENERATED_BODY()
 
-	/** Unique String Table key identifying this voice line entry */
+	/** String Table asset providing the dialogue text for this entry */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
+	TObjectPtr<UStringTable> StringTable;
+
+	/** String Table key identifying this voice line entry */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	FName Key;
 
-	/** Optional String Table override for this specific entry. If null, uses asset-level String Table */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
-	TObjectPtr<UStringTable> StringTableOverride;
-
-	/** Dialogue text string corresponding to this voice line key (automatically resolved from String Table if left empty) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
+	/** Dialogue text string automatically resolved from the String Table and Key (Read-only) */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "PlayVoice")
 	FString TextLine;
 
 	/** Reference audio file (WAV/MP3/FLAC) supplying cadence, speed, and emotion guide for synthesis, or recorded via Editor */
@@ -133,10 +133,6 @@ public:
 	/** List of language configurations for this character voice */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	TArray<FCharacterLanguageData> Languages;
-
-	/** Primary String Table used for resolving dialogue text strings for voice line entries in this asset */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
-	TObjectPtr<UStringTable> StringTable;
 
 	/** List of dialogue voice line entries in this asset mapped to String Table keys */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")

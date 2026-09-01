@@ -106,20 +106,19 @@ FCharacterLanguageData& UCharacterVoiceAsset::GetOrAddLanguageData(const FString
 
 FString UCharacterVoiceAsset::GetResolvedTextLineForEntry(const FPlayVoiceLineEntry& Entry) const
 {
-	if (!Entry.TextLine.IsEmpty())
+	if (Entry.StringTable && !Entry.Key.IsNone())
 	{
-		return Entry.TextLine;
-	}
-
-	UStringTable* TargetTable = Entry.StringTableOverride ? Entry.StringTableOverride.Get() : StringTable.Get();
-	if (TargetTable && !Entry.Key.IsNone())
-	{
-		FStringTableConstRef TableRef = TargetTable->GetStringTable();
+		FStringTableConstRef TableRef = Entry.StringTable->GetStringTable();
 		FStringTableEntryConstPtr TableEntry = TableRef->FindEntry(FTextKey(Entry.Key.ToString()));
 		if (TableEntry.IsValid())
 		{
 			return TableEntry->GetSourceString();
 		}
+	}
+
+	if (!Entry.TextLine.IsEmpty())
+	{
+		return Entry.TextLine;
 	}
 
 	return Entry.Key.IsNone() ? FString() : Entry.Key.ToString();
@@ -161,16 +160,14 @@ void UCharacterVoiceAsset::PostEditChangeProperty(FPropertyChangedEvent& Propert
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
 	FName PropertyName = PropertyChangedEvent.GetPropertyName();
-	if (PropertyName == GET_MEMBER_NAME_CHECKED(UCharacterVoiceAsset, StringTable) ||
-		PropertyName == GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, Key) ||
-		PropertyName == GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, StringTableOverride))
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, StringTable) ||
+		PropertyName == GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, Key))
 	{
 		for (FPlayVoiceLineEntry& Entry : VoiceLines)
 		{
-			UStringTable* TargetTable = Entry.StringTableOverride ? Entry.StringTableOverride.Get() : StringTable.Get();
-			if (TargetTable && !Entry.Key.IsNone())
+			if (Entry.StringTable && !Entry.Key.IsNone())
 			{
-				FStringTableConstRef TableRef = TargetTable->GetStringTable();
+				FStringTableConstRef TableRef = Entry.StringTable->GetStringTable();
 				FStringTableEntryConstPtr TableEntry = TableRef->FindEntry(FTextKey(Entry.Key.ToString()));
 				if (TableEntry.IsValid())
 				{
