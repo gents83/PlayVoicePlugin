@@ -52,6 +52,37 @@ FString UPlayVoiceLinesAsset::GetResolvedTextLineForEntry(const FPlayVoiceLineEn
 	return Entry.Key.IsNone() ? FString() : Entry.Key.ToString();
 }
 
+#if WITH_EDITOR
+void UPlayVoiceLinesAsset::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	FName PropertyName = PropertyChangedEvent.Property ? PropertyChangedEvent.Property->GetFName() : NAME_None;
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, Key) ||
+		PropertyName == GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, StringTableOverride) ||
+		PropertyName == GET_MEMBER_NAME_CHECKED(UPlayVoiceLinesAsset, StringTable) ||
+		PropertyName == GET_MEMBER_NAME_CHECKED(UPlayVoiceLinesAsset, Lines))
+	{
+		for (FPlayVoiceLineEntry& Entry : Lines)
+		{
+			if (!Entry.Key.IsNone())
+			{
+				UStringTable* TargetTable = Entry.StringTableOverride ? Entry.StringTableOverride.Get() : StringTable.Get();
+				if (TargetTable)
+				{
+					FString TableId = TargetTable->GetStringTableId().ToString();
+					FText ResolvedText = FText::FromStringTable(FName(*TableId), Entry.Key.ToString());
+					if (!ResolvedText.IsEmpty())
+					{
+						Entry.TextLine = ResolvedText.ToString();
+					}
+				}
+			}
+		}
+	}
+}
+#endif
+
 FString UPlayVoiceLinesAsset::GetVoiceRecordingFolderOnDisk() const
 {
 	UPackage* OuterPackage = GetOutermost();

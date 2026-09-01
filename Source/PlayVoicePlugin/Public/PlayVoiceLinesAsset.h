@@ -67,4 +67,8 @@ public:
 	/** Helper method to get the absolute disk path of the VoiceRecording folder in the same directory as this asset */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	FString GetVoiceRecordingFolderOnDisk() const;
+
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 };
