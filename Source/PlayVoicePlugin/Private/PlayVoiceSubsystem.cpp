@@ -246,18 +246,11 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoiceFromKey(
 		}
 	}
 
-	// Lookup text line from referenced PlayVoiceLines assets if present
+	// Lookup text line from VoiceLines in CharacterVoiceAsset if present
 	FString EntryText;
-	for (UPlayVoiceLinesAsset* LinesAsset : CharacterVoiceAsset->VoiceLineAssets)
+	if (const FPlayVoiceLineEntry* Entry = CharacterVoiceAsset->FindVoiceLineByKey(Key))
 	{
-		if (LinesAsset)
-		{
-			if (const FPlayVoiceLineEntry* Entry = LinesAsset->FindLineByKey(Key))
-			{
-				EntryText = LinesAsset->GetResolvedTextLineForEntry(*Entry);
-				break;
-			}
-		}
+		EntryText = CharacterVoiceAsset->GetResolvedTextLineForEntry(*Entry);
 	}
 
 	if (!EntryText.IsEmpty())
@@ -265,7 +258,7 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoiceFromKey(
 		return PlayCharacterVoice(WorldContextObject, CharacterVoiceAsset, EntryText, TargetLang, TargetAudioComponent, Location, bAttachToActor, AttachToActor);
 	}
 
-	UE_LOG(LogPlayVoice, Warning, TEXT("PlayCharacterVoiceFromKey: Key '%s' (Lang: %s) is not precached in asset '%s' and no matching PlayVoiceLines entry was found."), *Key.ToString(), *TargetLang, *GetNameSafe(CharacterVoiceAsset));
+	UE_LOG(LogPlayVoice, Warning, TEXT("PlayCharacterVoiceFromKey: Key '%s' (Lang: %s) is not precached in asset '%s' and no matching VoiceLines entry was found."), *Key.ToString(), *TargetLang, *GetNameSafe(CharacterVoiceAsset));
 	return nullptr;
 }
 

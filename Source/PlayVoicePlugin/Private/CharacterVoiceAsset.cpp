@@ -104,6 +104,84 @@ FCharacterLanguageData& UCharacterVoiceAsset::GetOrAddLanguageData(const FString
 	return Languages[Index];
 }
 
+FString UCharacterVoiceAsset::GetResolvedTextLineForEntry(const FPlayVoiceLineEntry& Entry) const
+{
+	if (!Entry.TextLine.IsEmpty())
+	{
+		return Entry.TextLine;
+	}
+
+	UStringTable* TargetTable = Entry.StringTableOverride ? Entry.StringTableOverride.Get() : StringTable.Get();
+	if (TargetTable && !Entry.Key.IsNone())
+	{
+		FStringTableConstRef TableRef = TargetTable->GetStringTable();
+		FStringTableEntryConstRef TableEntry = TableRef->FindEntry(Entry.Key);
+		if (TableEntry.IsValid())
+		{
+			return TableEntry->GetSourceString();
+		}
+	}
+
+	return Entry.Key.IsNone() ? FString() : Entry.Key.ToString();
+}
+
+const FPlayVoiceLineEntry* UCharacterVoiceAsset::FindVoiceLineByKey(FName InKey) const
+{
+	if (InKey.IsNone())
+	{
+		return nullptr;
+	}
+
+	for (const FPlayVoiceLineEntry& Entry : VoiceLines)
+	{
+		if (Entry.Key == InKey)
+		{
+			return &Entry;
+		}
+	}
+	return nullptr;
+}
+
+bool UCharacterVoiceAsset::HasVoiceLineForKey(FName InKey) const
+{
+	return FindVoiceLineByKey(InKey) != nullptr;
+}
+
+FString UCharacterVoiceAsset::GetVoiceRecordingFolderOnDisk() const
+{
+	FString AssetFolder = GetAssetDiskFolder();
+	FString RecordingFolder = FPaths::Combine(AssetFolder, TEXT("VoiceRecording"));
+	IFileManager::Get().MakeDirectory(*RecordingFolder, true);
+	return RecordingFolder;
+}
+
+#if WITH_EDITOR
+void UCharacterVoiceAsset::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	FName PropertyName = PropertyChangedEvent.GetPropertyName();
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(UCharacterVoiceAsset, StringTable) ||
+		PropertyName == GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, Key) ||
+		PropertyName == GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, StringTableOverride))
+	{
+		for (FPlayVoiceLineEntry& Entry : VoiceLines)
+		{
+			UStringTable* TargetTable = Entry.StringTableOverride ? Entry.StringTableOverride.Get() : StringTable.Get();
+			if (TargetTable && !Entry.Key.IsNone())
+			{
+				FStringTableConstRef TableRef = TargetTable->GetStringTable();
+				FStringTableEntryConstRef TableEntry = TableRef->FindEntry(Entry.Key);
+				if (TableEntry.IsValid())
+				{
+					Entry.TextLine = TableEntry->GetSourceString();
+				}
+			}
+		}
+	}
+}
+#endif
+
 static FString CleanVoiceLineTextForCache(const FString& InRaw)
 {
 	FString S = InRaw.TrimStartAndEnd();

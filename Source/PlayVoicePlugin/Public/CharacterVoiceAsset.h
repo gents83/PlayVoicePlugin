@@ -6,8 +6,38 @@
 #include "Engine/DataAsset.h"
 #include "GameplayTagContainer.h"
 #include "Sound/SoundWaveProcedural.h"
-#include "PlayVoiceLinesAsset.h"
+#include "Internationalization/StringTable.h"
+#include "Internationalization/StringTableCore.h"
 #include "CharacterVoiceAsset.generated.h"
+
+/**
+ * Represents a single dialogue voice line entry mapped to a String Table Key, dialogue string, reference audio file, and precached SoundWave.
+ */
+USTRUCT(BlueprintType)
+struct PLAYVOICEPLUGIN_API FPlayVoiceLineEntry
+{
+	GENERATED_BODY()
+
+	/** Unique String Table key identifying this voice line entry */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
+	FName Key;
+
+	/** Optional String Table override for this specific entry. If null, uses asset-level String Table */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
+	TObjectPtr<UStringTable> StringTableOverride;
+
+	/** Dialogue text string corresponding to this voice line key (automatically resolved from String Table if left empty) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
+	FString TextLine;
+
+	/** Reference audio file (WAV/MP3/FLAC) supplying cadence, speed, and emotion guide for synthesis, or recorded via Editor */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice", meta = (FilePathFilter = "wav,mp3,flac"))
+	FFilePath AudioFile;
+
+	/** Precached SoundWave generated for this line entry */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "PlayVoice")
+	TObjectPtr<USoundWave> PrecachedSoundWave = nullptr;
+};
 
 USTRUCT(BlueprintType)
 struct PLAYVOICEPLUGIN_API FVoiceLineGuideTrack
@@ -104,9 +134,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	TArray<FCharacterLanguageData> Languages;
 
-	/** Referenced PlayVoiceLines assets containing structured dialogue entries (GameplayTag -> Dialogue Text & Reference Audio File) */
+	/** Primary String Table used for resolving dialogue text strings for voice line entries in this asset */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
-	TArray<TObjectPtr<UPlayVoiceLinesAsset>> VoiceLineAssets;
+	TObjectPtr<UStringTable> StringTable;
+
+	/** List of dialogue voice line entries in this asset mapped to String Table keys */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
+	TArray<FPlayVoiceLineEntry> VoiceLines;
 
 	/** Dialogue text lines to pre-render and precache for this character voice across all configured languages */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
@@ -138,6 +172,25 @@ public:
 
 	/** Finds or adds language data for the specified language code */
 	FCharacterLanguageData& GetOrAddLanguageData(const FString& InLanguageCode = TEXT("EN"));
+
+	/** Resolves the dialogue text string for a given entry, looking up from String Table if TextLine is empty */
+	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
+	FString GetResolvedTextLineForEntry(const FPlayVoiceLineEntry& Entry) const;
+
+	/** Finds a voice line entry matching the specified String Table key. Returns nullptr if not found. */
+	const FPlayVoiceLineEntry* FindVoiceLineByKey(FName InKey) const;
+
+	/** Checks if this asset contains an entry for the specified String Table key */
+	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
+	bool HasVoiceLineForKey(FName InKey) const;
+
+	/** Helper method to get the absolute disk path of the VoiceRecording folder in the same directory as this asset */
+	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
+	FString GetVoiceRecordingFolderOnDisk() const;
+
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 
 	/** Register a precached SoundWave for a specific text line and language */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")

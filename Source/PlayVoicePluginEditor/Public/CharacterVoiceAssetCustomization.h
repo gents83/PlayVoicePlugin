@@ -25,5 +25,11 @@ private:
 	FReply OnPrecacheLinesClicked();
 	FReply OnCleanPrecachedSoundWavesClicked();
 
+	FReply OnRecordButtonClicked(int32 EntryIndex);
+	FReply OnStopRecordingButtonClicked(int32 EntryIndex);
+
+	bool bIsRecording = false;
+	int32 ActiveRecordingIndex = INDEX_NONE;
+
 	TWeakObjectPtr<class UCharacterVoiceAsset> TargetVoiceAsset;
 };

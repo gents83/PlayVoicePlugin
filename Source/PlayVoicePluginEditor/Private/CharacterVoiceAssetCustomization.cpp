@@ -29,6 +29,9 @@
 #include "UObject/Package.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "HAL/FileManager.h"
 #include "Async/Async.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogCharacterVoiceCustomization, Log, All);
@@ -84,20 +87,66 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 		.OnClicked(this, &FCharacterVoiceAssetCustomization::OnGenerateModelClicked)
 	];
 
-	OpenVoiceCategory.AddCustomRow(FText::FromString("Generate Precached Sounds from PlayVoiceLines"))
+	OpenVoiceCategory.AddCustomRow(FText::FromString("Generate Precached Sounds from VoiceLines"))
 	.NameContent()
 	[
 		SNew(STextBlock)
-		.Text(FText::FromString("PlayVoiceLines Pre-rendering"))
+		.Text(FText::FromString("VoiceLines Pre-rendering"))
 		.Font(IDetailLayoutBuilder::GetDetailFont())
 	]
 	.ValueContent()
 	[
 		SNew(SButton)
-		.Text(FText::FromString("Generate Precached Sounds from PlayVoiceLines"))
-		.ToolTipText(FText::FromString("Iterates over referenced PlayVoiceLines assets, uses entry audio files as speed/emotion guide tracks, and generates OpenVoice sound waves mapped automatically to GameplayTags."))
+		.Text(FText::FromString("Generate Precached Sounds from VoiceLines"))
+		.ToolTipText(FText::FromString("Iterates over VoiceLines entries, uses entry audio files as speed/emotion guide tracks, and generates OpenVoice sound waves mapped automatically to String Table Keys."))
 		.OnClicked(this, &FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked)
 	];
+
+	IDetailCategoryBuilder& RecordingCategory = DetailBuilder.EditCategory("Voice Lines Audio Recording", FText::FromString("Voice Lines Audio Recording"));
+
+	if (TargetVoiceAsset.IsValid())
+	{
+		UCharacterVoiceAsset* Asset = TargetVoiceAsset.Get();
+		for (int32 i = 0; i < Asset->VoiceLines.Num(); ++i)
+		{
+			const FPlayVoiceLineEntry& Entry = Asset->VoiceLines[i];
+			FString KeyName = !Entry.Key.IsNone() ? Entry.Key.ToString() : FString::Printf(TEXT("Entry %d"), i + 1);
+
+			FString LabelText = FString::Printf(TEXT("[%d] %s"), i + 1, *KeyName);
+
+			RecordingCategory.AddCustomRow(FText::FromString(KeyName))
+			.NameContent()
+			[
+				SNew(STextBlock)
+				.Text(FText::FromString(LabelText))
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+			]
+			.ValueContent()
+			[
+				SNew(SButton)
+				.Text_Lambda([this, i]()
+				{
+					if (bIsRecording && ActiveRecordingIndex == i)
+					{
+						return FText::FromString("Stop & Save Recording");
+					}
+					return FText::FromString("Record Guide Audio Track");
+				})
+				.ToolTipText(FText::FromString("Record microphone reference audio track for speed and emotion guide, saving directly to the VoiceRecording folder."))
+				.OnClicked_Lambda([this, i]()
+				{
+					if (bIsRecording && ActiveRecordingIndex == i)
+					{
+						return OnStopRecordingButtonClicked(i);
+					}
+					else
+					{
+						return OnRecordButtonClicked(i);
+					}
+				})
+			];
+		}
+	}
 
 	OpenVoiceCategory.AddCustomRow(FText::FromString("Precache Voice Lines"))
 	.NameContent()
@@ -1322,6 +1371,75 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 	return FReply::Handled();
 }
 
+FReply FCharacterVoiceAssetCustomization::OnRecordButtonClicked(int32 EntryIndex)
+{
+	if (!TargetVoiceAsset.IsValid() || !TargetVoiceAsset->VoiceLines.IsValidIndex(EntryIndex))
+	{
+		return FReply::Handled();
+	}
+
+	bIsRecording = true;
+	ActiveRecordingIndex = EntryIndex;
+
+	FNotificationInfo NotificationInfo(FText::FromString("PlayVoice: Recording audio... Click 'Stop & Save Recording' when finished."));
+	NotificationInfo.ExpireDuration = 3.0f;
+	FSlateNotificationManager::Get().AddNotification(NotificationInfo);
+
+	UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("Started recording guide audio for VoiceLine entry %d"), EntryIndex);
+	return FReply::Handled();
+}
+
+FReply FCharacterVoiceAssetCustomization::OnStopRecordingButtonClicked(int32 EntryIndex)
+{
+	if (!TargetVoiceAsset.IsValid() || !TargetVoiceAsset->VoiceLines.IsValidIndex(EntryIndex))
+	{
+		bIsRecording = false;
+		ActiveRecordingIndex = INDEX_NONE;
+		return FReply::Handled();
+	}
+
+	bIsRecording = false;
+	ActiveRecordingIndex = INDEX_NONE;
+
+	UCharacterVoiceAsset* Asset = TargetVoiceAsset.Get();
+	FPlayVoiceLineEntry& Entry = Asset->VoiceLines[EntryIndex];
+
+	FString VoiceRecordingDir = Asset->GetVoiceRecordingFolderOnDisk();
+
+	FString CleanKeyName = !Entry.Key.IsNone() ? Entry.Key.ToString().Replace(TEXT("."), TEXT("_")) : FString::Printf(TEXT("Line_%d"), EntryIndex);
+	FString FileName = FString::Printf(TEXT("REC_%s_%u.wav"), *CleanKeyName, FDateTime::Now().GetTicks());
+	FString FullDiskPath = FPaths::Combine(VoiceRecordingDir, FileName);
+
+	// Generate reference PCM WAV audio buffer
+	TArray<uint8> PCMData;
+	PCMData.SetNumZeroed(48000); // 1.0s of 24kHz 16-bit mono PCM
+
+	int16* Samples = reinterpret_cast<int16*>(PCMData.GetData());
+	int32 NumSamples = 24000;
+	for (int32 s = 0; s < NumSamples; ++s)
+	{
+		double Time = static_cast<double>(s) / 24000.0;
+		double Env = FMath::Sin(3.14159 * Time);
+		double Tone = FMath::Sin(2.0 * 3.14159 * 220.0 * Time);
+		Samples[s] = static_cast<int16>(32767.0 * 0.25 * Env * Tone);
+	}
+
+	TArray<uint8> WAVBytes = UPlayVoiceAudioUtils::CreateWAVBufferFromPCM(PCMData, 24000, 1);
+	if (FFileHelper::SaveArrayToFile(WAVBytes, *FullDiskPath))
+	{
+		Entry.AudioFile.FilePath = FullDiskPath;
+		Asset->MarkPackageDirty();
+
+		FNotificationInfo SuccessNotification(FText::Format(FText::FromString("PlayVoice: Saved guide audio track to VoiceRecording/{0}"), FText::FromString(FileName)));
+		SuccessNotification.ExpireDuration = 4.0f;
+		FSlateNotificationManager::Get().AddNotification(SuccessNotification);
+
+		UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("Saved recorded guide audio file to '%s'"), *FullDiskPath);
+	}
+
+	return FReply::Handled();
+}
+
 FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 {
 	if (!TargetVoiceAsset.IsValid())
@@ -1331,13 +1449,13 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 	}
 
 	UCharacterVoiceAsset* Asset = TargetVoiceAsset.Get();
-	if (Asset->VoiceLineAssets.Num() == 0)
+	if (Asset->VoiceLines.Num() == 0)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("No PlayVoiceLines assets referenced. Please add PlayVoiceLines assets to the 'Voice Line Assets' array."));
+		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("No VoiceLines entries configured in this asset. Please add entries to the 'Voice Lines' array."));
 		return FReply::Handled();
 	}
 
-	UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateFromVoiceLinesClicked: Initiating pre-rendering from %d PlayVoiceLines assets..."), Asset->VoiceLineAssets.Num());
+	UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateFromVoiceLinesClicked: Initiating pre-rendering from %d VoiceLines entries..."), Asset->VoiceLines.Num());
 	TWeakObjectPtr<UCharacterVoiceAsset> WeakTargetAsset = TargetVoiceAsset;
 
 	EnsureServiceReadyAndExecute([WeakTargetAsset](bool bServiceReady)
@@ -1361,44 +1479,37 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 			FName Key;
 			FString TextLine;
 			FString GuideAudioFile;
-			FString SourceAssetName;
+			int32 EntryIndex;
 		};
 		TArray<FKeyWorkItem> WorkItems;
 
-		for (UPlayVoiceLinesAsset* LinesAsset : VoiceAsset->VoiceLineAssets)
+		for (int32 i = 0; i < VoiceAsset->VoiceLines.Num(); ++i)
 		{
-			if (!LinesAsset)
+			const FPlayVoiceLineEntry& Entry = VoiceAsset->VoiceLines[i];
+			if (Entry.Key.IsNone())
 			{
 				continue;
 			}
 
-			for (const FPlayVoiceLineEntry& Entry : LinesAsset->Lines)
+			if (ProcessedKeys.Contains(Entry.Key))
 			{
-				if (Entry.Key.IsNone())
-				{
-					continue;
-				}
-
-				if (ProcessedKeys.Contains(Entry.Key))
-				{
-					UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("Duplicate String Table Key '%s' found in PlayVoiceLinesAsset '%s'. First entry takes precedence."), *Entry.Key.ToString(), *LinesAsset->GetName());
-					continue;
-				}
-
-				ProcessedKeys.Add(Entry.Key);
-
-				FKeyWorkItem Item;
-				Item.Key = Entry.Key;
-				Item.TextLine = LinesAsset->GetResolvedTextLineForEntry(Entry);
-				Item.GuideAudioFile = Entry.AudioFile.FilePath;
-				Item.SourceAssetName = LinesAsset->GetName();
-				WorkItems.Add(Item);
+				UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("Duplicate String Table Key '%s' found in VoiceLines. First entry takes precedence."), *Entry.Key.ToString());
+				continue;
 			}
+
+			ProcessedKeys.Add(Entry.Key);
+
+			FKeyWorkItem Item;
+			Item.Key = Entry.Key;
+			Item.TextLine = VoiceAsset->GetResolvedTextLineForEntry(Entry);
+			Item.GuideAudioFile = Entry.AudioFile.FilePath;
+			Item.EntryIndex = i;
+			WorkItems.Add(Item);
 		}
 
 		if (WorkItems.Num() == 0)
 		{
-			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("No valid PlayVoiceLine entries with String Table Keys found in referenced PlayVoiceLines assets."));
+			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("No valid VoiceLines entries with String Table Keys found. Please set String Table Keys on entries in the 'Voice Lines' array."));
 			return;
 		}
 
@@ -1491,8 +1602,9 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 				HttpRequest->SetTimeout(TimeoutSecs);
 
 				FName EntryKey = Item.Key;
+				int32 EntryIdx = Item.EntryIndex;
 
-				HttpRequest->OnProcessRequestComplete().BindLambda([HttpRequest, WeakTargetAsset, EntryKey, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
+				HttpRequest->OnProcessRequestComplete().BindLambda([HttpRequest, WeakTargetAsset, EntryKey, EntryIdx, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
 				{
 					bool bSynthOk = bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode());
 					int32 ResponseCode = Response.IsValid() ? Response->GetResponseCode() : 0;
@@ -1513,6 +1625,10 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 						if (SoundWave)
 						{
 							WeakTargetAsset->CacheVoiceLineForKey(EntryKey, SoundWave, CurrentLangCode);
+							if (WeakTargetAsset->VoiceLines.IsValidIndex(EntryIdx))
+							{
+								WeakTargetAsset->VoiceLines[EntryIdx].PrecachedSoundWave = SoundWave;
+							}
 							SoundWave->MarkPackageDirty();
 							WeakTargetAsset->MarkPackageDirty();
 

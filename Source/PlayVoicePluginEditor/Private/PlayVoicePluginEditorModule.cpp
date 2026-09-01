@@ -7,9 +7,6 @@
 #include "CharacterVoiceAsset.h"
 #include "CharacterVoiceAssetCustomization.h"
 #include "AssetTypeActions_CharacterVoiceAsset.h"
-#include "PlayVoiceLinesAsset.h"
-#include "PlayVoiceLinesAssetCustomization.h"
-#include "AssetTypeActions_PlayVoiceLinesAsset.h"
 #include "PlayVoiceSettings.h"
 #include "PlayVoiceSettingsCustomization.h"
 #include "Misc/Paths.h"
@@ -201,10 +198,6 @@ void FPlayVoicePluginEditorModule::RegisterCustomizations()
 		FOnGetDetailCustomizationInstance::CreateStatic(&FCharacterVoiceAssetCustomization::MakeInstance)
 	);
 	PropertyModule.RegisterCustomClassLayout(
-		UPlayVoiceLinesAsset::StaticClass()->GetFName(),
-		FOnGetDetailCustomizationInstance::CreateStatic(&FPlayVoiceLinesAssetCustomization::MakeInstance)
-	);
-	PropertyModule.RegisterCustomClassLayout(
 		UPlayVoiceSettings::StaticClass()->GetFName(),
 		FOnGetDetailCustomizationInstance::CreateStatic(&FPlayVoiceSettingsCustomization::MakeInstance)
 	);
@@ -216,7 +209,6 @@ void FPlayVoicePluginEditorModule::UnregisterCustomizations()
 	{
 		FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 		PropertyModule.UnregisterCustomClassLayout(UCharacterVoiceAsset::StaticClass()->GetFName());
-		PropertyModule.UnregisterCustomClassLayout(UPlayVoiceLinesAsset::StaticClass()->GetFName());
 		PropertyModule.UnregisterCustomClassLayout(UPlayVoiceSettings::StaticClass()->GetFName());
 	}
 }
@@ -229,10 +221,6 @@ void FPlayVoicePluginEditorModule::RegisterAssetTypeActions()
 	TSharedRef<IAssetTypeActions> ActionVoice = MakeShared<FAssetTypeActions_CharacterVoiceAsset>(PlayVoiceAssetCategoryBit);
 	AssetTools.RegisterAssetTypeActions(ActionVoice);
 	RegisteredAssetTypeActions.Add(ActionVoice);
-
-	TSharedRef<IAssetTypeActions> ActionLines = MakeShared<FAssetTypeActions_PlayVoiceLinesAsset>(PlayVoiceAssetCategoryBit);
-	AssetTools.RegisterAssetTypeActions(ActionLines);
-	RegisteredAssetTypeActions.Add(ActionLines);
 }
 
 void FPlayVoicePluginEditorModule::UnregisterAssetTypeActions()

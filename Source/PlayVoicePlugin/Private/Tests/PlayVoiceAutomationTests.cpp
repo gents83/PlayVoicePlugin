@@ -3,7 +3,6 @@
 #include "CoreMinimal.h"
 #include "Misc/AutomationTest.h"
 #include "CharacterVoiceAsset.h"
-#include "PlayVoiceLinesAsset.h"
 #include "PlayVoiceAudioUtils.h"
 #include "PlayVoiceSettings.h"
 #include "PlayVoiceBlueprintLibrary.h"
@@ -285,15 +284,15 @@ bool FPlayVoiceOnTheFlySynthesisTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// 8. Test UPlayVoiceLinesAsset and StringTable Key precaching
+// 8. Test CharacterVoiceAsset VoiceLines and StringTable Key precaching
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlayVoiceLinesAssetTest, "PlayVoice.UnitTests.PlayVoiceLinesAsset", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
 
 bool FPlayVoiceLinesAssetTest::RunTest(const FString& Parameters)
 {
-	UPlayVoiceLinesAsset* LinesAsset = NewObject<UPlayVoiceLinesAsset>();
-	TestNotNull(TEXT("PlayVoiceLinesAsset should be instantiated"), LinesAsset);
+	UCharacterVoiceAsset* VoiceAsset = NewObject<UCharacterVoiceAsset>();
+	TestNotNull(TEXT("CharacterVoiceAsset should be instantiated"), VoiceAsset);
 
-	if (!LinesAsset)
+	if (!VoiceAsset)
 	{
 		return false;
 	}
@@ -304,20 +303,16 @@ bool FPlayVoiceLinesAssetTest::RunTest(const FString& Parameters)
 	Entry.Key = GreetingKey;
 	Entry.TextLine = TEXT("Hello traveler, welcome to the village!");
 	Entry.AudioFile.FilePath = TEXT("VoiceRecording/REC_Hero_Greeting_01.wav");
-	LinesAsset->Lines.Add(Entry);
+	VoiceAsset->VoiceLines.Add(Entry);
 
-	TestTrue(TEXT("LinesAsset should find line for GreetingKey"), LinesAsset->HasLineForKey(GreetingKey));
+	TestTrue(TEXT("VoiceAsset should find line for GreetingKey"), VoiceAsset->HasVoiceLineForKey(GreetingKey));
 
-	const FPlayVoiceLineEntry* FoundEntry = LinesAsset->FindLineByKey(GreetingKey);
+	const FPlayVoiceLineEntry* FoundEntry = VoiceAsset->FindVoiceLineByKey(GreetingKey);
 	TestNotNull(TEXT("Found entry should not be null"), FoundEntry);
 	if (FoundEntry)
 	{
-		TestEqual(TEXT("TextLine should match"), LinesAsset->GetResolvedTextLineForEntry(*FoundEntry), TEXT("Hello traveler, welcome to the village!"));
+		TestEqual(TEXT("TextLine should match"), VoiceAsset->GetResolvedTextLineForEntry(*FoundEntry), TEXT("Hello traveler, welcome to the village!"));
 	}
-
-	// Test CharacterVoiceAsset reference to PlayVoiceLinesAsset and Key Caching
-	UCharacterVoiceAsset* VoiceAsset = NewObject<UCharacterVoiceAsset>();
-	VoiceAsset->VoiceLineAssets.Add(LinesAsset);
 
 	USoundWave* KeySoundWave = NewObject<USoundWave>();
 	VoiceAsset->CacheVoiceLineForKey(GreetingKey, KeySoundWave, TEXT("EN"));
@@ -325,7 +320,7 @@ bool FPlayVoiceLinesAssetTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("VoiceAsset should have precached line for GreetingKey"), VoiceAsset->HasPrecachedVoiceLineForKey(GreetingKey, TEXT("EN")));
 	TestEqual(TEXT("VoiceAsset should return cached SoundWave for GreetingKey"), VoiceAsset->GetPrecachedVoiceLineForKey(GreetingKey, TEXT("EN")), KeySoundWave);
 
-	FString RecordingFolder = LinesAsset->GetVoiceRecordingFolderOnDisk();
+	FString RecordingFolder = VoiceAsset->GetVoiceRecordingFolderOnDisk();
 	TestFalse(TEXT("VoiceRecording folder path should not be empty"), RecordingFolder.IsEmpty());
 	TestTrue(TEXT("VoiceRecording folder path should contain VoiceRecording"), RecordingFolder.Contains(TEXT("VoiceRecording")));
 
