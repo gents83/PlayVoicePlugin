@@ -227,7 +227,9 @@ FReply FPlayVoiceLineEntryCustomization::OnRecordGuideTrackClicked()
 					MonoSample += AudioData[Frame * NumChannels + Ch];
 				}
 				MonoSample /= static_cast<float>(NumChannels);
-				int16 IntSample = static_cast<int16>(FMath::Clamp(MonoSample, -1.0f, 1.0f) * 32767.0f);
+
+				float ClampedSample = FMath::Clamp(MonoSample, -1.0f, 1.0f);
+				int16 IntSample = static_cast<int16>(ClampedSample < 0.0f ? ClampedSample * 32768.0f : ClampedSample * 32767.0f);
 				RecordedPCMSamples.Add(IntSample);
 			}
 		}
@@ -333,6 +335,13 @@ FReply FPlayVoiceLineEntryCustomization::OnStopRecordingClicked()
 			if (SoundWave)
 			{
 				TargetVoiceAsset->CacheVoiceLineForKey(KeyVal, SoundWave, TargetVoiceAsset->DefaultLanguage);
+
+				TSharedPtr<IPropertyHandle> SoundHandle = StructPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, PrecachedSoundWave));
+				if (SoundHandle.IsValid())
+				{
+					SoundHandle->SetValue(SoundWave);
+				}
+
 				SoundWave->MarkPackageDirty();
 				TargetVoiceAsset->MarkPackageDirty();
 
