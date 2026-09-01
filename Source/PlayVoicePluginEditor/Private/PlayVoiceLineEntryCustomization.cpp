@@ -228,8 +228,9 @@ FReply FPlayVoiceLineEntryCustomization::OnRecordGuideTrackClicked()
 	}
 
 	Audio::FAudioCaptureDeviceParams Params;
-	Audio::FOnAudioCaptureFunction CaptureCallback = [this](const float* AudioData, int32 NumFrames, int32 NumChannels, int32 SampleRate, double SampleTime, bool bOverflow)
+	Audio::FOnAudioCaptureFunction CaptureCallback = [this](const void* InAudioData, int32 NumFrames, int32 NumChannels, int32 SampleRate, double SampleTime, bool bOverflow)
 	{
+		const float* AudioData = static_cast<const float*>(InAudioData);
 		if (AudioData && NumFrames > 0 && NumChannels > 0)
 		{
 			FScopeLock Lock(&RecordedPCMSection);
