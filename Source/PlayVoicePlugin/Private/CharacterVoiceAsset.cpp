@@ -115,7 +115,7 @@ FString UCharacterVoiceAsset::GetResolvedTextLineForEntry(const FPlayVoiceLineEn
 	if (TargetTable && !Entry.Key.IsNone())
 	{
 		FStringTableConstRef TableRef = TargetTable->GetStringTable();
-		FStringTableEntryConstRef TableEntry = TableRef->FindEntry(Entry.Key);
+		FStringTableEntryConstPtr TableEntry = TableRef->FindEntry(FTextKey(Entry.Key.ToString()));
 		if (TableEntry.IsValid())
 		{
 			return TableEntry->GetSourceString();
@@ -171,7 +171,7 @@ void UCharacterVoiceAsset::PostEditChangeProperty(FPropertyChangedEvent& Propert
 			if (TargetTable && !Entry.Key.IsNone())
 			{
 				FStringTableConstRef TableRef = TargetTable->GetStringTable();
-				FStringTableEntryConstRef TableEntry = TableRef->FindEntry(Entry.Key);
+				FStringTableEntryConstPtr TableEntry = TableRef->FindEntry(FTextKey(Entry.Key.ToString()));
 				if (TableEntry.IsValid())
 				{
 					Entry.TextLine = TableEntry->GetSourceString();
