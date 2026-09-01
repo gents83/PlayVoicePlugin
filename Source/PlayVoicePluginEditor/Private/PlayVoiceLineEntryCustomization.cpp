@@ -228,7 +228,7 @@ FReply FPlayVoiceLineEntryCustomization::OnRecordGuideTrackClicked()
 	}
 
 	Audio::FAudioCaptureDeviceParams Params;
-	bool bStreamOpened = AudioCapture.OpenAudioCaptureStream(Params, [this](const float* AudioData, int32 NumFrames, int32 NumChannels, int32 SampleRate, double SampleTime, bool bOverflow)
+	Audio::FOnAudioCaptureFunction CaptureCallback = [this](const float* AudioData, int32 NumFrames, int32 NumChannels, int32 SampleRate, double SampleTime, bool bOverflow)
 	{
 		if (AudioData && NumFrames > 0 && NumChannels > 0)
 		{
@@ -250,7 +250,8 @@ FReply FPlayVoiceLineEntryCustomization::OnRecordGuideTrackClicked()
 				RecordedPCMSamples.Add(IntSample);
 			}
 		}
-	}, 1024);
+	};
+	bool bStreamOpened = AudioCapture.OpenAudioCaptureStream(Params, MoveTemp(CaptureCallback), 1024);
 
 	if (bStreamOpened)
 	{
