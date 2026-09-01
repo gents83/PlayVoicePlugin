@@ -9,6 +9,7 @@
 #include "AssetTypeActions_CharacterVoiceAsset.h"
 #include "PlayVoiceSettings.h"
 #include "PlayVoiceSettingsCustomization.h"
+#include "PlayVoiceLineEntryCustomization.h"
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 #include "Interfaces/IPluginManager.h"
@@ -201,6 +202,10 @@ void FPlayVoicePluginEditorModule::RegisterCustomizations()
 		UPlayVoiceSettings::StaticClass()->GetFName(),
 		FOnGetDetailCustomizationInstance::CreateStatic(&FPlayVoiceSettingsCustomization::MakeInstance)
 	);
+	PropertyModule.RegisterCustomPropertyTypeLayout(
+		FPlayVoiceLineEntry::StaticStruct()->GetFName(),
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FPlayVoiceLineEntryCustomization::MakeInstance)
+	);
 }
 
 void FPlayVoicePluginEditorModule::UnregisterCustomizations()
@@ -210,6 +215,7 @@ void FPlayVoicePluginEditorModule::UnregisterCustomizations()
 		FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 		PropertyModule.UnregisterCustomClassLayout(UCharacterVoiceAsset::StaticClass()->GetFName());
 		PropertyModule.UnregisterCustomClassLayout(UPlayVoiceSettings::StaticClass()->GetFName());
+		PropertyModule.UnregisterCustomPropertyTypeLayout(FPlayVoiceLineEntry::StaticStruct()->GetFName());
 	}
 }
 
