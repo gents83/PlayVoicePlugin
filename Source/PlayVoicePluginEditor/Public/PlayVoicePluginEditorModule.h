@@ -20,6 +20,8 @@ public:
 	/** Helper function to resolve relative resource paths using Plugin directory first, then Project and Engine directories. */
 	static FString ResolveResourcePath(const FString& RelativeOrAbsolutePath);
 
+	static EAssetTypeCategories::Type PlayVoiceAssetCategoryBit;
+
 private:
 	void RegisterCustomizations();
 	void UnregisterCustomizations();
@@ -28,6 +30,5 @@ private:
 	void UnregisterAssetTypeActions();
 
 	FProcHandle AutoStartedServiceHandle;
-	static EAssetTypeCategories::Type PlayVoiceAssetCategoryBit;
 	TArray<TSharedPtr<IAssetTypeActions>> RegisteredAssetTypeActions;
 };
