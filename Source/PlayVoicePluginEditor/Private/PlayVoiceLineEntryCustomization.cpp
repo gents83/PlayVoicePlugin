@@ -211,7 +211,7 @@ FReply FPlayVoiceLineEntryCustomization::OnRecordGuideTrackClicked()
 	}
 
 	Audio::FAudioCaptureDeviceParams Params;
-	bool bStreamOpened = AudioCapture.OpenCaptureDevice(Params, [this](const float* AudioData, int32 NumFrames, int32 NumChannels, int32 SampleRate, double SampleTime, bool bOverflow)
+	bool bStreamOpened = AudioCapture.OpenCaptureStream(Params, [this](const float* AudioData, int32 NumFrames, int32 NumChannels, int32 SampleRate, double SampleTime, bool bOverflow)
 	{
 		if (AudioData && NumFrames > 0 && NumChannels > 0)
 		{
@@ -259,7 +259,7 @@ FReply FPlayVoiceLineEntryCustomization::OnStopRecordingClicked()
 	if (bIsRecording)
 	{
 		AudioCapture.StopStream();
-		AudioCapture.CloseCaptureDevice();
+		AudioCapture.CloseStream();
 		bIsRecording = false;
 	}
 
