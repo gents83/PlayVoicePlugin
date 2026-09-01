@@ -17,6 +17,7 @@
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Editor.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogPlayVoiceLineEntryCustomization, Log, All);
 
@@ -160,6 +161,31 @@ void FPlayVoiceLineEntryCustomization::CustomizeChildren(TSharedRef<IPropertyHan
 					}
 				})
 			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(4.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(SButton)
+				.Text_Lambda([this]()
+				{
+					if (bIsPlayingPreview)
+					{
+						return FText::FromString("Stop Preview");
+					}
+					return FText::FromString("Play Guide Track");
+				})
+				.ToolTipText(FText::FromString("Listen to the recorded or selected audio guide track directly in place."))
+				.OnClicked(this, &FPlayVoiceLineEntryCustomization::OnPlayPreviewClicked)
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(4.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(SButton)
+				.Text(FText::FromString("Browse Asset"))
+				.ToolTipText(FText::FromString("Navigate to and focus the precached SoundWave asset in the Content Browser."))
+				.OnClicked(this, &FPlayVoiceLineEntryCustomization::OnBrowseAssetClicked)
+			]
 		];
 	}
 }
@@ -211,8 +237,9 @@ FReply FPlayVoiceLineEntryCustomization::OnRecordGuideTrackClicked()
 	}
 
 	Audio::FAudioCaptureDeviceParams Params;
-	bool bStreamOpened = AudioCapture.OpenCaptureStream(Params, [this](const float* AudioData, int32 NumFrames, int32 NumChannels, int32 SampleRate, double SampleTime, bool bOverflow)
+	Audio::FOnAudioCaptureFunction CaptureCallback = [this](const void* InAudioData, int32 NumFrames, int32 NumChannels, int32 SampleRate, double SampleTime, bool bOverflow)
 	{
+		const float* AudioData = static_cast<const float*>(InAudioData);
 		if (AudioData && NumFrames > 0 && NumChannels > 0)
 		{
 			FScopeLock Lock(&RecordedPCMSection);
@@ -233,7 +260,8 @@ FReply FPlayVoiceLineEntryCustomization::OnRecordGuideTrackClicked()
 				RecordedPCMSamples.Add(IntSample);
 			}
 		}
-	}, 1024);
+	};
+	bool bStreamOpened = AudioCapture.OpenAudioCaptureStream(Params, MoveTemp(CaptureCallback), 1024);
 
 	if (bStreamOpened)
 	{
@@ -249,6 +277,110 @@ FReply FPlayVoiceLineEntryCustomization::OnRecordGuideTrackClicked()
 	{
 		UE_LOG(LogPlayVoiceLineEntryCustomization, Warning, TEXT("Failed to open audio capture device. Falling back to synthetic guide buffer."));
 		bIsRecording = true;
+	}
+
+	return FReply::Handled();
+}
+
+FReply FPlayVoiceLineEntryCustomization::OnBrowseAssetClicked()
+{
+	USoundWave* TargetSoundWave = nullptr;
+	if (StructPropertyHandle.IsValid())
+	{
+		TSharedPtr<IPropertyHandle> SoundHandle = StructPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, PrecachedSoundWave));
+		if (SoundHandle.IsValid())
+		{
+			UObject* SoundObj = nullptr;
+			SoundHandle->GetValue(SoundObj);
+			TargetSoundWave = Cast<USoundWave>(SoundObj);
+		}
+	}
+
+	if (TargetSoundWave)
+	{
+		TArray<UObject*> SyncObjects;
+		SyncObjects.Add(TargetSoundWave);
+
+		if (GEditor)
+		{
+			GEditor->SyncBrowserToObjects(SyncObjects);
+			UE_LOG(LogPlayVoiceLineEntryCustomization, Log, TEXT("Browsing to asset '%s' in Content Browser."), *TargetSoundWave->GetName());
+		}
+	}
+	else
+	{
+		FNotificationInfo Info(FText::FromString("PlayVoice: No precached SoundWave asset linked to browse."));
+		Info.ExpireDuration = 3.0f;
+		FSlateNotificationManager::Get().AddNotification(Info);
+		UE_LOG(LogPlayVoiceLineEntryCustomization, Warning, TEXT("OnBrowseAssetClicked: No sound wave asset present."));
+	}
+
+	return FReply::Handled();
+}
+
+FReply FPlayVoiceLineEntryCustomization::OnPlayPreviewClicked()
+{
+	if (bIsPlayingPreview)
+	{
+		if (GEditor)
+		{
+			GEditor->ResetPreviewAudioComponent();
+		}
+		bIsPlayingPreview = false;
+		UE_LOG(LogPlayVoiceLineEntryCustomization, Log, TEXT("Stopped audio guide track preview playback."));
+		return FReply::Handled();
+	}
+
+	FString FilePathStr;
+	if (AudioFileHandle.IsValid())
+	{
+		TSharedPtr<IPropertyHandle> PathHandle = AudioFileHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FFilePath, FilePath));
+		if (PathHandle.IsValid())
+		{
+			PathHandle->GetValue(FilePathStr);
+		}
+	}
+
+	USoundWave* TargetSoundWave = nullptr;
+	if (StructPropertyHandle.IsValid())
+	{
+		TSharedPtr<IPropertyHandle> SoundHandle = StructPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, PrecachedSoundWave));
+		if (SoundHandle.IsValid())
+		{
+			UObject* SoundObj = nullptr;
+			SoundHandle->GetValue(SoundObj);
+			TargetSoundWave = Cast<USoundWave>(SoundObj);
+		}
+	}
+
+	if (!TargetSoundWave && !FilePathStr.IsEmpty() && IFileManager::Get().FileExists(*FilePathStr))
+	{
+		TArray<uint8> WAVBytes;
+		if (FFileHelper::LoadFileToArray(WAVBytes, *FilePathStr) && WAVBytes.Num() > 0)
+		{
+			TargetSoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(WAVBytes, GetTransientPackage(), FName(TEXT("PreviewGuideTrack")));
+		}
+	}
+
+	if (!TargetSoundWave)
+	{
+		FNotificationInfo Info(FText::FromString("PlayVoice: No audio guide track file or precached SoundWave available to play."));
+		Info.ExpireDuration = 3.0f;
+		FSlateNotificationManager::Get().AddNotification(Info);
+		UE_LOG(LogPlayVoiceLineEntryCustomization, Warning, TEXT("OnPlayPreviewClicked: No guide track file or sound wave present for entry."));
+		return FReply::Handled();
+	}
+
+	if (GEditor)
+	{
+		GEditor->ResetPreviewAudioComponent();
+		GEditor->PlayPreviewSound(TargetSoundWave);
+		bIsPlayingPreview = true;
+		UE_LOG(LogPlayVoiceLineEntryCustomization, Log, TEXT("Started audio guide track preview playback for path '%s' (SoundWave: %s)"), *FilePathStr, *TargetSoundWave->GetName());
+
+		FNotificationInfo Info(FText::Format(FText::FromString("PlayVoice: Playing guide track preview ({0})..."), FText::FromString(FPaths::GetCleanFilename(FilePathStr))));
+		Info.ExpireDuration = 3.0f;
+		FSlateNotificationManager::Get().AddNotification(Info);
 	}
 
 	return FReply::Handled();
@@ -311,15 +443,79 @@ FReply FPlayVoiceLineEntryCustomization::OnStopRecordingClicked()
 	FString FileName = FString::Printf(TEXT("REC_%s_%u.wav"), *CleanKeyName, FDateTime::Now().GetTicks());
 	FString FullDiskPath = FPaths::Combine(SavedDir, FileName);
 
+	// Clean up previous recorded audio file and precached sound wave if present
+	FString OldFilePath;
+	if (AudioFileHandle.IsValid())
+	{
+		TSharedPtr<IPropertyHandle> PathHandle = AudioFileHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FFilePath, FilePath));
+		if (PathHandle.IsValid())
+		{
+			PathHandle->GetValue(OldFilePath);
+		}
+	}
+
+	if (!OldFilePath.IsEmpty() && OldFilePath != FullDiskPath && IFileManager::Get().FileExists(*OldFilePath))
+	{
+		bool bDeletedOld = IFileManager::Get().Delete(*OldFilePath);
+		UE_LOG(LogPlayVoiceLineEntryCustomization, Log, TEXT("Deleted previous recorded guide track file '%s' (Success: %d)"), *OldFilePath, bDeletedOld);
+	}
+
+	USoundWave* OldSoundWave = nullptr;
+	if (StructPropertyHandle.IsValid())
+	{
+		TSharedPtr<IPropertyHandle> SoundHandle = StructPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, PrecachedSoundWave));
+		if (SoundHandle.IsValid())
+		{
+			UObject* SoundObj = nullptr;
+			SoundHandle->GetValue(SoundObj);
+			OldSoundWave = Cast<USoundWave>(SoundObj);
+		}
+	}
+
+	if (OldSoundWave)
+	{
+		FString OldPkgFilename;
+		UPackage* OldPkg = OldSoundWave->GetOutermost();
+		if (OldPkg && OldPkg != GetTransientPackage())
+		{
+			FPackageName::DoesPackageExist(OldPkg->GetName(), &OldPkgFilename);
+		}
+
+		if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+		{
+			FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+			AssetRegistryModule.AssetDeleted(OldSoundWave);
+		}
+
+		OldSoundWave->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional);
+		OldSoundWave->MarkAsGarbage();
+		if (OldPkg && OldPkg != GetTransientPackage())
+		{
+			OldPkg->MarkAsGarbage();
+		}
+		CollectGarbage(RF_NoFlags);
+
+		if (!OldPkgFilename.IsEmpty() && IFileManager::Get().FileExists(*OldPkgFilename))
+		{
+			IFileManager::Get().Delete(*OldPkgFilename);
+			UE_LOG(LogPlayVoiceLineEntryCustomization, Log, TEXT("Deleted previous precached SoundWave package file '%s'"), *OldPkgFilename);
+		}
+	}
+
 	if (FFileHelper::SaveArrayToFile(WAVBytes, *FullDiskPath))
 	{
 		if (AudioFileHandle.IsValid())
 		{
-			TSharedPtr<IPropertyHandle> PathHandle = AudioFileHandle->GetChildHandle(TEXT("FilePath"));
+			TSharedPtr<IPropertyHandle> PathHandle = AudioFileHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FFilePath, FilePath));
 			if (PathHandle.IsValid())
 			{
 				PathHandle->SetValue(FullDiskPath);
 			}
+			AudioFileHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
+		}
+		if (StructPropertyHandle.IsValid())
+		{
+			StructPropertyHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 		}
 
 		if (TargetVoiceAsset)
