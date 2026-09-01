@@ -14,6 +14,12 @@ class PLAYVOICEPLUGIN_API UPlayVoiceAudioUtils : public UBlueprintFunctionLibrar
 
 public:
 	/**
+	 * Creates a complete RIFF WAV header and buffer from raw 16-bit PCM audio samples.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
+	static TArray<uint8> CreateWAVBufferFromPCM(const TArray<uint8>& PCMData, int32 SampleRate = 24000, int32 NumChannels = 1);
+
+	/**
 	 * Creates a USoundWave object from raw PCM 16-bit audio buffer.
 	 * If Outer is specified, the SoundWave will be created in that Outer package/object.
 	 */

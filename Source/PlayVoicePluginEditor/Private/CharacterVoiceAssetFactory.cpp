@@ -23,5 +23,5 @@ bool UCharacterVoiceAssetFactory::ShouldShowInNewMenu() const
 
 uint32 UCharacterVoiceAssetFactory::GetMenuCategories() const
 {
-	return FPlayVoicePluginEditorModule::GetAssetCategoryBit();
+	return FPlayVoicePluginEditorModule::PlayVoiceAssetCategoryBit;
 }

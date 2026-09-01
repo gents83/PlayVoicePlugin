@@ -23,5 +23,5 @@ bool UPlayVoiceLinesAssetFactory::ShouldShowInNewMenu() const
 
 uint32 UPlayVoiceLinesAssetFactory::GetMenuCategories() const
 {
-	return FPlayVoicePluginEditorModule::GetAssetCategoryBit();
+	return FPlayVoicePluginEditorModule::PlayVoiceAssetCategoryBit;
 }
