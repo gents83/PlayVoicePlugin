@@ -3,10 +3,12 @@
 #include "CoreMinimal.h"
 #include "Misc/AutomationTest.h"
 #include "CharacterVoiceAsset.h"
+#include "PlayVoiceLinesAsset.h"
 #include "PlayVoiceAudioUtils.h"
 #include "PlayVoiceSettings.h"
 #include "PlayVoiceBlueprintLibrary.h"
 #include "Sound/SoundWave.h"
+#include "GameplayTagContainer.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 
@@ -279,6 +281,53 @@ bool FPlayVoiceOnTheFlySynthesisTest::RunTest(const FString& Parameters)
 	// Unprecached line should not be in cache initially
 	FString UncachedLine = TEXT("Unprecached dynamic synthesis line");
 	TestFalse(TEXT("Uncached line should initially return false"), VoiceAsset->HasPrecachedVoiceLine(UncachedLine, TEXT("EN")));
+
+	return true;
+}
+
+// 8. Test UPlayVoiceLinesAsset and GameplayTag precaching
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlayVoiceLinesAssetTest, "PlayVoice.UnitTests.PlayVoiceLinesAsset", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FPlayVoiceLinesAssetTest::RunTest(const FString& Parameters)
+{
+	UPlayVoiceLinesAsset* LinesAsset = NewObject<UPlayVoiceLinesAsset>();
+	TestNotNull(TEXT("PlayVoiceLinesAsset should be instantiated"), LinesAsset);
+
+	if (!LinesAsset)
+	{
+		return false;
+	}
+
+	FGameplayTag GreetingTag = FGameplayTag::RequestGameplayTag(FName("Dialogue.Hero.Greeting"), false);
+
+	FPlayVoiceLineEntry Entry;
+	Entry.VoiceTag = GreetingTag;
+	Entry.TextLine = TEXT("Hello traveler, welcome to the village!");
+	Entry.AudioFile.FilePath = TEXT("VoiceRecording/REC_Greeting.wav");
+	LinesAsset->Lines.Add(Entry);
+
+	TestTrue(TEXT("LinesAsset should find line for GreetingTag"), LinesAsset->HasLineForTag(GreetingTag));
+
+	const FPlayVoiceLineEntry* FoundEntry = LinesAsset->FindLineByTag(GreetingTag);
+	TestNotNull(TEXT("Found entry should not be null"), FoundEntry);
+	if (FoundEntry)
+	{
+		TestEqual(TEXT("TextLine should match"), FoundEntry->TextLine, TEXT("Hello traveler, welcome to the village!"));
+	}
+
+	// Test CharacterVoiceAsset reference to PlayVoiceLinesAsset and Tag Caching
+	UCharacterVoiceAsset* VoiceAsset = NewObject<UCharacterVoiceAsset>();
+	VoiceAsset->VoiceLineAssets.Add(LinesAsset);
+
+	USoundWave* TagSoundWave = NewObject<USoundWave>();
+	VoiceAsset->CacheVoiceLineForTag(GreetingTag, TagSoundWave, TEXT("EN"));
+
+	TestTrue(TEXT("VoiceAsset should have precached line for GreetingTag"), VoiceAsset->HasPrecachedVoiceLineForTag(GreetingTag, TEXT("EN")));
+	TestEqual(TEXT("VoiceAsset should return cached SoundWave for GreetingTag"), VoiceAsset->GetPrecachedVoiceLineForTag(GreetingTag, TEXT("EN")), TagSoundWave);
+
+	FString RecordingFolder = LinesAsset->GetVoiceRecordingFolderOnDisk();
+	TestFalse(TEXT("VoiceRecording folder path should not be empty"), RecordingFolder.IsEmpty());
+	TestTrue(TEXT("VoiceRecording folder path should contain VoiceRecording"), RecordingFolder.Contains(TEXT("VoiceRecording")));
 
 	return true;
 }

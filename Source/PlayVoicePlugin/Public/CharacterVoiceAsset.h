@@ -4,7 +4,9 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
+#include "GameplayTagContainer.h"
 #include "Sound/SoundWaveProcedural.h"
+#include "PlayVoiceLinesAsset.h"
 #include "CharacterVoiceAsset.generated.h"
 
 USTRUCT(BlueprintType)
@@ -102,6 +104,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	TArray<FCharacterLanguageData> Languages;
 
+	/** Referenced PlayVoiceLines assets containing structured dialogue entries (GameplayTag -> Dialogue Text & Reference Audio File) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
+	TArray<TObjectPtr<UPlayVoiceLinesAsset>> VoiceLineAssets;
+
 	/** Dialogue text lines to pre-render and precache for this character voice across all configured languages */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	TArray<FString> LinesToPreprocess;
@@ -118,7 +124,11 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "PlayVoice")
 	TMap<FString, TObjectPtr<USoundWave>> PrecachedSoundWaves;
 
-	/** Clears all cached SoundWave entries in PrecachedSoundWaves */
+	/** Map of pre-rendered SoundWaves keyed by GameplayTag string and language for instant GameplayTag playback. Persisted upon saving asset. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "PlayVoice")
+	TMap<FString, TObjectPtr<USoundWave>> PrecachedTagSoundWaves;
+
+	/** Clears all cached SoundWave entries in PrecachedSoundWaves and PrecachedTagSoundWaves */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	void ClearPrecachedVoiceLines();
 
@@ -140,6 +150,21 @@ public:
 	/** Check if a voice line is precached for a given language */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	bool HasPrecachedVoiceLine(const FString& TextLine, const FString& LanguageCode = TEXT("")) const;
+
+	/** Register a precached SoundWave for a specific GameplayTag and language */
+	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
+	void CacheVoiceLineForTag(const FGameplayTag& VoiceTag, USoundWave* InSoundWave, const FString& LanguageCode = TEXT(""));
+
+	/** Try retrieving a precached SoundWave for a given GameplayTag and language */
+	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
+	USoundWave* GetPrecachedVoiceLineForTag(const FGameplayTag& VoiceTag, const FString& LanguageCode = TEXT("")) const;
+
+	/** Check if a voice line is precached for a given GameplayTag and language */
+	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
+	bool HasPrecachedVoiceLineForTag(const FGameplayTag& VoiceTag, const FString& LanguageCode = TEXT("")) const;
+
+	/** Makes a normalized lookup key for PrecachedTagSoundWaves map */
+	static FString MakeTagCacheKey(const FGameplayTag& VoiceTag, const FString& LanguageCode);
 
 	/** Save extracted model embedding data to a file on disk for a specific language */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")

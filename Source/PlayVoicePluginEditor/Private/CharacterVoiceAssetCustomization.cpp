@@ -84,6 +84,21 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 		.OnClicked(this, &FCharacterVoiceAssetCustomization::OnGenerateModelClicked)
 	];
 
+	OpenVoiceCategory.AddCustomRow(FText::FromString("Generate Precached Sounds from PlayVoiceLines"))
+	.NameContent()
+	[
+		SNew(STextBlock)
+		.Text(FText::FromString("PlayVoiceLines Pre-rendering"))
+		.Font(IDetailLayoutBuilder::GetDetailFont())
+	]
+	.ValueContent()
+	[
+		SNew(SButton)
+		.Text(FText::FromString("Generate Precached Sounds from PlayVoiceLines"))
+		.ToolTipText(FText::FromString("Iterates over referenced PlayVoiceLines assets, uses entry audio files as speed/emotion guide tracks, and generates OpenVoice sound waves mapped automatically to GameplayTags."))
+		.OnClicked(this, &FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked)
+	];
+
 	OpenVoiceCategory.AddCustomRow(FText::FromString("Precache Voice Lines"))
 	.NameContent()
 	[
@@ -1301,6 +1316,219 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 			});
 
 			HttpRequest->ProcessRequest();
+		}
+	});
+
+	return FReply::Handled();
+}
+
+FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
+{
+	if (!TargetVoiceAsset.IsValid())
+	{
+		UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnGenerateFromVoiceLinesClicked: Target voice asset is invalid."));
+		return FReply::Handled();
+	}
+
+	UCharacterVoiceAsset* Asset = TargetVoiceAsset.Get();
+	if (Asset->VoiceLineAssets.Num() == 0)
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("No PlayVoiceLines assets referenced. Please add PlayVoiceLines assets to the 'Voice Line Assets' array."));
+		return FReply::Handled();
+	}
+
+	UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateFromVoiceLinesClicked: Initiating pre-rendering from %d PlayVoiceLines assets..."), Asset->VoiceLineAssets.Num());
+	TWeakObjectPtr<UCharacterVoiceAsset> WeakTargetAsset = TargetVoiceAsset;
+
+	EnsureServiceReadyAndExecute([WeakTargetAsset](bool bServiceReady)
+	{
+		if (!bServiceReady)
+		{
+			UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateFromVoiceLinesClicked: Could not connect to OpenVoice REST backend service."));
+			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Failed to connect to OpenVoice REST Service. Please verify Python executable and service setup in Project Settings."));
+			return;
+		}
+
+		if (!WeakTargetAsset.IsValid())
+		{
+			return;
+		}
+
+		UCharacterVoiceAsset* VoiceAsset = WeakTargetAsset.Get();
+		TSet<FGameplayTag> ProcessedTags;
+		struct FTagWorkItem
+		{
+			FGameplayTag VoiceTag;
+			FString TextLine;
+			FString GuideAudioFile;
+			FString SourceAssetName;
+		};
+		TArray<FTagWorkItem> WorkItems;
+
+		for (UPlayVoiceLinesAsset* LinesAsset : VoiceAsset->VoiceLineAssets)
+		{
+			if (!LinesAsset)
+			{
+				continue;
+			}
+
+			for (const FPlayVoiceLineEntry& Entry : LinesAsset->Lines)
+			{
+				if (!Entry.VoiceTag.IsValid())
+				{
+					continue;
+				}
+
+				if (ProcessedTags.Contains(Entry.VoiceTag))
+				{
+					UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("Duplicate GameplayTag '%s' found in PlayVoiceLinesAsset '%s'. First entry takes precedence."), *Entry.VoiceTag.ToString(), *LinesAsset->GetName());
+					continue;
+				}
+
+				ProcessedTags.Add(Entry.VoiceTag);
+
+				FTagWorkItem Item;
+				Item.VoiceTag = Entry.VoiceTag;
+				Item.TextLine = Entry.TextLine;
+				Item.GuideAudioFile = Entry.AudioFile.FilePath;
+				Item.SourceAssetName = LinesAsset->GetName();
+				WorkItems.Add(Item);
+			}
+		}
+
+		if (WorkItems.Num() == 0)
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("No valid PlayVoiceLine entries with GameplayTags found in referenced PlayVoiceLines assets."));
+			return;
+		}
+
+		const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
+		FString BaseUrl = Settings && !Settings->ServiceUrl.IsEmpty() ? Settings->ServiceUrl.TrimStartAndEnd() : TEXT("http://127.0.0.1:1983");
+		BaseUrl.RemoveFromEnd(TEXT("/"));
+		float TimeoutSecs = Settings && Settings->RequestTimeout > 0.0f ? FMath::Max(Settings->RequestTimeout, 300.0f) : 300.0f;
+
+		UPackage* OuterPackage = VoiceAsset->GetOutermost();
+		FString AssetFolderPath = FPaths::GetPath(OuterPackage->GetName());
+
+		int32 TotalTasksCount = VoiceAsset->Languages.Num() * WorkItems.Num();
+		TSharedPtr<int32> CompletedTasks = MakeShared<int32>(0);
+		TSharedPtr<int32> FailedTasks = MakeShared<int32>(0);
+
+		FNotificationInfo NotificationInfo(FText::Format(FText::FromString("PlayVoice: Pre-rendering {0} GameplayTag voice lines..."), FText::AsNumber(WorkItems.Num())));
+		NotificationInfo.bFireAndForget = false;
+		NotificationInfo.bUseThrobber = true;
+		NotificationInfo.FadeOutDuration = 0.5f;
+
+		TSharedPtr<SNotificationItem> NotificationItem = FSlateNotificationManager::Get().AddNotification(NotificationInfo);
+		if (NotificationItem.IsValid())
+		{
+			NotificationItem->SetCompletionState(SNotificationItem::CS_Pending);
+		}
+
+		auto StepTaskProgress = [NotificationItem, CompletedTasks, FailedTasks, TotalTasksCount]()
+		{
+			(*CompletedTasks)++;
+			if (NotificationItem.IsValid())
+			{
+				FText Msg = FText::Format(FText::FromString("PlayVoice: Pre-rendering Tag Voice Lines ({0}/{1})..."), FText::AsNumber(*CompletedTasks), FText::AsNumber(TotalTasksCount));
+				NotificationItem->SetText(Msg);
+
+				if (*CompletedTasks >= TotalTasksCount)
+				{
+					if (*FailedTasks > 0)
+					{
+						NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
+						NotificationItem->SetText(FText::Format(FText::FromString("PlayVoice: Finished with {0} errors."), FText::AsNumber(*FailedTasks)));
+					}
+					else
+					{
+						NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
+						NotificationItem->SetText(FText::FromString("PlayVoice: GameplayTag voice line pre-rendering complete!"));
+					}
+					NotificationItem->SetExpireDuration(4.0f);
+					NotificationItem->ExpireAndFadeout();
+				}
+			}
+		};
+
+		for (const FCharacterLanguageData& LangData : VoiceAsset->Languages)
+		{
+			FString CurrentLangCode = LangData.LanguageCode;
+			float CurrentSpeed = LangData.Speed;
+			FString EmbeddingData = LangData.ToneColorEmbeddingData;
+
+			for (const FTagWorkItem& Item : WorkItems)
+			{
+				TSharedPtr<FJsonObject> JsonObj = MakeShared<FJsonObject>();
+				JsonObj->SetStringField(TEXT("character_name"), VoiceAsset->CharacterName.ToString());
+				JsonObj->SetStringField(TEXT("text"), Item.TextLine);
+				JsonObj->SetStringField(TEXT("language"), CurrentLangCode);
+				JsonObj->SetNumberField(TEXT("speed"), CurrentSpeed);
+				JsonObj->SetStringField(TEXT("embedding_data"), EmbeddingData);
+
+				TArray<FString> RefAudioFiles = VoiceAsset->GetResolvedReferenceAudioFilesForLanguage(CurrentLangCode);
+				TArray<TSharedPtr<FJsonValue>> RefPathValues;
+				for (const FString& RefPath : RefAudioFiles)
+				{
+					RefPathValues.Add(MakeShared<FJsonValueString>(RefPath));
+				}
+				JsonObj->SetArrayField(TEXT("reference_audio_files"), RefPathValues);
+
+				if (!Item.GuideAudioFile.IsEmpty())
+				{
+					JsonObj->SetStringField(TEXT("guide_audio_file"), Item.GuideAudioFile);
+				}
+
+				FString PayloadStr;
+				TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&PayloadStr);
+				FJsonSerializer::Serialize(JsonObj.ToSharedRef(), Writer);
+
+				TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest = FHttpModule::Get().CreateRequest();
+				HttpRequest->SetURL(BaseUrl + TEXT("/synthesize"));
+				HttpRequest->SetVerb(TEXT("POST"));
+				HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+				HttpRequest->SetContentAsString(PayloadStr);
+				HttpRequest->SetTimeout(TimeoutSecs);
+
+				FGameplayTag VoiceTag = Item.VoiceTag;
+
+				HttpRequest->OnProcessRequestComplete().BindLambda([HttpRequest, WeakTargetAsset, VoiceTag, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
+				{
+					bool bSynthOk = bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode());
+					int32 ResponseCode = Response.IsValid() ? Response->GetResponseCode() : 0;
+
+					if (!bSynthOk)
+					{
+						(*FailedTasks)++;
+						UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateFromVoiceLinesClicked: Synthesis failed for tag '%s' (Lang: %s, HTTP %d)"), *VoiceTag.ToString(), *CurrentLangCode, ResponseCode);
+					}
+					else if (WeakTargetAsset.IsValid())
+					{
+						FString TagSanitized = FString::Printf(TEXT("SW_%s_%s_%s"), *WeakTargetAsset->CharacterName.ToString(), *CurrentLangCode, *VoiceTag.ToString().Replace(TEXT("."), TEXT("_")));
+						FString PackagePath = AssetFolderPath / TagSanitized;
+
+						UPackage* SoundWavePackage = CreatePackage(*PackagePath);
+						USoundWave* SoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(Response->GetContent(), SoundWavePackage, FName(*TagSanitized));
+
+						if (SoundWave)
+						{
+							WeakTargetAsset->CacheVoiceLineForTag(VoiceTag, SoundWave, CurrentLangCode);
+							SoundWave->MarkPackageDirty();
+							WeakTargetAsset->MarkPackageDirty();
+
+							if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+							{
+								FAssetRegistryModule::AssetCreated(SoundWave);
+							}
+							UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateFromVoiceLinesClicked: Pre-rendered sound wave '%s' for GameplayTag '%s'"), *TagSanitized, *VoiceTag.ToString());
+						}
+					}
+
+					StepTaskProgress();
+				});
+
+				HttpRequest->ProcessRequest();
+			}
 		}
 	});
 

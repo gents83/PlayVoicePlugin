@@ -21,6 +21,7 @@ public:
 private:
 	FReply OnGenerateAndProcessAllClicked();
 	FReply OnGenerateModelClicked();
+	FReply OnGenerateFromVoiceLinesClicked();
 	FReply OnPrecacheLinesClicked();
 	FReply OnCleanPrecachedSoundWavesClicked();
 

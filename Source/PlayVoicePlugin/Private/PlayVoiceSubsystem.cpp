@@ -210,6 +210,65 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoice(
 	return nullptr;
 }
 
+UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoiceFromTag(
+	const UObject* WorldContextObject,
+	UCharacterVoiceAsset* CharacterVoiceAsset,
+	FGameplayTag VoiceTag,
+	const FString& LanguageCode,
+	UAudioComponent* TargetAudioComponent,
+	FVector Location,
+	bool bAttachToActor,
+	AActor* AttachToActor)
+{
+	if (!CharacterVoiceAsset || !VoiceTag.IsValid())
+	{
+		return nullptr;
+	}
+
+	FString TargetLang = LanguageCode.IsEmpty() ? CharacterVoiceAsset->DefaultLanguage : LanguageCode;
+
+	// Instant zero-delay playback using pre-generated SoundWave for GameplayTag
+	if (USoundWave* CachedSound = CharacterVoiceAsset->GetPrecachedVoiceLineForTag(VoiceTag, TargetLang))
+	{
+		if (TargetAudioComponent && TargetAudioComponent->IsValidLowLevel())
+		{
+			TargetAudioComponent->SetSound(CachedSound);
+			TargetAudioComponent->Play();
+			return TargetAudioComponent;
+		}
+		else if (bAttachToActor && AttachToActor && AttachToActor->IsValidLowLevel())
+		{
+			return UGameplayStatics::SpawnSoundAttached(CachedSound, AttachToActor->GetRootComponent());
+		}
+		else
+		{
+			return UGameplayStatics::SpawnSoundAtLocation(WorldContextObject ? WorldContextObject : GetWorld(), CachedSound, Location);
+		}
+	}
+
+	// Lookup text line from referenced PlayVoiceLines assets if present
+	FString EntryText;
+	for (UPlayVoiceLinesAsset* LinesAsset : CharacterVoiceAsset->VoiceLineAssets)
+	{
+		if (LinesAsset)
+		{
+			if (const FPlayVoiceLineEntry* Entry = LinesAsset->FindLineByTag(VoiceTag))
+			{
+				EntryText = Entry->TextLine;
+				break;
+			}
+		}
+	}
+
+	if (!EntryText.IsEmpty())
+	{
+		return PlayCharacterVoice(WorldContextObject, CharacterVoiceAsset, EntryText, TargetLang, TargetAudioComponent, Location, bAttachToActor, AttachToActor);
+	}
+
+	UE_LOG(LogPlayVoice, Warning, TEXT("PlayCharacterVoiceFromTag: GameplayTag '%s' (Lang: %s) is not precached in asset '%s' and no matching PlayVoiceLines entry was found."), *VoiceTag.ToString(), *TargetLang, *GetNameSafe(CharacterVoiceAsset));
+	return nullptr;
+}
+
 void UPlayVoiceSubsystem::SynthesizeVoiceLineAsync(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, const FString& LanguageCode, FOnVoiceSynthesized OnComplete)
 {
 	SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, LanguageCode, [OnComplete](bool bSuccess, USoundWave* SoundWave)

@@ -24,6 +24,7 @@ public class PlayVoicePluginEditor : ModuleRules
 				"Core",
 				"CoreUObject",
 				"Engine",
+				"GameplayTags",
 				"PlayVoicePlugin"
 			}
 		);
@@ -44,7 +45,8 @@ public class PlayVoicePluginEditor : ModuleRules
 				"DeveloperSettings",
 				"BlueprintGraph",
 				"AssetRegistry",
-				"Projects"
+				"Projects",
+				"AudioCaptureCore"
 			}
 		);
 	}
