@@ -228,7 +228,7 @@ FReply FPlayVoiceLineEntryCustomization::OnRecordGuideTrackClicked()
 	}
 
 	Audio::FAudioCaptureDeviceParams Params;
-	bool bStreamOpened = AudioCapture.OpenCaptureStream(Params, [this](const float* AudioData, int32 NumFrames, int32 NumChannels, int32 SampleRate, double SampleTime, bool bOverflow)
+	bool bStreamOpened = AudioCapture.OpenAudioCaptureStream(Params, [this](const float* AudioData, int32 NumFrames, int32 NumChannels, int32 SampleRate, double SampleTime, bool bOverflow)
 	{
 		if (AudioData && NumFrames > 0 && NumChannels > 0)
 		{
@@ -405,11 +405,11 @@ FReply FPlayVoiceLineEntryCustomization::OnStopRecordingClicked()
 			{
 				PathHandle->SetValue(FullDiskPath);
 			}
-			AudioFileHandle->NotifyPostChange(EPropertyNotificationInfo::PostEdit);
+			AudioFileHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 		}
 		if (StructPropertyHandle.IsValid())
 		{
-			StructPropertyHandle->NotifyPostChange(EPropertyNotificationInfo::PostEdit);
+			StructPropertyHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 		}
 
 		if (TargetVoiceAsset)
