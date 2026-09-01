@@ -20,9 +20,15 @@ from typing import List, Optional, Dict, Any
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("OpenVoiceService")
 
-# Suppress HuggingFace symlink warnings and allow proxied NLTK downloads
+# Suppress HuggingFace symlink warnings, unauthenticated HF Hub warnings, and allow proxied NLTK downloads
 os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
+os.environ['HF_HUB_DISABLE_IMPLICIT_TOKEN_WARNING'] = '1'
+os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = '1'
 os.environ['NLTK_ALLOW_PROXIED_URLOPEN'] = '1'
+
+# Suppress verbose 404/307 HTTP probe logs from httpx, huggingface_hub, transformers, and urllib3
+for noisy_logger_name in ["httpx", "huggingface_hub", "huggingface_hub.utils._http", "transformers", "urllib3", "nltk"]:
+    logging.getLogger(noisy_logger_name).setLevel(logging.ERROR)
 
 # Pre-download required NLTK resources (cmudict, averaged_perceptron_tagger) for MeloTTS english cleaner
 try:
@@ -234,7 +240,31 @@ class OpenVoiceEngine:
                     self.tts_models[language] = TTS(language=language, device=device)
 
                 tts_engine_model = self.tts_models[language]
-                speaker_ids = tts_engine_model.hps.data.spk2id if hasattr(tts_engine_model, 'hps') else {}
+                speaker_ids = {}
+                if hasattr(tts_engine_model, 'hps') and hasattr(tts_engine_model.hps, 'data') and hasattr(tts_engine_model.hps.data, 'spk2id'):
+                    spk2id_obj = tts_engine_model.hps.data.spk2id
+                    if isinstance(spk2id_obj, dict):
+                        speaker_ids = spk2id_obj
+                    elif hasattr(spk2id_obj, 'items'):
+                        try:
+                            speaker_ids = dict(spk2id_obj.items())
+                        except Exception:
+                            pass
+                    elif hasattr(spk2id_obj, '__dict__'):
+                        speaker_ids = dict(spk2id_obj.__dict__)
+
+                spk_id = 0
+                if speaker_ids:
+                    if 'EN-Default' in speaker_ids:
+                        spk_id = speaker_ids['EN-Default']
+                    elif 'EN-US' in speaker_ids:
+                        spk_id = speaker_ids['EN-US']
+                    elif len(speaker_ids) > 0:
+                        spk_id = list(speaker_ids.values())[0]
+                elif hasattr(tts_engine_model, 'hps') and hasattr(tts_engine_model.hps, 'data') and hasattr(tts_engine_model.hps.data, 'spk2id'):
+                    spk2id_obj = tts_engine_model.hps.data.spk2id
+                    if hasattr(spk2id_obj, 'EN-Default'):
+                        spk_id = getattr(spk2id_obj, 'EN-Default')
 
                 temp_dir = tempfile.gettempdir()
                 src_path = os.path.join(temp_dir, f"{character_name}_src.wav")
@@ -246,7 +276,6 @@ class OpenVoiceEngine:
                     bUsedGuideTrack = True
                     logger.info(f"Using optional recorded guide audio track: {guide_audio_file}")
                 else:
-                    spk_id = speaker_ids.get('EN-Default', list(speaker_ids.values())[0]) if speaker_ids else 0
                     tts_engine_model.tts_to_file(text, spk_id, src_path, speed=speed)
 
                 if embedding_data and self.converter:
@@ -746,6 +775,52 @@ if HAS_FASTAPI:
             })
 
 
+def free_port(host: str, port: int):
+    """
+    Terminates any stale/orphan processes currently bound to host:port
+    to prevent [WinError 10048] address bind errors.
+    """
+    import socket
+    import subprocess
+    import time
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.5)
+    try:
+        res = s.connect_ex((host, port))
+        s.close()
+        if res != 0:
+            return
+    except Exception:
+        s.close()
+
+    logger.info(f"Port {port} on {host} is currently in use. Terminating stale process...")
+
+    if sys.platform == "win32":
+        try:
+            output = subprocess.check_output(f'netstat -ano | findstr :{port}', shell=True, text=True, errors='ignore')
+            for line in output.strip().splitlines():
+                parts = line.split()
+                if len(parts) >= 5 and 'LISTENING' in parts:
+                    pid = parts[-1]
+                    if pid.isdigit() and int(pid) != os.getpid():
+                        logger.info(f"Terminating orphan process PID {pid} bound to port {port}...")
+                        subprocess.run(['taskkill', '/F', '/PID', pid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        time.sleep(0.5)
+        except Exception as e:
+            logger.debug(f"Windows port cleanup exception: {e}")
+    else:
+        try:
+            output = subprocess.check_output(['lsof', '-ti', f':{port}'], text=True, errors='ignore')
+            for pid_str in output.strip().splitlines():
+                if pid_str.isdigit() and int(pid_str) != os.getpid():
+                    logger.info(f"Terminating orphan process PID {pid_str} bound to port {port}...")
+                    subprocess.run(['kill', '-9', pid_str], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    time.sleep(0.5)
+        except Exception as e:
+            logger.debug(f"POSIX port cleanup exception: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="PlayVoice OpenVoice Backend Service & CLI")
     parser.add_argument("--mode", choices=["server", "extract", "synthesize", "transcribe"], default="server", help="Mode of execution")
@@ -762,6 +837,7 @@ def main():
         if not HAS_FASTAPI:
             print("FastAPI and Uvicorn are required to run in server mode. Install with: pip install fastapi uvicorn")
             sys.exit(1)
+        free_port(args.host, args.port)
         print(f"Starting PlayVoice OpenVoice REST Service at http://{args.host}:{args.port}")
         uvicorn.run(app, host=args.host, port=args.port)
     elif args.mode == "extract":

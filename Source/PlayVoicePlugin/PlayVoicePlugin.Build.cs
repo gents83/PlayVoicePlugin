@@ -26,6 +26,7 @@ public class PlayVoicePlugin : ModuleRules
 				"Core",
 				"CoreUObject",
 				"Engine",
+				"GameplayTags",
 				"AudioMixer",
 				"DeveloperSettings",
 				"HTTP",
@@ -39,6 +40,7 @@ public class PlayVoicePlugin : ModuleRules
 			{
 				"Projects",
 				"InputCore",
+				"AudioCaptureCore",
 				"AudioExtensions"
 			}
 		);

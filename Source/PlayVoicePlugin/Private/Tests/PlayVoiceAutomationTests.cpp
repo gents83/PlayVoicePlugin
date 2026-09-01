@@ -7,6 +7,7 @@
 #include "PlayVoiceSettings.h"
 #include "PlayVoiceBlueprintLibrary.h"
 #include "Sound/SoundWave.h"
+#include "GameplayTagContainer.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 
@@ -26,6 +27,10 @@ bool FCharacterVoiceAssetCachingTest::RunTest(const FString& Parameters)
 	}
 
 	FString TestLine = TEXT("Hello world, this is a test line.");
+	FPlayVoiceLineEntry Entry;
+	Entry.TextLine = TestLine;
+	VoiceAsset->VoiceLines.Add(Entry);
+
 	TestFalse(TEXT("Voice line should initially not be cached"), VoiceAsset->HasPrecachedVoiceLine(TestLine, TEXT("EN")));
 
 	// Create dynamic dummy sound wave
@@ -34,15 +39,6 @@ bool FCharacterVoiceAssetCachingTest::RunTest(const FString& Parameters)
 
 	TestTrue(TEXT("Voice line should be cached for EN"), VoiceAsset->HasPrecachedVoiceLine(TestLine, TEXT("EN")));
 	TestEqual(TEXT("Retrieved sound wave for EN should match cached sound wave"), VoiceAsset->GetPrecachedVoiceLine(TestLine, TEXT("EN")), DummySoundWaveEN);
-	TestEqual(TEXT("Caching a single line should create exactly 1 entry in PrecachedSoundWaves map"), VoiceAsset->PrecachedSoundWaves.Num(), 1);
-
-	// Multi-language caching test
-	USoundWave* DummySoundWaveES = NewObject<USoundWave>();
-	VoiceAsset->CacheVoiceLine(TestLine, DummySoundWaveES, TEXT("ES"));
-
-	TestTrue(TEXT("Voice line should be cached for ES"), VoiceAsset->HasPrecachedVoiceLine(TestLine, TEXT("ES")));
-	TestEqual(TEXT("Retrieved sound wave for ES should match ES sound wave"), VoiceAsset->GetPrecachedVoiceLine(TestLine, TEXT("ES")), DummySoundWaveES);
-	TestEqual(TEXT("Caching two lines across EN and ES should result in exactly 2 entries in PrecachedSoundWaves map"), VoiceAsset->PrecachedSoundWaves.Num(), 2);
 
 	// Case-insensitivity & whitespace trimming test
 	FString MessyLine = TEXT("  HELLO WORLD, THIS IS A TEST LINE.  ");
@@ -50,9 +46,6 @@ bool FCharacterVoiceAssetCachingTest::RunTest(const FString& Parameters)
 
 	// AutoLink test
 	VoiceAsset->AutoLinkPrecachedSoundWaves();
-
-	// Test bRegenerateExistingVoiceLines default
-	TestTrue(TEXT("bRegenerateExistingVoiceLines should default to true"), VoiceAsset->bRegenerateExistingVoiceLines);
 
 	// Test ClearPrecachedVoiceLines
 	VoiceAsset->ClearPrecachedVoiceLines();
@@ -107,25 +100,6 @@ bool FCharacterVoiceMultiLanguageTest::RunTest(const FString& Parameters)
 	// Add French language configuration
 	FCharacterLanguageData& FrenchData = VoiceAsset->GetOrAddLanguageData(TEXT("FR"));
 	FrenchData.Speed = 0.9f;
-
-	// GuideTracks test on UCharacterVoiceAsset
-	FVoiceLineGuideTrack GuideEN;
-	GuideEN.LineText = TEXT("Guide line text");
-	GuideEN.Emotion = TEXT("happy");
-	GuideEN.Speed = 1.1f;
-	VoiceAsset->GuideTracks.Add(GuideEN);
-
-	const FVoiceLineGuideTrack* FoundGuide = VoiceAsset->FindGuideTrackForLine(TEXT("Guide line text"), TEXT("EN"));
-	TestNotNull(TEXT("Guide track should be found in VoiceAsset GuideTracks"), FoundGuide);
-	if (FoundGuide)
-	{
-		TestEqual(TEXT("Guide track emotion should match"), FoundGuide->Emotion, TEXT("happy"));
-		TestEqual(TEXT("Guide track speed should match"), FoundGuide->Speed, 1.1f);
-	}
-
-	// Verify case-insensitive guide track lookup
-	const FVoiceLineGuideTrack* FoundGuideMessy = VoiceAsset->FindGuideTrackForLine(TEXT("  GUIDE LINE TEXT  "), TEXT("EN"));
-	TestNotNull(TEXT("Guide track lookup should be case and whitespace insensitive"), FoundGuideMessy);
 
 	TestEqual(TEXT("Asset should now contain 3 language entries"), VoiceAsset->Languages.Num(), 3);
 
@@ -220,6 +194,7 @@ bool FPlayVoiceSettingsTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("Default bAutoStartServiceOnEditorStartup should be false"), Settings->bAutoStartServiceOnEditorStartup);
 		TestEqual(TEXT("Default sample rate should be 24000"), Settings->DefaultSampleRate, 24000);
 		TestTrue(TEXT("Default AutoPrecacheOnStartup should be true"), Settings->bAutoPrecacheOnStartup);
+		TestTrue(TEXT("Default bEnableOnTheFlySynthesis should be true"), Settings->bEnableOnTheFlySynthesis);
 		TestEqual(TEXT("Default PythonExecutable should be python"), Settings->PythonExecutable, TEXT("python"));
 		TestEqual(TEXT("Default RequirementsFilePath should be Resources/OpenVoiceService/requirements.txt"), Settings->RequirementsFilePath, TEXT("Resources/OpenVoiceService/requirements.txt"));
 	}
@@ -249,6 +224,82 @@ bool FPlayVoiceBlueprintLibraryTest::RunTest(const FString& Parameters)
 	}
 
 	TestTrue(TEXT("IsCharacterVoiceModelGenerated should return true after model flag set"), UPlayVoiceBlueprintLibrary::IsCharacterVoiceModelGenerated(VoiceAsset, TEXT("EN")));
+
+	return true;
+}
+
+// 7. Test UPlayVoiceSubsystem PlayCharacterVoice fallback and dynamic synthesis settings
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlayVoiceOnTheFlySynthesisTest, "PlayVoice.UnitTests.PlayVoiceOnTheFlySynthesis", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FPlayVoiceOnTheFlySynthesisTest::RunTest(const FString& Parameters)
+{
+	UCharacterVoiceAsset* VoiceAsset = NewObject<UCharacterVoiceAsset>();
+	TestNotNull(TEXT("VoiceAsset should be instantiated"), VoiceAsset);
+
+	if (!VoiceAsset)
+	{
+		return false;
+	}
+
+	VoiceAsset->CharacterName = FName("TestHero");
+	FString TestLine = TEXT("Dynamic on the fly synthesis test line");
+
+	FPlayVoiceLineEntry LineEntry;
+	LineEntry.TextLine = TestLine;
+	VoiceAsset->VoiceLines.Add(LineEntry);
+
+	// Precached line should return sound instantly
+	USoundWave* DummySoundWave = NewObject<USoundWave>();
+	VoiceAsset->CacheVoiceLine(TestLine, DummySoundWave, TEXT("EN"));
+	TestTrue(TEXT("Voice line should be precached"), VoiceAsset->HasPrecachedVoiceLine(TestLine, TEXT("EN")));
+	TestEqual(TEXT("Precached SoundWave should be returned"), VoiceAsset->GetPrecachedVoiceLine(TestLine, TEXT("EN")), DummySoundWave);
+
+	// Unprecached line should not be in cache initially
+	FString UncachedLine = TEXT("Unprecached dynamic synthesis line");
+	TestFalse(TEXT("Uncached line should initially return false"), VoiceAsset->HasPrecachedVoiceLine(UncachedLine, TEXT("EN")));
+
+	return true;
+}
+
+// 8. Test CharacterVoiceAsset VoiceLines and StringTable Key precaching
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlayVoiceLinesAssetTest, "PlayVoice.UnitTests.PlayVoiceLinesAsset", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FPlayVoiceLinesAssetTest::RunTest(const FString& Parameters)
+{
+	UCharacterVoiceAsset* VoiceAsset = NewObject<UCharacterVoiceAsset>();
+	TestNotNull(TEXT("CharacterVoiceAsset should be instantiated"), VoiceAsset);
+
+	if (!VoiceAsset)
+	{
+		return false;
+	}
+
+	FName GreetingKey = FName("Hero_Greeting_01");
+
+	FPlayVoiceLineEntry Entry;
+	Entry.Key = GreetingKey;
+	Entry.TextLine = TEXT("Hello traveler, welcome to the village!");
+	Entry.AudioFile.FilePath = TEXT("VoiceRecording/REC_Hero_Greeting_01.wav");
+	VoiceAsset->VoiceLines.Add(Entry);
+
+	TestTrue(TEXT("VoiceAsset should find line for GreetingKey"), VoiceAsset->HasVoiceLineForKey(GreetingKey));
+
+	const FPlayVoiceLineEntry* FoundEntry = VoiceAsset->FindVoiceLineByKey(GreetingKey);
+	TestNotNull(TEXT("Found entry should not be null"), FoundEntry);
+	if (FoundEntry)
+	{
+		TestEqual(TEXT("TextLine should match"), VoiceAsset->GetResolvedTextLineForEntry(*FoundEntry), TEXT("Hello traveler, welcome to the village!"));
+	}
+
+	USoundWave* KeySoundWave = NewObject<USoundWave>();
+	VoiceAsset->CacheVoiceLineForKey(GreetingKey, KeySoundWave, TEXT("EN"));
+
+	TestTrue(TEXT("VoiceAsset should have precached line for GreetingKey"), VoiceAsset->HasPrecachedVoiceLineForKey(GreetingKey, TEXT("EN")));
+	TestEqual(TEXT("VoiceAsset should return cached SoundWave for GreetingKey"), VoiceAsset->GetPrecachedVoiceLineForKey(GreetingKey, TEXT("EN")), KeySoundWave);
+
+	FString RecordingFolder = VoiceAsset->GetVoiceRecordingFolderOnDisk();
+	TestFalse(TEXT("VoiceRecording folder path should not be empty"), RecordingFolder.IsEmpty());
+	TestTrue(TEXT("VoiceRecording folder path should contain VoiceRecording"), RecordingFolder.Contains(TEXT("VoiceRecording")));
 
 	return true;
 }

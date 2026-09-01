@@ -9,6 +9,7 @@
 #include "AssetTypeActions_CharacterVoiceAsset.h"
 #include "PlayVoiceSettings.h"
 #include "PlayVoiceSettingsCustomization.h"
+#include "PlayVoiceLineEntryCustomization.h"
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 #include "Interfaces/IPluginManager.h"
@@ -93,13 +94,15 @@ static FProcHandle StaticServiceHandle;
 
 bool FPlayVoicePluginEditorModule::StartOpenVoiceService(FProcHandle* OutProcHandle)
 {
-	if (StaticServiceHandle.IsValid() && FPlatformProcess::IsProcRunning(StaticServiceHandle))
+	// Force terminate any previous running service instance handle to prevent port binding conflicts
+	if (StaticServiceHandle.IsValid())
 	{
-		if (OutProcHandle)
+		if (FPlatformProcess::IsProcRunning(StaticServiceHandle))
 		{
-			*OutProcHandle = StaticServiceHandle;
+			FPlatformProcess::TerminateProc(StaticServiceHandle, true);
 		}
-		return true;
+		FPlatformProcess::CloseProc(StaticServiceHandle);
+		StaticServiceHandle.Reset();
 	}
 
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
@@ -199,6 +202,10 @@ void FPlayVoicePluginEditorModule::RegisterCustomizations()
 		UPlayVoiceSettings::StaticClass()->GetFName(),
 		FOnGetDetailCustomizationInstance::CreateStatic(&FPlayVoiceSettingsCustomization::MakeInstance)
 	);
+	PropertyModule.RegisterCustomPropertyTypeLayout(
+		FPlayVoiceLineEntry::StaticStruct()->GetFName(),
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FPlayVoiceLineEntryCustomization::MakeInstance)
+	);
 }
 
 void FPlayVoicePluginEditorModule::UnregisterCustomizations()
@@ -208,6 +215,7 @@ void FPlayVoicePluginEditorModule::UnregisterCustomizations()
 		FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 		PropertyModule.UnregisterCustomClassLayout(UCharacterVoiceAsset::StaticClass()->GetFName());
 		PropertyModule.UnregisterCustomClassLayout(UPlayVoiceSettings::StaticClass()->GetFName());
+		PropertyModule.UnregisterCustomPropertyTypeLayout(FPlayVoiceLineEntry::StaticStruct()->GetFName());
 	}
 }
 
@@ -216,9 +224,9 @@ void FPlayVoicePluginEditorModule::RegisterAssetTypeActions()
 	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 	PlayVoiceAssetCategoryBit = AssetTools.RegisterAdvancedAssetCategory(FName(TEXT("PlayVoice")), LOCTEXT("PlayVoiceCategory", "PlayVoice"));
 
-	TSharedRef<IAssetTypeActions> Action = MakeShared<FAssetTypeActions_CharacterVoiceAsset>(PlayVoiceAssetCategoryBit);
-	AssetTools.RegisterAssetTypeActions(Action);
-	RegisteredAssetTypeActions.Add(Action);
+	TSharedRef<IAssetTypeActions> ActionVoice = MakeShared<FAssetTypeActions_CharacterVoiceAsset>(PlayVoiceAssetCategoryBit);
+	AssetTools.RegisterAssetTypeActions(ActionVoice);
+	RegisteredAssetTypeActions.Add(ActionVoice);
 }
 
 void FPlayVoicePluginEditorModule::UnregisterAssetTypeActions()

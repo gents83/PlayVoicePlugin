@@ -53,6 +53,22 @@ public:
 		AActor* AttachToActor = nullptr
 	);
 
+	/**
+	 * Plays a character voice line given a String Table Key using pre-rendered sound waves from referenced PlayVoiceLines assets.
+	 * Plays IMMEDIATELY with ZERO DELAY if precached.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "PlayVoice", meta = (WorldContext = "WorldContextObject"))
+	UAudioComponent* PlayCharacterVoiceFromKey(
+		const UObject* WorldContextObject,
+		UCharacterVoiceAsset* CharacterVoiceAsset,
+		FName Key,
+		const FString& LanguageCode = TEXT(""),
+		UAudioComponent* TargetAudioComponent = nullptr,
+		FVector Location = FVector::ZeroVector,
+		bool bAttachToActor = false,
+		AActor* AttachToActor = nullptr
+	);
+
 	/** Synthesizes voice line via OpenVoice backend service asynchronously */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	void SynthesizeVoiceLineAsync(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, const FString& LanguageCode, FOnVoiceSynthesized OnComplete);

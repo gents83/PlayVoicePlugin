@@ -50,6 +50,10 @@ public:
 	UPROPERTY(EditAnywhere, Config, Category = "Zero Latency Settings", meta = (DisplayName = "Auto Precache On Startup"))
 	bool bAutoPrecacheOnStartup;
 
+	/** Allow dynamic on-the-fly voice synthesis using OpenVoice when a voice line is not precached */
+	UPROPERTY(EditAnywhere, Config, Category = "Voice Playback", meta = (DisplayName = "Enable On-The-Fly Synthesis"))
+	bool bEnableOnTheFlySynthesis;
+
 	/** Output audio sample rate in Hz (default: 24000 for OpenVoice) */
 	UPROPERTY(EditAnywhere, Config, Category = "Audio Settings", meta = (DisplayName = "Default Sample Rate"))
 	int32 DefaultSampleRate;

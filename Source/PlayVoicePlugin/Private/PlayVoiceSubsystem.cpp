@@ -48,12 +48,10 @@ void UPlayVoiceSubsystem::PrecacheAllVoiceLines(UCharacterVoiceAsset* CharacterV
 		return;
 	}
 
-	FString TargetLang = LanguageCode.IsEmpty() ? CharacterVoiceAsset->DefaultLanguage : LanguageCode;
-
 	int32 PrecachedCount = 0;
-	for (const auto& Pair : CharacterVoiceAsset->PrecachedSoundWaves)
+	for (const FPlayVoiceLineEntry& Entry : CharacterVoiceAsset->VoiceLines)
 	{
-		if (Pair.Value != nullptr)
+		if (Entry.PrecachedSoundWave != nullptr)
 		{
 			PrecachedCount++;
 		}
@@ -148,8 +146,117 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoice(
 		}
 	}
 
-	UE_LOG(LogPlayVoice, Warning, TEXT("PlayCharacterVoice: Voice line '%s' (Lang: %s) is not precached in asset '%s'. Ensure all Blueprint dialogue lines are pre-processed in the Editor before runtime."), *TextLine, *TargetLang, *GetNameSafe(CharacterVoiceAsset));
+	// Dynamic on-the-fly voice synthesis fallback if line is not precached
+	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
+	const bool bAllowOnTheFly = Settings ? Settings->bEnableOnTheFlySynthesis : true;
 
+	if (bAllowOnTheFly)
+	{
+		UE_LOG(LogPlayVoice, Log, TEXT("PlayCharacterVoice: Voice line '%s' (Lang: %s) is not precached in asset '%s'. Triggering on-the-fly OpenVoice synthesis..."), *TextLine, *TargetLang, *GetNameSafe(CharacterVoiceAsset));
+
+		UWorld* World = WorldContextObject ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull) : GetWorld();
+		if (!World && CharacterVoiceAsset)
+		{
+			World = GEngine->GetWorldFromContextObject(CharacterVoiceAsset, EGetWorldErrorMode::LogAndReturnNull);
+		}
+
+		UAudioComponent* AudioComp = TargetAudioComponent;
+		if (!AudioComp && World)
+		{
+			AudioComp = UGameplayStatics::CreateSound2D(World, nullptr, 1.0f, 1.0f, 0.0f, nullptr, false, false);
+			if (AudioComp)
+			{
+				if (bAttachToActor && AttachToActor && AttachToActor->IsValidLowLevel())
+				{
+					AudioComp->AttachToComponent(AttachToActor->GetRootComponent(), FAttachmentTransformRules::KeepRelativeTransform);
+				}
+				else if (Location != FVector::ZeroVector)
+				{
+					AudioComp->SetWorldLocation(Location);
+				}
+			}
+		}
+
+		TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = CharacterVoiceAsset;
+		TWeakObjectPtr<UAudioComponent> WeakAudioComp = AudioComp;
+
+		SynthesizeVoiceLineAsync(CharacterVoiceAsset, TextLine, TargetLang, [WeakAsset, TextLine, TargetLang, WeakAudioComp](bool bSuccess, USoundWave* SoundWave)
+		{
+			if (bSuccess && SoundWave)
+			{
+				if (WeakAsset.IsValid())
+				{
+					WeakAsset->CacheVoiceLine(TextLine, SoundWave, TargetLang);
+				}
+				if (WeakAudioComp.IsValid())
+				{
+					WeakAudioComp->SetSound(SoundWave);
+					WeakAudioComp->Play();
+				}
+			}
+			else
+			{
+				UE_LOG(LogPlayVoice, Warning, TEXT("PlayCharacterVoice: OpenVoice REST service is not running or dynamic synthesis failed for line '%s' (Lang: %s). Ensure service is running or pre-render dialogue lines."), *TextLine, *TargetLang);
+			}
+		});
+
+		return AudioComp;
+	}
+
+	UE_LOG(LogPlayVoice, Warning, TEXT("PlayCharacterVoice: Voice line '%s' (Lang: %s) is not precached in asset '%s' and on-the-fly synthesis is disabled. Ensure all Blueprint dialogue lines are pre-processed in the Editor before runtime."), *TextLine, *TargetLang, *GetNameSafe(CharacterVoiceAsset));
+
+	return nullptr;
+}
+
+UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoiceFromKey(
+	const UObject* WorldContextObject,
+	UCharacterVoiceAsset* CharacterVoiceAsset,
+	FName Key,
+	const FString& LanguageCode,
+	UAudioComponent* TargetAudioComponent,
+	FVector Location,
+	bool bAttachToActor,
+	AActor* AttachToActor)
+{
+	if (!CharacterVoiceAsset || Key.IsNone())
+	{
+		return nullptr;
+	}
+
+	FString TargetLang = LanguageCode.IsEmpty() ? CharacterVoiceAsset->DefaultLanguage : LanguageCode;
+
+	// Instant zero-delay playback using pre-generated SoundWave for String Table Key
+	if (USoundWave* CachedSound = CharacterVoiceAsset->GetPrecachedVoiceLineForKey(Key, TargetLang))
+	{
+		if (TargetAudioComponent && TargetAudioComponent->IsValidLowLevel())
+		{
+			TargetAudioComponent->SetSound(CachedSound);
+			TargetAudioComponent->Play();
+			return TargetAudioComponent;
+		}
+		else if (bAttachToActor && AttachToActor && AttachToActor->IsValidLowLevel())
+		{
+			return UGameplayStatics::SpawnSoundAttached(CachedSound, AttachToActor->GetRootComponent());
+		}
+		else
+		{
+			return UGameplayStatics::SpawnSoundAtLocation(WorldContextObject ? WorldContextObject : GetWorld(), CachedSound, Location);
+		}
+	}
+
+	// Lookup text line from VoiceLines in CharacterVoiceAsset if present
+	FString EntryText;
+	if (const FPlayVoiceLineEntry* Entry = CharacterVoiceAsset->FindVoiceLineByKey(Key))
+	{
+		EntryText = CharacterVoiceAsset->GetResolvedTextLineForEntry(*Entry);
+	}
+
+	if (!EntryText.IsEmpty())
+	{
+		return PlayCharacterVoice(WorldContextObject, CharacterVoiceAsset, EntryText, TargetLang, TargetAudioComponent, Location, bAttachToActor, AttachToActor);
+	}
+
+	UE_LOG(LogPlayVoice, Warning, TEXT("PlayCharacterVoiceFromKey: Key '%s' (Lang: %s) is not precached in asset '%s' and no matching VoiceLines entry was found."), *Key.ToString(), *TargetLang, *GetNameSafe(CharacterVoiceAsset));
 	return nullptr;
 }
 

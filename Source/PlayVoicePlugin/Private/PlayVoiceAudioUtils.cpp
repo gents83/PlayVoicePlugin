@@ -45,6 +45,11 @@ static TArray<uint8> BuildWAVHeaderAndPCMBuffer(const TArray<uint8>& PCMData, in
 	return WAVBuffer;
 }
 
+TArray<uint8> UPlayVoiceAudioUtils::CreateWAVBufferFromPCM(const TArray<uint8>& PCMData, int32 SampleRate, int32 NumChannels)
+{
+	return BuildWAVHeaderAndPCMBuffer(PCMData, SampleRate, NumChannels);
+}
+
 USoundWave* UPlayVoiceAudioUtils::CreateSoundWaveFromPCM(const TArray<uint8>& PCMData, int32 SampleRate, int32 NumChannels, UObject* Outer, FName Name)
 {
 	if (PCMData.Num() == 0 || SampleRate <= 0 || NumChannels <= 0)

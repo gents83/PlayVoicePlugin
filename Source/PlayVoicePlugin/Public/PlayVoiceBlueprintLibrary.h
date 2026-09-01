@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
+#include "GameplayTagContainer.h"
 #include "CharacterVoiceAsset.h"
 #include "Components/AudioComponent.h"
 #include "PlayVoiceBlueprintLibrary.generated.h"
@@ -28,6 +29,22 @@ public:
 		const UObject* WorldContextObject,
 		UCharacterVoiceAsset* CharacterVoiceAsset,
 		FString TextLine,
+		FString LanguageCode = TEXT(""),
+		UAudioComponent* TargetAudioComponent = nullptr,
+		FVector Location = FVector::ZeroVector,
+		bool bAttachToActor = false,
+		AActor* AttachToActor = nullptr
+	);
+
+	/**
+	 * Plays a character voice line given a String Table Key using pre-rendered sound waves from referenced PlayVoiceLines assets.
+	 * Plays IMMEDIATELY with ZERO DELAY if precached.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "PlayVoice", meta = (WorldContext = "WorldContextObject"))
+	static UAudioComponent* PlayCharacterVoiceFromKey(
+		const UObject* WorldContextObject,
+		UCharacterVoiceAsset* CharacterVoiceAsset,
+		FName Key,
 		FString LanguageCode = TEXT(""),
 		UAudioComponent* TargetAudioComponent = nullptr,
 		FVector Location = FVector::ZeroVector,

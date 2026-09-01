@@ -50,6 +50,51 @@ UAudioComponent* UPlayVoiceBlueprintLibrary::PlayCharacterVoice(
 	);
 }
 
+UAudioComponent* UPlayVoiceBlueprintLibrary::PlayCharacterVoiceFromKey(
+	const UObject* WorldContextObject,
+	UCharacterVoiceAsset* CharacterVoiceAsset,
+	FName Key,
+	FString LanguageCode,
+	UAudioComponent* TargetAudioComponent,
+	FVector Location,
+	bool bAttachToActor,
+	AActor* AttachToActor)
+{
+	if (!WorldContextObject || !CharacterVoiceAsset || Key.IsNone())
+	{
+		return nullptr;
+	}
+
+	UWorld* World = WorldContextObject->GetWorld();
+	if (!World)
+	{
+		return nullptr;
+	}
+
+	UGameInstance* GameInstance = World->GetGameInstance();
+	if (!GameInstance)
+	{
+		return nullptr;
+	}
+
+	UPlayVoiceSubsystem* Subsystem = GameInstance->GetSubsystem<UPlayVoiceSubsystem>();
+	if (!Subsystem)
+	{
+		return nullptr;
+	}
+
+	return Subsystem->PlayCharacterVoiceFromKey(
+		WorldContextObject,
+		CharacterVoiceAsset,
+		Key,
+		LanguageCode,
+		TargetAudioComponent,
+		Location,
+		bAttachToActor,
+		AttachToActor
+	);
+}
+
 void UPlayVoiceBlueprintLibrary::PrecacheCharacterVoiceLines(
 	const UObject* WorldContextObject,
 	UCharacterVoiceAsset* CharacterVoiceAsset,

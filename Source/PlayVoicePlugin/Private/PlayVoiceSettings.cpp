@@ -12,6 +12,7 @@ UPlayVoiceSettings::UPlayVoiceSettings()
 	, ExtraPipArgs(TEXT("--prefer-binary --no-warn-script-location"))
 	, RequestTimeout(300.0f)
 	, bAutoPrecacheOnStartup(true)
+	, bEnableOnTheFlySynthesis(true)
 	, DefaultSampleRate(24000)
 {
 }
