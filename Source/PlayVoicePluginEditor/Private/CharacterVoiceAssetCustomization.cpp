@@ -120,9 +120,9 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 			if (Entry.StringTable)
 			{
 				FStringTableConstRef TableRef = Entry.StringTable->GetStringTable();
-				TableRef->EnumerateSourceStrings([KeyOptions, &Entry, &CurrentlySelectedKey](const FStringKey& KeyStr, const FString& SourceString)
+				TableRef->EnumerateSourceStrings([KeyOptions, &Entry, &CurrentlySelectedKey](const FString& KeyString, const FString& SourceString)
 				{
-					FName KeyNameVal(*KeyStr.GetTextKey().ToString());
+					FName KeyNameVal(*KeyString);
 					TSharedPtr<FName> OptionName = MakeShared<FName>(KeyNameVal);
 					KeyOptions->Add(OptionName);
 					if (KeyNameVal == Entry.Key)
