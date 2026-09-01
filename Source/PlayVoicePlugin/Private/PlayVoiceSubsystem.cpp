@@ -210,25 +210,25 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoice(
 	return nullptr;
 }
 
-UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoiceFromTag(
+UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoiceFromKey(
 	const UObject* WorldContextObject,
 	UCharacterVoiceAsset* CharacterVoiceAsset,
-	FGameplayTag VoiceTag,
+	FName Key,
 	const FString& LanguageCode,
 	UAudioComponent* TargetAudioComponent,
 	FVector Location,
 	bool bAttachToActor,
 	AActor* AttachToActor)
 {
-	if (!CharacterVoiceAsset || !VoiceTag.IsValid())
+	if (!CharacterVoiceAsset || Key.IsNone())
 	{
 		return nullptr;
 	}
 
 	FString TargetLang = LanguageCode.IsEmpty() ? CharacterVoiceAsset->DefaultLanguage : LanguageCode;
 
-	// Instant zero-delay playback using pre-generated SoundWave for GameplayTag
-	if (USoundWave* CachedSound = CharacterVoiceAsset->GetPrecachedVoiceLineForTag(VoiceTag, TargetLang))
+	// Instant zero-delay playback using pre-generated SoundWave for String Table Key
+	if (USoundWave* CachedSound = CharacterVoiceAsset->GetPrecachedVoiceLineForKey(Key, TargetLang))
 	{
 		if (TargetAudioComponent && TargetAudioComponent->IsValidLowLevel())
 		{
@@ -252,9 +252,9 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoiceFromTag(
 	{
 		if (LinesAsset)
 		{
-			if (const FPlayVoiceLineEntry* Entry = LinesAsset->FindLineByTag(VoiceTag))
+			if (const FPlayVoiceLineEntry* Entry = LinesAsset->FindLineByKey(Key))
 			{
-				EntryText = Entry->TextLine;
+				EntryText = LinesAsset->GetResolvedTextLineForEntry(*Entry);
 				break;
 			}
 		}
@@ -265,7 +265,7 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoiceFromTag(
 		return PlayCharacterVoice(WorldContextObject, CharacterVoiceAsset, EntryText, TargetLang, TargetAudioComponent, Location, bAttachToActor, AttachToActor);
 	}
 
-	UE_LOG(LogPlayVoice, Warning, TEXT("PlayCharacterVoiceFromTag: GameplayTag '%s' (Lang: %s) is not precached in asset '%s' and no matching PlayVoiceLines entry was found."), *VoiceTag.ToString(), *TargetLang, *GetNameSafe(CharacterVoiceAsset));
+	UE_LOG(LogPlayVoice, Warning, TEXT("PlayCharacterVoiceFromKey: Key '%s' (Lang: %s) is not precached in asset '%s' and no matching PlayVoiceLines entry was found."), *Key.ToString(), *TargetLang, *GetNameSafe(CharacterVoiceAsset));
 	return nullptr;
 }
 

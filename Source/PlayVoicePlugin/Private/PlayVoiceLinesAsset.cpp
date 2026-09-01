@@ -9,16 +9,16 @@ UPlayVoiceLinesAsset::UPlayVoiceLinesAsset()
 {
 }
 
-const FPlayVoiceLineEntry* UPlayVoiceLinesAsset::FindLineByTag(const FGameplayTag& InTag) const
+const FPlayVoiceLineEntry* UPlayVoiceLinesAsset::FindLineByKey(FName InKey) const
 {
-	if (!InTag.IsValid())
+	if (InKey.IsNone())
 	{
 		return nullptr;
 	}
 
 	for (const FPlayVoiceLineEntry& Entry : Lines)
 	{
-		if (Entry.VoiceTag == InTag)
+		if (Entry.Key == InKey)
 		{
 			return &Entry;
 		}
@@ -26,9 +26,30 @@ const FPlayVoiceLineEntry* UPlayVoiceLinesAsset::FindLineByTag(const FGameplayTa
 	return nullptr;
 }
 
-bool UPlayVoiceLinesAsset::HasLineForTag(const FGameplayTag& InTag) const
+bool UPlayVoiceLinesAsset::HasLineForKey(FName InKey) const
 {
-	return FindLineByTag(InTag) != nullptr;
+	return FindLineByKey(InKey) != nullptr;
+}
+
+FString UPlayVoiceLinesAsset::GetResolvedTextLineForEntry(const FPlayVoiceLineEntry& Entry) const
+{
+	if (!Entry.TextLine.TrimStartAndEnd().IsEmpty())
+	{
+		return Entry.TextLine;
+	}
+
+	UStringTable* TargetTable = Entry.StringTableOverride ? Entry.StringTableOverride.Get() : StringTable.Get();
+	if (TargetTable && !Entry.Key.IsNone())
+	{
+		FString TableId = TargetTable->GetStringTableId().ToString();
+		FText ResolvedText = FText::FromStringTable(FName(*TableId), Entry.Key.ToString());
+		if (!ResolvedText.IsEmpty())
+		{
+			return ResolvedText.ToString();
+		}
+	}
+
+	return Entry.Key.IsNone() ? FString() : Entry.Key.ToString();
 }
 
 FString UPlayVoiceLinesAsset::GetVoiceRecordingFolderOnDisk() const

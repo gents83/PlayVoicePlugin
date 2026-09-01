@@ -50,17 +50,17 @@ UAudioComponent* UPlayVoiceBlueprintLibrary::PlayCharacterVoice(
 	);
 }
 
-UAudioComponent* UPlayVoiceBlueprintLibrary::PlayCharacterVoiceFromTag(
+UAudioComponent* UPlayVoiceBlueprintLibrary::PlayCharacterVoiceFromKey(
 	const UObject* WorldContextObject,
 	UCharacterVoiceAsset* CharacterVoiceAsset,
-	FGameplayTag VoiceTag,
+	FName Key,
 	FString LanguageCode,
 	UAudioComponent* TargetAudioComponent,
 	FVector Location,
 	bool bAttachToActor,
 	AActor* AttachToActor)
 {
-	if (!WorldContextObject || !CharacterVoiceAsset || !VoiceTag.IsValid())
+	if (!WorldContextObject || !CharacterVoiceAsset || Key.IsNone())
 	{
 		return nullptr;
 	}
@@ -83,10 +83,10 @@ UAudioComponent* UPlayVoiceBlueprintLibrary::PlayCharacterVoiceFromTag(
 		return nullptr;
 	}
 
-	return Subsystem->PlayCharacterVoiceFromTag(
+	return Subsystem->PlayCharacterVoiceFromKey(
 		WorldContextObject,
 		CharacterVoiceAsset,
-		VoiceTag,
+		Key,
 		LanguageCode,
 		TargetAudioComponent,
 		Location,

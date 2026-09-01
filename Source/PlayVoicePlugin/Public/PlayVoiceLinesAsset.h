@@ -4,22 +4,27 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
-#include "GameplayTagContainer.h"
+#include "Internationalization/StringTable.h"
+#include "Internationalization/StringTableCore.h"
 #include "PlayVoiceLinesAsset.generated.h"
 
 /**
- * Represents a single dialogue voice line entry mapped to a GameplayTag, dialogue string, and reference audio file.
+ * Represents a single dialogue voice line entry mapped to a String Table Key, dialogue string, and reference audio file.
  */
 USTRUCT(BlueprintType)
 struct PLAYVOICEPLUGIN_API FPlayVoiceLineEntry
 {
 	GENERATED_BODY()
 
-	/** Unique GameplayTag identifying this voice line (e.g. Dialogue.Hero.Greeting) */
+	/** Unique String Table key identifying this voice line entry */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
-	FGameplayTag VoiceTag;
+	FName Key;
 
-	/** Dialogue text string corresponding to this voice line tag */
+	/** Optional String Table override for this specific entry. If null, uses asset-level String Table */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
+	TObjectPtr<UStringTable> StringTableOverride;
+
+	/** Dialogue text string corresponding to this voice line key (automatically resolved from String Table if left empty) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	FString TextLine;
 
@@ -29,7 +34,7 @@ struct PLAYVOICEPLUGIN_API FPlayVoiceLineEntry
 };
 
 /**
- * Data asset storing a list of PlayVoiceLine entries (GameplayTag -> Dialogue Text & Guide Audio File)
+ * Data asset storing a list of PlayVoiceLine entries (String Table Key -> Dialogue Text & Guide Audio File)
  * used as reference source material for CharacterVoiceAssets.
  */
 UCLASS(BlueprintType, Blueprintable)
@@ -40,16 +45,24 @@ class PLAYVOICEPLUGIN_API UPlayVoiceLinesAsset : public UPrimaryDataAsset
 public:
 	UPlayVoiceLinesAsset();
 
+	/** Primary String Table used for resolving dialogue text strings for entries in this asset */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
+	TObjectPtr<UStringTable> StringTable;
+
 	/** List of dialogue voice line entries in this asset */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	TArray<FPlayVoiceLineEntry> Lines;
 
-	/** Finds an entry matching the specified GameplayTag. Returns nullptr if not found. */
-	const FPlayVoiceLineEntry* FindLineByTag(const FGameplayTag& InTag) const;
+	/** Finds an entry matching the specified String Table key. Returns nullptr if not found. */
+	const FPlayVoiceLineEntry* FindLineByKey(FName InKey) const;
 
-	/** Checks if this asset contains an entry for the specified GameplayTag */
+	/** Checks if this asset contains an entry for the specified String Table key */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
-	bool HasLineForTag(const FGameplayTag& InTag) const;
+	bool HasLineForKey(FName InKey) const;
+
+	/** Resolves the dialogue text string for a given entry, looking up from String Table if TextLine is empty */
+	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
+	FString GetResolvedTextLineForEntry(const FPlayVoiceLineEntry& Entry) const;
 
 	/** Helper method to get the absolute disk path of the VoiceRecording folder in the same directory as this asset */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")

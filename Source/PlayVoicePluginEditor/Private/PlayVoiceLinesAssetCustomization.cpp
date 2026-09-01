@@ -42,11 +42,11 @@ void FPlayVoiceLinesAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 	for (int32 i = 0; i < Asset->Lines.Num(); ++i)
 	{
 		const FPlayVoiceLineEntry& Entry = Asset->Lines[i];
-		FString TagName = Entry.VoiceTag.IsValid() ? Entry.VoiceTag.ToString() : FString::Printf(TEXT("Entry %d"), i + 1);
+		FString KeyName = !Entry.Key.IsNone() ? Entry.Key.ToString() : FString::Printf(TEXT("Entry %d"), i + 1);
 
-		FString LabelText = FString::Printf(TEXT("[%d] %s"), i + 1, *TagName);
+		FString LabelText = FString::Printf(TEXT("[%d] %s"), i + 1, *KeyName);
 
-		RecordingCategory.AddCustomRow(FText::FromString(TagName))
+		RecordingCategory.AddCustomRow(FText::FromString(KeyName))
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -116,8 +116,8 @@ FReply FPlayVoiceLinesAssetCustomization::OnStopRecordingButtonClicked(int32 Ent
 
 	FString VoiceRecordingDir = Asset->GetVoiceRecordingFolderOnDisk();
 
-	FString CleanTagName = Entry.VoiceTag.IsValid() ? Entry.VoiceTag.ToString().Replace(TEXT("."), TEXT("_")) : FString::Printf(TEXT("Line_%d"), EntryIndex);
-	FString FileName = FString::Printf(TEXT("REC_%s_%u.wav"), *CleanTagName, FDateTime::Now().GetTicks());
+	FString CleanKeyName = !Entry.Key.IsNone() ? Entry.Key.ToString().Replace(TEXT("."), TEXT("_")) : FString::Printf(TEXT("Line_%d"), EntryIndex);
+	FString FileName = FString::Printf(TEXT("REC_%s_%u.wav"), *CleanKeyName, FDateTime::Now().GetTicks());
 	FString FullDiskPath = FPaths::Combine(VoiceRecordingDir, FileName);
 
 	// Generate 1s reference PCM WAV audio buffer (or recorded PCM buffer)

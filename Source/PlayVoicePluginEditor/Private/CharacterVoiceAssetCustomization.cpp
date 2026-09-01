@@ -1355,15 +1355,15 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 		}
 
 		UCharacterVoiceAsset* VoiceAsset = WeakTargetAsset.Get();
-		TSet<FGameplayTag> ProcessedTags;
-		struct FTagWorkItem
+		TSet<FName> ProcessedKeys;
+		struct FKeyWorkItem
 		{
-			FGameplayTag VoiceTag;
+			FName Key;
 			FString TextLine;
 			FString GuideAudioFile;
 			FString SourceAssetName;
 		};
-		TArray<FTagWorkItem> WorkItems;
+		TArray<FKeyWorkItem> WorkItems;
 
 		for (UPlayVoiceLinesAsset* LinesAsset : VoiceAsset->VoiceLineAssets)
 		{
@@ -1374,22 +1374,22 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 
 			for (const FPlayVoiceLineEntry& Entry : LinesAsset->Lines)
 			{
-				if (!Entry.VoiceTag.IsValid())
+				if (Entry.Key.IsNone())
 				{
 					continue;
 				}
 
-				if (ProcessedTags.Contains(Entry.VoiceTag))
+				if (ProcessedKeys.Contains(Entry.Key))
 				{
-					UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("Duplicate GameplayTag '%s' found in PlayVoiceLinesAsset '%s'. First entry takes precedence."), *Entry.VoiceTag.ToString(), *LinesAsset->GetName());
+					UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("Duplicate String Table Key '%s' found in PlayVoiceLinesAsset '%s'. First entry takes precedence."), *Entry.Key.ToString(), *LinesAsset->GetName());
 					continue;
 				}
 
-				ProcessedTags.Add(Entry.VoiceTag);
+				ProcessedKeys.Add(Entry.Key);
 
-				FTagWorkItem Item;
-				Item.VoiceTag = Entry.VoiceTag;
-				Item.TextLine = Entry.TextLine;
+				FKeyWorkItem Item;
+				Item.Key = Entry.Key;
+				Item.TextLine = LinesAsset->GetResolvedTextLineForEntry(Entry);
 				Item.GuideAudioFile = Entry.AudioFile.FilePath;
 				Item.SourceAssetName = LinesAsset->GetName();
 				WorkItems.Add(Item);
@@ -1398,7 +1398,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 
 		if (WorkItems.Num() == 0)
 		{
-			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("No valid PlayVoiceLine entries with GameplayTags found in referenced PlayVoiceLines assets."));
+			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("No valid PlayVoiceLine entries with String Table Keys found in referenced PlayVoiceLines assets."));
 			return;
 		}
 
@@ -1414,7 +1414,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 		TSharedPtr<int32> CompletedTasks = MakeShared<int32>(0);
 		TSharedPtr<int32> FailedTasks = MakeShared<int32>(0);
 
-		FNotificationInfo NotificationInfo(FText::Format(FText::FromString("PlayVoice: Pre-rendering {0} GameplayTag voice lines..."), FText::AsNumber(WorkItems.Num())));
+		FNotificationInfo NotificationInfo(FText::Format(FText::FromString("PlayVoice: Pre-rendering {0} Key voice lines..."), FText::AsNumber(WorkItems.Num())));
 		NotificationInfo.bFireAndForget = false;
 		NotificationInfo.bUseThrobber = true;
 		NotificationInfo.FadeOutDuration = 0.5f;
@@ -1430,7 +1430,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 			(*CompletedTasks)++;
 			if (NotificationItem.IsValid())
 			{
-				FText Msg = FText::Format(FText::FromString("PlayVoice: Pre-rendering Tag Voice Lines ({0}/{1})..."), FText::AsNumber(*CompletedTasks), FText::AsNumber(TotalTasksCount));
+				FText Msg = FText::Format(FText::FromString("PlayVoice: Pre-rendering Key Voice Lines ({0}/{1})..."), FText::AsNumber(*CompletedTasks), FText::AsNumber(TotalTasksCount));
 				NotificationItem->SetText(Msg);
 
 				if (*CompletedTasks >= TotalTasksCount)
@@ -1443,7 +1443,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 					else
 					{
 						NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
-						NotificationItem->SetText(FText::FromString("PlayVoice: GameplayTag voice line pre-rendering complete!"));
+						NotificationItem->SetText(FText::FromString("PlayVoice: String Table Key voice line pre-rendering complete!"));
 					}
 					NotificationItem->SetExpireDuration(4.0f);
 					NotificationItem->ExpireAndFadeout();
@@ -1457,7 +1457,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 			float CurrentSpeed = LangData.Speed;
 			FString EmbeddingData = LangData.ToneColorEmbeddingData;
 
-			for (const FTagWorkItem& Item : WorkItems)
+			for (const FKeyWorkItem& Item : WorkItems)
 			{
 				TSharedPtr<FJsonObject> JsonObj = MakeShared<FJsonObject>();
 				JsonObj->SetStringField(TEXT("character_name"), VoiceAsset->CharacterName.ToString());
@@ -1490,9 +1490,9 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 				HttpRequest->SetContentAsString(PayloadStr);
 				HttpRequest->SetTimeout(TimeoutSecs);
 
-				FGameplayTag VoiceTag = Item.VoiceTag;
+				FName EntryKey = Item.Key;
 
-				HttpRequest->OnProcessRequestComplete().BindLambda([HttpRequest, WeakTargetAsset, VoiceTag, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
+				HttpRequest->OnProcessRequestComplete().BindLambda([HttpRequest, WeakTargetAsset, EntryKey, CurrentLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
 				{
 					bool bSynthOk = bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode());
 					int32 ResponseCode = Response.IsValid() ? Response->GetResponseCode() : 0;
@@ -1500,19 +1500,19 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 					if (!bSynthOk)
 					{
 						(*FailedTasks)++;
-						UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateFromVoiceLinesClicked: Synthesis failed for tag '%s' (Lang: %s, HTTP %d)"), *VoiceTag.ToString(), *CurrentLangCode, ResponseCode);
+						UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateFromVoiceLinesClicked: Synthesis failed for Key '%s' (Lang: %s, HTTP %d)"), *EntryKey.ToString(), *CurrentLangCode, ResponseCode);
 					}
 					else if (WeakTargetAsset.IsValid())
 					{
-						FString TagSanitized = FString::Printf(TEXT("SW_%s_%s_%s"), *WeakTargetAsset->CharacterName.ToString(), *CurrentLangCode, *VoiceTag.ToString().Replace(TEXT("."), TEXT("_")));
-						FString PackagePath = AssetFolderPath / TagSanitized;
+						FString KeySanitized = FString::Printf(TEXT("SW_%s_%s_%s"), *WeakTargetAsset->CharacterName.ToString(), *CurrentLangCode, *EntryKey.ToString().Replace(TEXT("."), TEXT("_")));
+						FString PackagePath = AssetFolderPath / KeySanitized;
 
 						UPackage* SoundWavePackage = CreatePackage(*PackagePath);
-						USoundWave* SoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(Response->GetContent(), SoundWavePackage, FName(*TagSanitized));
+						USoundWave* SoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(Response->GetContent(), SoundWavePackage, FName(*KeySanitized));
 
 						if (SoundWave)
 						{
-							WeakTargetAsset->CacheVoiceLineForTag(VoiceTag, SoundWave, CurrentLangCode);
+							WeakTargetAsset->CacheVoiceLineForKey(EntryKey, SoundWave, CurrentLangCode);
 							SoundWave->MarkPackageDirty();
 							WeakTargetAsset->MarkPackageDirty();
 
@@ -1520,7 +1520,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 							{
 								FAssetRegistryModule::AssetCreated(SoundWave);
 							}
-							UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateFromVoiceLinesClicked: Pre-rendered sound wave '%s' for GameplayTag '%s'"), *TagSanitized, *VoiceTag.ToString());
+							UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateFromVoiceLinesClicked: Pre-rendered sound wave '%s' for Key '%s'"), *KeySanitized, *EntryKey.ToString());
 						}
 					}
 

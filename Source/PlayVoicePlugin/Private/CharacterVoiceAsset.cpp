@@ -161,26 +161,26 @@ FString UCharacterVoiceAsset::MakeCacheKey(const FString& TextLine, const FStrin
 	return FString::Printf(TEXT("%s:%s"), *CleanLang, *CleanText);
 }
 
-FString UCharacterVoiceAsset::MakeTagCacheKey(const FGameplayTag& VoiceTag, const FString& LanguageCode)
+FString UCharacterVoiceAsset::MakeKeyCacheKey(FName Key, const FString& LanguageCode)
 {
-	FString CleanTag = VoiceTag.IsValid() ? VoiceTag.ToString().ToLower() : FString();
+	FString CleanKey = Key.IsNone() ? FString() : Key.ToString().ToLower();
 	FString CleanLang = LanguageCode.TrimStartAndEnd().ToUpper();
 	if (CleanLang.IsEmpty())
 	{
 		CleanLang = TEXT("EN");
 	}
-	return FString::Printf(TEXT("%s:TAG:%s"), *CleanLang, *CleanTag);
+	return FString::Printf(TEXT("%s:KEY:%s"), *CleanLang, *CleanKey);
 }
 
 void UCharacterVoiceAsset::ClearPrecachedVoiceLines()
 {
 	PrecachedSoundWaves.Empty();
-	PrecachedTagSoundWaves.Empty();
+	PrecachedKeySoundWaves.Empty();
 }
 
-void UCharacterVoiceAsset::CacheVoiceLineForTag(const FGameplayTag& VoiceTag, USoundWave* InSoundWave, const FString& LanguageCode)
+void UCharacterVoiceAsset::CacheVoiceLineForKey(FName Key, USoundWave* InSoundWave, const FString& LanguageCode)
 {
-	if (VoiceTag.IsValid() && InSoundWave)
+	if (!Key.IsNone() && InSoundWave)
 	{
 		FString TargetLang = LanguageCode.TrimStartAndEnd().ToUpper();
 		if (TargetLang.IsEmpty())
@@ -191,14 +191,14 @@ void UCharacterVoiceAsset::CacheVoiceLineForTag(const FGameplayTag& VoiceTag, US
 		{
 			TargetLang = TEXT("EN");
 		}
-		FString TagKey = MakeTagCacheKey(VoiceTag, TargetLang);
-		PrecachedTagSoundWaves.Add(TagKey, InSoundWave);
+		FString CacheKey = MakeKeyCacheKey(Key, TargetLang);
+		PrecachedKeySoundWaves.Add(CacheKey, InSoundWave);
 	}
 }
 
-USoundWave* UCharacterVoiceAsset::GetPrecachedVoiceLineForTag(const FGameplayTag& VoiceTag, const FString& LanguageCode) const
+USoundWave* UCharacterVoiceAsset::GetPrecachedVoiceLineForKey(FName Key, const FString& LanguageCode) const
 {
-	if (!VoiceTag.IsValid())
+	if (Key.IsNone())
 	{
 		return nullptr;
 	}
@@ -213,8 +213,8 @@ USoundWave* UCharacterVoiceAsset::GetPrecachedVoiceLineForTag(const FGameplayTag
 		TargetLang = TEXT("EN");
 	}
 
-	FString TagKey = MakeTagCacheKey(VoiceTag, TargetLang);
-	if (const TObjectPtr<USoundWave>* FoundSound = PrecachedTagSoundWaves.Find(TagKey))
+	FString CacheKey = MakeKeyCacheKey(Key, TargetLang);
+	if (const TObjectPtr<USoundWave>* FoundSound = PrecachedKeySoundWaves.Find(CacheKey))
 	{
 		if (*FoundSound)
 		{
@@ -224,9 +224,9 @@ USoundWave* UCharacterVoiceAsset::GetPrecachedVoiceLineForTag(const FGameplayTag
 	return nullptr;
 }
 
-bool UCharacterVoiceAsset::HasPrecachedVoiceLineForTag(const FGameplayTag& VoiceTag, const FString& LanguageCode) const
+bool UCharacterVoiceAsset::HasPrecachedVoiceLineForKey(FName Key, const FString& LanguageCode) const
 {
-	return GetPrecachedVoiceLineForTag(VoiceTag, LanguageCode) != nullptr;
+	return GetPrecachedVoiceLineForKey(Key, LanguageCode) != nullptr;
 }
 
 void UCharacterVoiceAsset::CacheVoiceLine(const FString& TextLine, USoundWave* InSoundWave, const FString& LanguageCode)

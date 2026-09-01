@@ -37,14 +37,14 @@ public:
 	);
 
 	/**
-	 * Plays a character voice line given a GameplayTag using pre-rendered sound waves from referenced PlayVoiceLines assets.
+	 * Plays a character voice line given a String Table Key using pre-rendered sound waves from referenced PlayVoiceLines assets.
 	 * Plays IMMEDIATELY with ZERO DELAY if precached.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice", meta = (WorldContext = "WorldContextObject"))
-	static UAudioComponent* PlayCharacterVoiceFromTag(
+	static UAudioComponent* PlayCharacterVoiceFromKey(
 		const UObject* WorldContextObject,
 		UCharacterVoiceAsset* CharacterVoiceAsset,
-		FGameplayTag VoiceTag,
+		FName Key,
 		FString LanguageCode = TEXT(""),
 		UAudioComponent* TargetAudioComponent = nullptr,
 		FVector Location = FVector::ZeroVector,
