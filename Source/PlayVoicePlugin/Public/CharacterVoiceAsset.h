@@ -147,6 +147,12 @@ public:
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 
+	virtual void PostLoad() override;
+
+	/** Verifies and fixes audio file references in VoiceLines, placing recorded guide tracks in VoiceRecording subfolder */
+	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
+	void FixupVoiceLineAudioReferences();
+
 	/** Register a precached SoundWave for a specific text line and language */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	void CacheVoiceLine(const FString& TextLine, USoundWave* InSoundWave, const FString& LanguageCode = TEXT(""));

@@ -154,28 +154,61 @@ FString UCharacterVoiceAsset::GetVoiceRecordingFolderOnDisk() const
 	return RecordingFolder;
 }
 
-#if WITH_EDITOR
-void UCharacterVoiceAsset::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+void UCharacterVoiceAsset::PostLoad()
 {
-	Super::PostEditChangeProperty(PropertyChangedEvent);
+	Super::PostLoad();
+	FixupVoiceLineAudioReferences();
+}
 
-	FName PropertyName = PropertyChangedEvent.GetPropertyName();
-	if (PropertyName == GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, StringTable) ||
-		PropertyName == GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, Key))
+void UCharacterVoiceAsset::FixupVoiceLineAudioReferences()
+{
+	FString TargetRecordingFolder = GetVoiceRecordingFolderOnDisk();
+
+	for (FPlayVoiceLineEntry& Entry : VoiceLines)
 	{
-		for (FPlayVoiceLineEntry& Entry : VoiceLines)
+		// 1. Resolve TextLine from String Table if not set
+		if (Entry.StringTable && !Entry.Key.IsNone())
 		{
-			if (Entry.StringTable && !Entry.Key.IsNone())
+			FStringTableConstRef TableRef = Entry.StringTable->GetStringTable();
+			FStringTableEntryConstPtr TableEntry = TableRef->FindEntry(FTextKey(Entry.Key.ToString()));
+			if (TableEntry.IsValid())
 			{
-				FStringTableConstRef TableRef = Entry.StringTable->GetStringTable();
-				FStringTableEntryConstPtr TableEntry = TableRef->FindEntry(FTextKey(Entry.Key.ToString()));
-				if (TableEntry.IsValid())
+				Entry.TextLine = TableEntry->GetSourceString();
+			}
+		}
+
+		// 2. Fixup Guide Track audio file paths if recorded or moved
+		FString RawPath = Entry.AudioFile.FilePath.TrimStartAndEnd();
+		if (!RawPath.IsEmpty())
+		{
+			FString CleanFilename = FPaths::GetCleanFilename(RawPath);
+			if (CleanFilename.StartsWith(TEXT("REC_")))
+			{
+				FString DesiredPath = FPaths::Combine(TargetRecordingFolder, CleanFilename);
+				if (RawPath != DesiredPath)
 				{
-					Entry.TextLine = TableEntry->GetSourceString();
+					if (IFileManager::Get().FileExists(*RawPath) && !IFileManager::Get().FileExists(*DesiredPath))
+					{
+						IFileManager::Get().Move(*DesiredPath, *RawPath);
+					}
+
+					if (IFileManager::Get().FileExists(*DesiredPath))
+					{
+						Entry.AudioFile.FilePath = DesiredPath;
+					}
 				}
 			}
 		}
 	}
+
+	AutoLinkPrecachedSoundWaves();
+}
+
+#if WITH_EDITOR
+void UCharacterVoiceAsset::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+	FixupVoiceLineAudioReferences();
 }
 #endif
 
