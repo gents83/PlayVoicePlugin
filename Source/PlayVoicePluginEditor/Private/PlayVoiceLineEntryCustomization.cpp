@@ -45,6 +45,7 @@ void FPlayVoiceLineEntryCustomization::CustomizeChildren(TSharedRef<IPropertyHan
 	KeyHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, Key));
 	TextLineHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, TextLine));
 	AudioFileHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, AudioFile));
+	PrecachedSoundWaveHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, PrecachedSoundWave));
 
 	// 1. String Table property picker
 	if (StringTableHandle.IsValid())
@@ -63,31 +64,38 @@ void FPlayVoiceLineEntryCustomization::CustomizeChildren(TSharedRef<IPropertyHan
 	]
 	.ValueContent()
 	[
-		SNew(SComboBox<TSharedPtr<FName>>)
+		SNew(SComboBox<TSharedPtr<FKeyOption>>)
 		.OptionsSource(&KeyOptions)
-		.OnGenerateWidget_Lambda([](TSharedPtr<FName> InItem)
+		.OnGenerateWidget_Lambda([](TSharedPtr<FKeyOption> InItem)
 		{
-			return SNew(STextBlock).Text(FText::FromName(InItem.IsValid() ? *InItem : NAME_None));
+			return SNew(STextBlock).Text(InItem.IsValid() ? InItem->GetDisplayText() : FText::FromString("None"));
 		})
-		.OnSelectionChanged_Lambda([this](TSharedPtr<FName> NewChoice, ESelectInfo::Type SelectInfo)
+		.OnSelectionChanged_Lambda([this](TSharedPtr<FKeyOption> NewChoice, ESelectInfo::Type SelectInfo)
 		{
 			if (NewChoice.IsValid() && KeyHandle.IsValid())
 			{
 				CurrentlySelectedKey = NewChoice;
-				KeyHandle->SetValue(*NewChoice);
+				KeyHandle->SetValue(NewChoice->Key);
 
-				// Auto-fill TextLine from String Table
-				if (StringTableHandle.IsValid() && TextLineHandle.IsValid())
+				// Auto-fill TextLine from String Table or FKeyOption
+				if (TextLineHandle.IsValid())
 				{
-					UObject* TableObj = nullptr;
-					StringTableHandle->GetValue(TableObj);
-					if (UStringTable* TableAsset = Cast<UStringTable>(TableObj))
+					if (!NewChoice->SourceText.IsEmpty())
 					{
-						FStringTableConstRef TableRef = TableAsset->GetStringTable();
-						FStringTableEntryConstPtr TableEntry = TableRef->FindEntry(FTextKey(NewChoice->ToString()));
-						if (TableEntry.IsValid())
+						TextLineHandle->SetValue(NewChoice->SourceText);
+					}
+					else if (StringTableHandle.IsValid())
+					{
+						UObject* TableObj = nullptr;
+						StringTableHandle->GetValue(TableObj);
+						if (UStringTable* TableAsset = Cast<UStringTable>(TableObj))
 						{
-							TextLineHandle->SetValue(TableEntry->GetSourceString());
+							FStringTableConstRef TableRef = TableAsset->GetStringTable();
+							FStringTableEntryConstPtr TableEntry = TableRef->FindEntry(FTextKey(NewChoice->Key.ToString()));
+							if (TableEntry.IsValid())
+							{
+								TextLineHandle->SetValue(TableEntry->GetSourceString());
+							}
 						}
 					}
 				}
@@ -97,12 +105,25 @@ void FPlayVoiceLineEntryCustomization::CustomizeChildren(TSharedRef<IPropertyHan
 			SNew(STextBlock)
 			.Text_Lambda([this]()
 			{
+				if (CurrentlySelectedKey.IsValid())
+				{
+					return CurrentlySelectedKey->GetDisplayText();
+				}
 				if (KeyHandle.IsValid())
 				{
 					FName CurrentVal = NAME_None;
 					KeyHandle->GetValue(CurrentVal);
 					if (!CurrentVal.IsNone())
 					{
+						FString CurrentText;
+						if (TextLineHandle.IsValid())
+						{
+							TextLineHandle->GetValue(CurrentText);
+						}
+						if (!CurrentText.IsEmpty())
+						{
+							return FText::FromString(FString::Printf(TEXT("%s - \"%s\""), *CurrentVal.ToString(), *CurrentText));
+						}
 						return FText::FromName(CurrentVal);
 					}
 				}
@@ -117,7 +138,13 @@ void FPlayVoiceLineEntryCustomization::CustomizeChildren(TSharedRef<IPropertyHan
 		ChildBuilder.AddProperty(TextLineHandle.ToSharedRef());
 	}
 
-	// 4. Audio File property + Record Guide Track button
+	// 4. Precached SoundWave property reference
+	if (PrecachedSoundWaveHandle.IsValid())
+	{
+		ChildBuilder.AddProperty(PrecachedSoundWaveHandle.ToSharedRef());
+	}
+
+	// 5. Audio File property + Record Guide Track button
 	if (AudioFileHandle.IsValid())
 	{
 		IDetailPropertyRow& AudioRow = ChildBuilder.AddProperty(AudioFileHandle.ToSharedRef());
@@ -211,11 +238,14 @@ void FPlayVoiceLineEntryCustomization::RefreshKeyOptions()
 			TableRef->EnumerateSourceStrings([this, CurrentKeyVal](const FString& KeyString, const FString& SourceString)
 			{
 				FName KeyNameVal(*KeyString);
-				TSharedPtr<FName> OptionName = MakeShared<FName>(KeyNameVal);
-				KeyOptions.Add(OptionName);
+				TSharedPtr<FKeyOption> Option = MakeShared<FKeyOption>();
+				Option->Key = KeyNameVal;
+				Option->SourceText = SourceString;
+
+				KeyOptions.Add(Option);
 				if (KeyNameVal == CurrentKeyVal)
 				{
-					CurrentlySelectedKey = OptionName;
+					CurrentlySelectedKey = Option;
 				}
 				return true;
 			});
@@ -224,7 +254,13 @@ void FPlayVoiceLineEntryCustomization::RefreshKeyOptions()
 
 	if (!CurrentlySelectedKey.IsValid() && !CurrentKeyVal.IsNone())
 	{
-		CurrentlySelectedKey = MakeShared<FName>(CurrentKeyVal);
+		TSharedPtr<FKeyOption> Option = MakeShared<FKeyOption>();
+		Option->Key = CurrentKeyVal;
+		if (TextLineHandle.IsValid())
+		{
+			TextLineHandle->GetValue(Option->SourceText);
+		}
+		CurrentlySelectedKey = Option;
 		KeyOptions.Add(CurrentlySelectedKey);
 	}
 }

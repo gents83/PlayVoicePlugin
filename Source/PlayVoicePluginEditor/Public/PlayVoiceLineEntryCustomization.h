@@ -22,9 +22,29 @@ private:
 	TSharedPtr<IPropertyHandle> KeyHandle;
 	TSharedPtr<IPropertyHandle> TextLineHandle;
 	TSharedPtr<IPropertyHandle> AudioFileHandle;
+	TSharedPtr<IPropertyHandle> PrecachedSoundWaveHandle;
 
-	TArray<TSharedPtr<FName>> KeyOptions;
-	TSharedPtr<FName> CurrentlySelectedKey;
+	struct FKeyOption
+	{
+		FName Key = NAME_None;
+		FString SourceText;
+
+		FText GetDisplayText() const
+		{
+			if (Key.IsNone())
+			{
+				return FText::FromString(TEXT("None"));
+			}
+			if (SourceText.IsEmpty())
+			{
+				return FText::FromName(Key);
+			}
+			return FText::FromString(FString::Printf(TEXT("%s - \"%s\""), *Key.ToString(), *SourceText));
+		}
+	};
+
+	TArray<TSharedPtr<FKeyOption>> KeyOptions;
+	TSharedPtr<FKeyOption> CurrentlySelectedKey;
 
 	void RefreshKeyOptions();
 	FReply OnRecordGuideTrackClicked();
