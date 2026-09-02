@@ -94,11 +94,14 @@ void SPlayVoiceKeyGraphPin::RefreshKeyOptions()
 			if (Pin->PinType.PinSubCategoryObject.IsValid())
 			{
 				UObject* PinSubObj = Pin->PinType.PinSubCategoryObject.Get();
-				if (PinSubObj && (PinSubObj->IsChildOf(UCharacterVoiceAsset::StaticClass()) || PinSubObj->IsChildOf(UStringTable::StaticClass())))
+				if (UClass* SubClass = Cast<UClass>(PinSubObj))
 				{
-					if (Pin->DefaultObject)
+					if (SubClass->IsChildOf(UCharacterVoiceAsset::StaticClass()) || SubClass->IsChildOf(UStringTable::StaticClass()))
 					{
-						FoundTargetObject = Pin->DefaultObject;
+						if (Pin->DefaultObject)
+						{
+							FoundTargetObject = Pin->DefaultObject;
+						}
 					}
 				}
 			}
@@ -156,7 +159,7 @@ void SPlayVoiceKeyGraphPin::RefreshKeyOptions()
 	}
 }
 
-TSharedPtr<SGraphPin> FPlayVoiceGraphPinFactory::CreatePin(UEdGraphPin* InPin)
+TSharedPtr<SGraphPin> FPlayVoiceGraphPinFactory::CreatePin(UEdGraphPin* InPin) const
 {
 	if (InPin && InPin->PinName == FName(TEXT("Key")))
 	{

@@ -50,5 +50,5 @@ private:
 class FPlayVoiceGraphPinFactory : public FGraphPanelPinFactory
 {
 public:
-	virtual TSharedPtr<SGraphPin> CreatePin(UEdGraphPin* InPin) override;
+	virtual TSharedPtr<SGraphPin> CreatePin(UEdGraphPin* InPin) const override;
 };
