@@ -25,6 +25,7 @@ os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
 os.environ['HF_HUB_DISABLE_IMPLICIT_TOKEN_WARNING'] = '1'
 os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = '1'
 os.environ['NLTK_ALLOW_PROXIED_URLOPEN'] = '1'
+os.environ['TORCH_HUB_TRUSTED_REPO'] = 'snakers4/silero-vad'
 
 # Suppress verbose 404/307 HTTP probe logs from httpx, huggingface_hub, transformers, and urllib3
 for noisy_logger_name in ["httpx", "huggingface_hub", "huggingface_hub.utils._http", "transformers", "urllib3", "nltk"]:
@@ -109,6 +110,84 @@ try:
     HAS_FASTAPI = True
 except ImportError:
     HAS_FASTAPI = False
+
+
+def create_combined_reference_wav(valid_files: List[str], min_duration_sec: float = 10.0) -> Optional[str]:
+    """
+    Concatenates multiple reference audio files into a single temporary WAV file.
+    If total duration is less than min_duration_sec, repeats clips
+    to ensure OpenVoice get_se has sufficient audio length (>3s) for extraction.
+    """
+    if not valid_files:
+        return None
+
+    combined_samples = []
+    target_sr = 24000
+
+    for filepath in valid_files:
+        try:
+            with wave.open(filepath, 'rb') as wf:
+                nchannels = wf.getnchannels()
+                sampwidth = wf.getsampwidth()
+                framerate = wf.getframerate()
+                nframes = wf.getnframes()
+                if nframes == 0 or framerate == 0:
+                    continue
+                frames = wf.readframes(nframes)
+
+                if sampwidth == 2:
+                    raw_samples = struct.unpack(f'<{nframes * nchannels}h', frames)
+                elif sampwidth == 1:
+                    raw_samples = [(s - 128) * 256 for s in struct.unpack(f'<{nframes * nchannels}B', frames)]
+                else:
+                    continue
+
+                if nchannels > 1:
+                    mono_samples = [int(sum(raw_samples[i:i+nchannels]) / nchannels) for i in range(0, len(raw_samples), nchannels)]
+                else:
+                    mono_samples = list(raw_samples)
+
+                if framerate != target_sr:
+                    num_target = int(len(mono_samples) * target_sr / framerate)
+                    resample_buf = []
+                    for i in range(num_target):
+                        src_pos = float(i) * framerate / target_sr
+                        idx = int(src_pos)
+                        frac = src_pos - idx
+                        if idx >= len(mono_samples) - 1:
+                            val = mono_samples[-1] if mono_samples else 0
+                        else:
+                            val = (1.0 - frac) * mono_samples[idx] + frac * mono_samples[idx + 1]
+                        resample_buf.append(max(-32768, min(32767, int(val))))
+                    mono_samples = resample_buf
+
+                combined_samples.extend(mono_samples)
+                # Short 0.1s silence pause between reference clips
+                combined_samples.extend([0] * int(target_sr * 0.1))
+        except Exception as e:
+            logger.warning(f"Could not read reference audio file '{filepath}' for concatenation: {e}")
+
+    if not combined_samples:
+        return None
+
+    # If total audio length is under min_duration_sec, repeat audio buffer
+    target_total_samples = int(target_sr * min_duration_sec)
+    if len(combined_samples) < target_total_samples:
+        repeats = math.ceil(target_total_samples / len(combined_samples))
+        combined_samples = (combined_samples * repeats)[:target_total_samples]
+
+    temp_path = os.path.join(tempfile.gettempdir(), "combined_reference_se.wav")
+    try:
+        with wave.open(temp_path, 'wb') as out_wf:
+            out_wf.setnchannels(1)
+            out_wf.setsampwidth(2)
+            out_wf.setframerate(target_sr)
+            packed = struct.pack(f'<{len(combined_samples)}h', *combined_samples)
+            out_wf.writeframes(packed)
+        return temp_path
+    except Exception as e:
+        logger.error(f"Failed writing combined reference WAV: {e}")
+        return None
 
 
 def ensure_converter_checkpoints(checkpoint_dir: str) -> Optional[str]:
@@ -222,19 +301,33 @@ class OpenVoiceEngine:
                 target_dir = os.path.join(tempfile.gettempdir(), 'processed')
                 os.makedirs(target_dir, exist_ok=True)
 
-                # Extract target speaker embeddings across all valid reference audio files and average them
+                # Concatenate reference audio files into a combined WAV file (>=10s) to guarantee sufficient audio length for get_se
+                combined_ref_path = create_combined_reference_wav(valid_files, min_duration_sec=10.0)
+
                 se_tensors = []
-                for ref_file in valid_files:
+                files_to_try = [combined_ref_path] if combined_ref_path else []
+                files_to_try.extend(valid_files)
+
+                for ref_file in files_to_try:
+                    if not ref_file or not os.path.exists(ref_file):
+                        continue
+
+                    se = None
                     try:
                         se, _ = get_se(ref_file, self.converter, target_dir=target_dir, vad=True)
+                    except Exception as vad_err:
+                        try:
+                            se, _ = get_se(ref_file, self.converter, target_dir=target_dir, vad=False)
+                        except Exception as novad_err:
+                            logger.warning(f"Could not extract tone color from reference audio file '{ref_file}': {novad_err}")
+
+                    if se is not None:
                         if isinstance(se, torch.Tensor):
                             se_tensors.append(se.detach().cpu())
                         elif hasattr(se, 'tolist'):
                             se_tensors.append(torch.tensor(se))
                         else:
                             se_tensors.append(torch.tensor(list(se)))
-                    except Exception as e:
-                        logger.warning(f"Could not extract tone color from reference audio file '{ref_file}': {e}")
 
                 if se_tensors:
                     stacked = torch.stack([t.float() for t in se_tensors])
