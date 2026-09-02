@@ -556,36 +556,10 @@ FReply FPlayVoiceLineEntryCustomization::OnStopRecordingClicked()
 
 		if (TargetVoiceAsset)
 		{
-			UPackage* OuterPackage = TargetVoiceAsset->GetOutermost();
-			FString AssetFolderPath = FPaths::GetPath(OuterPackage->GetName());
-			FString KeySanitized = FString::Printf(TEXT("SW_%s_%s_%s"), *TargetVoiceAsset->CharacterName.ToString(), *TargetVoiceAsset->DefaultLanguage, *CleanKeyName);
-			FString PackagePath = AssetFolderPath / KeySanitized;
-
-			UPackage* SoundWavePackage = CreatePackage(*PackagePath);
-			USoundWave* SoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(WAVBytes, SoundWavePackage, FName(*KeySanitized));
-
-			if (SoundWave)
-			{
-				TargetVoiceAsset->CacheVoiceLineForKey(KeyVal, SoundWave, TargetVoiceAsset->DefaultLanguage);
-
-				TSharedPtr<IPropertyHandle> SoundHandle = StructPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, PrecachedSoundWave));
-				if (SoundHandle.IsValid())
-				{
-					SoundHandle->SetValue(SoundWave);
-				}
-
-				SoundWave->MarkPackageDirty();
-				TargetVoiceAsset->MarkPackageDirty();
-
-				if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
-				{
-					FAssetRegistryModule::AssetCreated(SoundWave);
-				}
-				UE_LOG(LogPlayVoiceLineEntryCustomization, Log, TEXT("Registered recorded guide track as precached SoundWave asset '%s'"), *KeySanitized);
-			}
+			TargetVoiceAsset->MarkPackageDirty();
 		}
 
-		FNotificationInfo SuccessNotification(FText::Format(FText::FromString("PlayVoice: Saved guide track and created precached SoundWave: VoiceRecording/{0}"), FText::FromString(FileName)));
+		FNotificationInfo SuccessNotification(FText::Format(FText::FromString("PlayVoice: Saved guide track recording: VoiceRecording/{0}"), FText::FromString(FileName)));
 		SuccessNotification.ExpireDuration = 4.0f;
 		FSlateNotificationManager::Get().AddNotification(SuccessNotification);
 
