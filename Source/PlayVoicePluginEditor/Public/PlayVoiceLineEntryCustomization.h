@@ -22,6 +22,7 @@ private:
 	TSharedPtr<IPropertyHandle> KeyHandle;
 	TSharedPtr<IPropertyHandle> TextLineHandle;
 	TSharedPtr<IPropertyHandle> AudioFileHandle;
+	TSharedPtr<IPropertyHandle> PrecachedSoundWaveHandle;
 
 	struct FKeyOption
 	{

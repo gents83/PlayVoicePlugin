@@ -45,6 +45,7 @@ void FPlayVoiceLineEntryCustomization::CustomizeChildren(TSharedRef<IPropertyHan
 	KeyHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, Key));
 	TextLineHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, TextLine));
 	AudioFileHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, AudioFile));
+	PrecachedSoundWaveHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, PrecachedSoundWave));
 
 	// 1. String Table property picker
 	if (StringTableHandle.IsValid())
@@ -137,7 +138,13 @@ void FPlayVoiceLineEntryCustomization::CustomizeChildren(TSharedRef<IPropertyHan
 		ChildBuilder.AddProperty(TextLineHandle.ToSharedRef());
 	}
 
-	// 4. Audio File property + Record Guide Track button
+	// 4. Precached SoundWave property reference
+	if (PrecachedSoundWaveHandle.IsValid())
+	{
+		ChildBuilder.AddProperty(PrecachedSoundWaveHandle.ToSharedRef());
+	}
+
+	// 5. Audio File property + Record Guide Track button
 	if (AudioFileHandle.IsValid())
 	{
 		IDetailPropertyRow& AudioRow = ChildBuilder.AddProperty(AudioFileHandle.ToSharedRef());
