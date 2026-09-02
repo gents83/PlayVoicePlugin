@@ -371,29 +371,32 @@ class OpenVoiceEngine:
                 combined_ref_path = create_combined_reference_wav(valid_files, min_duration_sec=10.0)
 
                 se_tensors = []
-                files_to_try = [combined_ref_path] if combined_ref_path else []
-                files_to_try.extend(valid_files)
-
-                for ref_file in files_to_try:
-                    if not ref_file or not os.path.exists(ref_file):
-                        continue
-
-                    se = None
+                # First try get_se on the combined reference audio track (fast & robust)
+                if combined_ref_path and os.path.exists(combined_ref_path):
                     try:
-                        se, _ = get_se(ref_file, self.converter, target_dir=target_dir, vad=True)
-                    except Exception as vad_err:
+                        se, _ = get_se(combined_ref_path, self.converter, target_dir=target_dir, vad=True)
+                        if se is not None:
+                            se_tensors.append(se.detach().cpu() if isinstance(se, torch.Tensor) else torch.tensor(se))
+                    except Exception as comb_err:
+                        logger.warning(f"get_se with VAD on combined audio track failed ({comb_err}). Retrying without VAD...")
+                        try:
+                            se, _ = get_se(combined_ref_path, self.converter, target_dir=target_dir, vad=False)
+                            if se is not None:
+                                se_tensors.append(se.detach().cpu() if isinstance(se, torch.Tensor) else torch.tensor(se))
+                        except Exception as comb_novad_err:
+                            logger.warning(f"get_se without VAD on combined audio track failed: {comb_novad_err}")
+
+                # If combined track extraction didn't yield an embedding, fallback to individual files (up to first 3 valid files for speed)
+                if not se_tensors:
+                    for ref_file in valid_files[:3]:
+                        if not ref_file or not os.path.exists(ref_file):
+                            continue
                         try:
                             se, _ = get_se(ref_file, self.converter, target_dir=target_dir, vad=False)
-                        except Exception as novad_err:
-                            logger.warning(f"Could not extract tone color from reference audio file '{ref_file}': {novad_err}")
-
-                    if se is not None:
-                        if isinstance(se, torch.Tensor):
-                            se_tensors.append(se.detach().cpu())
-                        elif hasattr(se, 'tolist'):
-                            se_tensors.append(torch.tensor(se))
-                        else:
-                            se_tensors.append(torch.tensor(list(se)))
+                            if se is not None:
+                                se_tensors.append(se.detach().cpu() if isinstance(se, torch.Tensor) else torch.tensor(se))
+                        except Exception as e:
+                            logger.warning(f"Could not extract tone color from '{ref_file}': {e}")
 
                 if se_tensors:
                     stacked = torch.stack([t.float() for t in se_tensors])
