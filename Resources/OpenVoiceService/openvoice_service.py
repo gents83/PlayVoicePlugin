@@ -169,28 +169,40 @@ class OpenVoiceEngine:
                 device = "cuda" if torch.cuda.is_available() else "cpu"
                 target_dir = os.path.join(tempfile.gettempdir(), 'processed')
                 os.makedirs(target_dir, exist_ok=True)
-                target_se, audio_name = get_se(valid_files[0], self.converter, target_dir=target_dir, vad=True)
-                if isinstance(target_se, torch.Tensor):
-                    se_list = target_se.detach().cpu().numpy().tolist()
-                elif hasattr(target_se, 'tolist'):
-                    se_list = target_se.tolist()
-                else:
-                    se_list = list(target_se)
 
-                embedding_payload = {
-                    "character_name": character_name,
-                    "num_reference_files": len(valid_files),
-                    "valid_reference_files": valid_files,
-                    "target_se": se_list,
-                    "acoustic_profile": acoustic_profile,
-                    "engine": "OpenVoice-v2"
-                }
-                return {
-                    "status": "success",
-                    "character_name": character_name,
-                    "embedding_data": json.dumps(embedding_payload),
-                    "model_checkpoint": f"{self.checkpoint_dir}/{character_name}_se.pth"
-                }
+                # Extract target speaker embeddings across all valid reference audio files and average them
+                se_tensors = []
+                for ref_file in valid_files:
+                    try:
+                        se, _ = get_se(ref_file, self.converter, target_dir=target_dir, vad=True)
+                        if isinstance(se, torch.Tensor):
+                            se_tensors.append(se.detach().cpu())
+                        elif hasattr(se, 'tolist'):
+                            se_tensors.append(torch.tensor(se))
+                        else:
+                            se_tensors.append(torch.tensor(list(se)))
+                    except Exception as e:
+                        logger.warning(f"Could not extract tone color from reference audio file '{ref_file}': {e}")
+
+                if se_tensors:
+                    stacked = torch.stack([t.float() for t in se_tensors])
+                    target_se = torch.mean(stacked, dim=0)
+                    se_list = target_se.numpy().tolist()
+
+                    embedding_payload = {
+                        "character_name": character_name,
+                        "num_reference_files": len(valid_files),
+                        "valid_reference_files": valid_files,
+                        "target_se": se_list,
+                        "acoustic_profile": acoustic_profile,
+                        "engine": "OpenVoice-v2"
+                    }
+                    return {
+                        "status": "success",
+                        "character_name": character_name,
+                        "embedding_data": json.dumps(embedding_payload),
+                        "model_checkpoint": f"{self.checkpoint_dir}/{character_name}_se.pth"
+                    }
             except Exception as e:
                 logger.warning(f"OpenVoice get_se extraction failed ({e}). Falling back to acoustic profile extraction.")
 
@@ -312,6 +324,11 @@ class OpenVoiceEngine:
                                 with open(out_path, 'rb') as f:
                                     return ensure_wav_format(f.read(), target_sample_rate=24000)
 
+                # If guide track was used but tone color conversion failed or was unavailable, fall back to base TTS generation rather than returning raw guide track
+                if bUsedGuideTrack:
+                    logger.info(f"Tone color conversion on guide track was not completed for '{character_name}'. Generating speech via TTS in character reference voice.")
+                    tts_engine_model.tts_to_file(text, spk_id, src_path, speed=speed)
+
                 if os.path.exists(src_path):
                     with open(src_path, 'rb') as f:
                         return ensure_wav_format(f.read(), target_sample_rate=24000)
@@ -364,14 +381,6 @@ class OpenVoiceEngine:
             pitch_freq = float(acoustic_profile["pitch_mean"])
         else:
             pitch_freq = 140.0 + (abs(hash(character_name)) % 100)
-
-        # If optional guide audio file exists, extract its pitch/rms profile for performance reproduction
-        if guide_audio_file and os.path.exists(guide_audio_file):
-            guide_profile = analyze_reference_audio_files([guide_audio_file])
-            if guide_profile and guide_profile.get("pitch_mean"):
-                acoustic_profile = acoustic_profile or {}
-                acoustic_profile["pitch_mean"] = (pitch_freq + float(guide_profile["pitch_mean"])) / 2.0
-                acoustic_profile["rms_mean"] = float(guide_profile.get("rms_mean", 0.25))
 
         synth_bytes = generate_synthetic_wav(text, speed=speed, pitch_freq=pitch_freq, acoustic_profile=acoustic_profile, character_name=character_name)
         return ensure_wav_format(synth_bytes, target_sample_rate=24000)
