@@ -10,6 +10,8 @@
 #include "PlayVoiceSettings.h"
 #include "PlayVoiceSettingsCustomization.h"
 #include "PlayVoiceLineEntryCustomization.h"
+#include "PlayVoiceKeyGraphPin.h"
+#include "EdGraphUtilities.h"
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 #include "Interfaces/IPluginManager.h"
@@ -23,6 +25,9 @@ void FPlayVoicePluginEditorModule::StartupModule()
 	RegisterCustomizations();
 	RegisterAssetTypeActions();
 
+	PlayVoicePinFactory = MakeShared<FPlayVoiceGraphPinFactory>();
+	FEdGraphUtilities::RegisterVisualPinFactory(PlayVoicePinFactory);
+
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
 	if (Settings && Settings->bAutoStartServiceOnEditorStartup)
 	{
@@ -32,6 +37,12 @@ void FPlayVoicePluginEditorModule::StartupModule()
 
 void FPlayVoicePluginEditorModule::ShutdownModule()
 {
+	if (PlayVoicePinFactory.IsValid())
+	{
+		FEdGraphUtilities::UnregisterVisualPinFactory(PlayVoicePinFactory);
+		PlayVoicePinFactory.Reset();
+	}
+
 	UnregisterCustomizations();
 	UnregisterAssetTypeActions();
 
