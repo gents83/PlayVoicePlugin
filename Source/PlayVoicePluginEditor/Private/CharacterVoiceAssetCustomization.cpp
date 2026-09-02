@@ -583,6 +583,10 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 						FString PackagePath = AssetFolderPath / KeySanitized;
 
 						UPackage* SoundWavePackage = CreatePackage(*PackagePath);
+						if (SoundWavePackage)
+						{
+							SoundWavePackage->FullyLoad();
+						}
 						USoundWave* SoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(Response->GetContent(), SoundWavePackage, FName(*KeySanitized));
 
 						if (SoundWave)
