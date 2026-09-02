@@ -111,6 +111,52 @@ except ImportError:
     HAS_FASTAPI = False
 
 
+def ensure_converter_checkpoints(checkpoint_dir: str) -> Optional[str]:
+    """
+    Ensures OpenVoice converter checkpoints (config.json and checkpoint.pth)
+    are present in checkpoint_dir/converter/. Automatically downloads from
+    HuggingFace (myshell-ai/OpenVoiceV2) if missing.
+    """
+    converter_dir = os.path.join(checkpoint_dir, "converter")
+    config_path = os.path.join(converter_dir, "config.json")
+    ckpt_path = os.path.join(converter_dir, "checkpoint.pth")
+
+    if os.path.exists(config_path) and os.path.exists(ckpt_path):
+        return converter_dir
+
+    logger.info(f"OpenVoice converter checkpoints not found at {converter_dir}. Automatically downloading OpenVoice v2 checkpoints from HuggingFace (myshell-ai/OpenVoiceV2)...")
+    os.makedirs(converter_dir, exist_ok=True)
+
+    urls = {
+        config_path: "https://huggingface.co/myshell-ai/OpenVoiceV2/raw/main/converter/config.json",
+        ckpt_path: "https://huggingface.co/myshell-ai/OpenVoiceV2/resolve/main/converter/checkpoint.pth"
+    }
+
+    import urllib.request
+    for dest_path, url in urls.items():
+        if not os.path.exists(dest_path):
+            try:
+                logger.info(f"Downloading {os.path.basename(dest_path)} from {url}...")
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req) as resp, open(dest_path + ".tmp", "wb") as out_file:
+                    out_file.write(resp.read())
+                os.rename(dest_path + ".tmp", dest_path)
+                logger.info(f"Successfully downloaded {os.path.basename(dest_path)}.")
+            except Exception as dl_err:
+                logger.error(f"Failed to download OpenVoice checkpoint {os.path.basename(dest_path)} from {url}: {dl_err}")
+                if os.path.exists(dest_path + ".tmp"):
+                    try:
+                        os.remove(dest_path + ".tmp")
+                    except Exception:
+                        pass
+                return None
+
+    if os.path.exists(config_path) and os.path.exists(ckpt_path):
+        return converter_dir
+
+    return None
+
+
 class OpenVoiceEngine:
     """
     Manages OpenVoice model checkpoints, Tone Color Extraction, and Zero-Shot Speech Synthesis.
@@ -132,9 +178,15 @@ class OpenVoiceEngine:
                 resolved_ckpt_dir = None
                 for cand in candidate_paths:
                     cand_abs = os.path.abspath(cand)
-                    if os.path.exists(os.path.join(cand_abs, "converter")):
+                    if os.path.exists(os.path.join(cand_abs, "converter", "config.json")) and os.path.exists(os.path.join(cand_abs, "converter", "checkpoint.pth")):
                         resolved_ckpt_dir = cand_abs
                         break
+
+                if not resolved_ckpt_dir:
+                    primary_dir = os.path.abspath(checkpoint_dir)
+                    ensure_converter_checkpoints(primary_dir)
+                    if os.path.exists(os.path.join(primary_dir, "converter", "config.json")) and os.path.exists(os.path.join(primary_dir, "converter", "checkpoint.pth")):
+                        resolved_ckpt_dir = primary_dir
 
                 if resolved_ckpt_dir:
                     self.checkpoint_dir = resolved_ckpt_dir
@@ -144,7 +196,7 @@ class OpenVoiceEngine:
                     self.converter.load_ckpt(f"{converter_path}/checkpoint.pth")
                     logger.info(f"Loaded OpenVoice ToneColorConverter on {device} from {converter_path}")
                 else:
-                    logger.info("OpenVoice converter checkpoints not found in candidate paths. Tone color extraction will fall back gracefully to acoustic profile mode. (To enable full OpenVoice zero-shot tone color cloning, place 'checkpoints/converter' in your project root).")
+                    logger.warning("OpenVoice converter checkpoints not found and auto-download was not completed. Tone color extraction will fall back to acoustic profile mode.")
             except Exception as e:
                 logger.error(f"Failed loading OpenVoice checkpoints: {e}")
 
@@ -612,13 +664,21 @@ def generate_synthetic_wav(text: str, speed: float = 1.0, sample_rate: int = 240
     """
     pitch_base = pitch_freq
     rms_power = 0.25
+    zcr_noise = 0.05
     if acoustic_profile:
         if acoustic_profile.get("pitch_mean"):
             pitch_base = float(acoustic_profile["pitch_mean"])
         if acoustic_profile.get("rms_mean"):
             rms_power = min(0.35, max(0.12, float(acoustic_profile["rms_mean"]) * 1.5))
+        if acoustic_profile.get("zcr_mean"):
+            zcr_noise = min(0.15, float(acoustic_profile["zcr_mean"]))
     elif character_name:
         pitch_base = 130.0 + (abs(hash(character_name)) % 140)
+
+    # Formant resonances tuned to reference speaker vocal tract length
+    f1 = pitch_base * 3.2
+    f2 = pitch_base * 6.5
+    f3 = pitch_base * 10.5
 
     words = [w for w in text.split() if w.strip()]
     if not words:
@@ -626,6 +686,9 @@ def generate_synthetic_wav(text: str, speed: float = 1.0, sample_rate: int = 240
 
     audio_data = bytearray()
     total_time = 0.0
+
+    import random
+    rng = random.Random(hash(character_name or "Character"))
 
     for word_idx, word in enumerate(words):
         word_dur = max(0.18, len(word) * 0.08 / max(0.5, speed))
@@ -641,18 +704,21 @@ def generate_synthetic_wav(text: str, speed: float = 1.0, sample_rate: int = 240
             # Dynamic pitch contour per word (natural prosody arc)
             f0 = pitch_base * (1.0 + 0.08 * math.sin(math.pi * t_word) - 0.04 * (word_idx / max(1, len(words))))
 
-            # Vocal tract formant harmonic synthesis (F0 + 2F0 + 3F0 + 4F0)
+            # Vocal tract formant harmonic synthesis
             s_f0 = math.sin(2.0 * math.pi * f0 * t_global)
-            s_f1 = 0.5 * math.sin(2.0 * math.pi * f0 * 2.0 * t_global)
-            s_f2 = 0.25 * math.sin(2.0 * math.pi * f0 * 3.0 * t_global)
-            s_f3 = 0.125 * math.sin(2.0 * math.pi * f0 * 4.0 * t_global)
+            s_f1 = 0.6 * math.sin(2.0 * math.pi * f1 * t_global)
+            s_f2 = 0.3 * math.sin(2.0 * math.pi * f2 * t_global)
+            s_f3 = 0.15 * math.sin(2.0 * math.pi * f3 * t_global)
 
-            # Vocal signal combination normalized
-            vocal_signal = (s_f0 + s_f1 + s_f2 + s_f3) / 1.875
+            vocal_signal = (s_f0 + s_f1 + s_f2 + s_f3) / 2.05
 
             # Subtle speaker pitch vibrato modulation
             vibrato = math.sin(2.0 * math.pi * 5.5 * t_global) * 0.02
             vocal_signal *= (1.0 + vibrato)
+
+            # Incorporate sibilance / noise component derived from reference zcr_noise
+            noise = (rng.random() * 2.0 - 1.0) * zcr_noise * 0.15
+            vocal_signal = vocal_signal * (1.0 - zcr_noise * 0.3) + noise
 
             sample_val = int(32767.0 * rms_power * env * vocal_signal)
             audio_data.extend(struct.pack('<h', max(-32768, min(32767, sample_val))))
