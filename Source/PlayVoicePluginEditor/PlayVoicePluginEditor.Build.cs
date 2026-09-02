@@ -45,6 +45,7 @@ public class PlayVoicePluginEditor : ModuleRules
 				"JsonUtilities",
 				"DeveloperSettings",
 				"BlueprintGraph",
+				"GraphEditor",
 				"AssetRegistry",
 				"Projects",
 				"AudioCaptureCore"
