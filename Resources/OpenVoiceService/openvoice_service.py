@@ -15,7 +15,11 @@ import struct
 import argparse
 import logging
 import tempfile
+import warnings
 from typing import List, Optional, Dict, Any
+
+warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', category=FutureWarning)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("OpenVoiceService")
@@ -270,10 +274,30 @@ class OpenVoiceEngine:
                 if resolved_ckpt_dir:
                     self.checkpoint_dir = resolved_ckpt_dir
                     converter_path = os.path.join(resolved_ckpt_dir, "converter")
-                    device = "cuda" if torch.cuda.is_available() else "cpu"
-                    self.converter = ToneColorConverter(f"{converter_path}/config.json", device=device)
-                    self.converter.load_ckpt(f"{converter_path}/checkpoint.pth")
-                    logger.info(f"Loaded OpenVoice ToneColorConverter on {device} from {converter_path}")
+
+                    device = "cpu"
+                    if torch.cuda.is_available():
+                        try:
+                            # Test CUDA execution to verify cuBLAS DLLs load properly
+                            dummy = torch.zeros(1).cuda()
+                            device = "cuda"
+                        except Exception as cuda_err:
+                            logger.warning(f"CUDA runtime check failed ({cuda_err}). Defaulting OpenVoice converter to CPU device.")
+                            device = "cpu"
+
+                    try:
+                        self.converter = ToneColorConverter(f"{converter_path}/config.json", device=device)
+                        self.converter.load_ckpt(f"{converter_path}/checkpoint.pth")
+                        logger.info(f"Loaded OpenVoice ToneColorConverter on {device} from {converter_path}")
+                    except Exception as load_err:
+                        if device == "cuda":
+                            logger.warning(f"Failed loading OpenVoice converter on CUDA ({load_err}). Retrying on CPU...")
+                            device = "cpu"
+                            self.converter = ToneColorConverter(f"{converter_path}/config.json", device="cpu")
+                            self.converter.load_ckpt(f"{converter_path}/checkpoint.pth")
+                            logger.info(f"Loaded OpenVoice ToneColorConverter on CPU fallback from {converter_path}")
+                        else:
+                            raise load_err
                 else:
                     logger.warning("OpenVoice converter checkpoints not found and auto-download was not completed. Tone color extraction will fall back to acoustic profile mode.")
             except Exception as e:
@@ -297,7 +321,14 @@ class OpenVoiceEngine:
 
         if HAS_OPENVOICE and self.converter is not None:
             try:
-                device = "cuda" if torch.cuda.is_available() else "cpu"
+                device = "cpu"
+                if torch.cuda.is_available():
+                    try:
+                        dummy = torch.zeros(1).cuda()
+                        device = "cuda"
+                    except Exception:
+                        device = "cpu"
+
                 target_dir = os.path.join(tempfile.gettempdir(), 'processed')
                 os.makedirs(target_dir, exist_ok=True)
 
@@ -540,7 +571,7 @@ class OpenVoiceEngine:
 
         try:
             import whisper
-            model = whisper.load_model("base")
+            model = whisper.load_model("base", device="cpu")
             res = model.transcribe(audio_file)
             text = res.get("text", "").strip()
             if text:
