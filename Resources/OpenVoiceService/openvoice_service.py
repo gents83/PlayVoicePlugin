@@ -30,6 +30,7 @@ os.environ['HF_HUB_DISABLE_IMPLICIT_TOKEN_WARNING'] = '1'
 os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = '1'
 os.environ['NLTK_ALLOW_PROXIED_URLOPEN'] = '1'
 os.environ['TORCH_HUB_TRUSTED_REPO'] = 'snakers4/silero-vad'
+os.environ['CTRANSLATE2_FORCE_CPU'] = '1'
 
 # Suppress verbose 404/307 HTTP probe logs from httpx, huggingface_hub, transformers, and urllib3
 for noisy_logger_name in ["httpx", "huggingface_hub", "huggingface_hub.utils._http", "transformers", "urllib3", "nltk"]:
@@ -113,6 +114,23 @@ try:
         os.environ['CTRANSLATE2_FORCE_CPU'] = '1'
         torch.cuda.is_available = lambda: False
         logger.info("OpenVoice service configured to run on CPU mode.")
+
+    # Monkey-patch faster_whisper to force CPU execution and int8 computation
+    try:
+        import faster_whisper
+        _orig_whisper_init = faster_whisper.WhisperModel.__init__
+        def _safe_whisper_init(self, model_size_or_path, device="auto", device_index=0, compute_type="default", **kwargs):
+            if not bCudaAvailable:
+                device = "cpu"
+                compute_type = "int8"
+            try:
+                _orig_whisper_init(self, model_size_or_path, device=device, device_index=device_index, compute_type=compute_type, **kwargs)
+            except Exception as w_err:
+                logger.warning(f"WhisperModel init on {device} failed ({w_err}). Retrying on CPU...")
+                _orig_whisper_init(self, model_size_or_path, device="cpu", compute_type="int8", **kwargs)
+        faster_whisper.WhisperModel.__init__ = _safe_whisper_init
+    except Exception:
+        pass
 
     import torchaudio
     from openvoice.se_extractor import get_se
