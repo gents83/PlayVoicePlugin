@@ -97,6 +97,23 @@ except Exception:
 HAS_OPENVOICE = False
 try:
     import torch
+
+    # Verify CUDA / cuBLAS DLL availability before allowing CUDA execution
+    bCudaAvailable = False
+    if torch.cuda.is_available():
+        try:
+            dummy = torch.zeros(1).cuda()
+            bCudaAvailable = True
+        except Exception as cuda_check_err:
+            logger.warning(f"CUDA runtime check failed ({cuda_check_err}). Disabling CUDA and forcing CPU execution.")
+            bCudaAvailable = False
+
+    if not bCudaAvailable:
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''
+        os.environ['CTRANSLATE2_FORCE_CPU'] = '1'
+        torch.cuda.is_available = lambda: False
+        logger.info("OpenVoice service configured to run on CPU mode.")
+
     import torchaudio
     from openvoice.se_extractor import get_se
     from openvoice.api import ToneColorConverter
