@@ -61,7 +61,27 @@ USoundWave* UPlayVoiceAudioUtils::CreateSoundWaveFromPCM(const TArray<uint8>& PC
 	EObjectFlags ObjectFlags = Outer ? (RF_Public | RF_Standalone) : RF_Transient;
 	FName SoundName = Name.IsNone() ? NAME_None : Name;
 
-	USoundWave* SoundWave = NewObject<USoundWave>(SoundOuter, SoundName, ObjectFlags);
+	USoundWave* SoundWave = nullptr;
+	if (SoundOuter && !SoundName.IsNone())
+	{
+		UObject* ExistingObj = FindObject<UObject>(SoundOuter, *SoundName.ToString());
+		if (ExistingObj)
+		{
+			SoundWave = Cast<USoundWave>(ExistingObj);
+			if (!SoundWave)
+			{
+				// Existing object is of a different class (e.g., UObjectRedirector). Rename out of the way.
+				ExistingObj->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional);
+				ExistingObj->MarkAsGarbage();
+			}
+		}
+	}
+
+	if (!SoundWave)
+	{
+		SoundWave = NewObject<USoundWave>(SoundOuter, SoundName, ObjectFlags);
+	}
+
 	if (!SoundWave)
 	{
 		return nullptr;
@@ -124,7 +144,27 @@ USoundWave* UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(const TArray<uint
 	EObjectFlags ObjectFlags = Outer ? (RF_Public | RF_Standalone) : RF_Transient;
 	FName SoundName = Name.IsNone() ? NAME_None : Name;
 
-	USoundWave* SoundWave = NewObject<USoundWave>(SoundOuter, SoundName, ObjectFlags);
+	USoundWave* SoundWave = nullptr;
+	if (SoundOuter && !SoundName.IsNone())
+	{
+		UObject* ExistingObj = FindObject<UObject>(SoundOuter, *SoundName.ToString());
+		if (ExistingObj)
+		{
+			SoundWave = Cast<USoundWave>(ExistingObj);
+			if (!SoundWave)
+			{
+				// Existing object is of a different class (e.g., UObjectRedirector). Rename out of the way.
+				ExistingObj->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional);
+				ExistingObj->MarkAsGarbage();
+			}
+		}
+	}
+
+	if (!SoundWave)
+	{
+		SoundWave = NewObject<USoundWave>(SoundOuter, SoundName, ObjectFlags);
+	}
+
 	if (!SoundWave)
 	{
 		return nullptr;

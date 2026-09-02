@@ -35,7 +35,7 @@ struct PLAYVOICEPLUGIN_API FPlayVoiceLineEntry
 	FFilePath AudioFile;
 
 	/** Precached SoundWave generated for this line entry */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "PlayVoice")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	TObjectPtr<USoundWave> PrecachedSoundWave = nullptr;
 };
 
