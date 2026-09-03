@@ -50,6 +50,16 @@ class ServiceContractTests(unittest.TestCase):
         self.assertNotEqual(payload["status"], "ok")
         self.assertFalse(payload["ready"])
 
+    def test_deferred_engine_initialization_does_not_report_checkpoint_error(self):
+        original_has_openvoice = self.service.HAS_OPENVOICE
+        self.service.HAS_OPENVOICE = True
+        try:
+            engine = self.service.OpenVoiceEngine(load_existing=False)
+            self.assertIsNone(engine.initialization_error)
+            self.assertFalse(engine.ready)
+        finally:
+            self.service.HAS_OPENVOICE = original_has_openvoice
+
     def test_combined_reference_paths_are_unique(self):
         with tempfile.TemporaryDirectory() as directory:
             reference = self.make_wav(directory)
