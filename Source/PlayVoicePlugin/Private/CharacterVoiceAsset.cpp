@@ -492,6 +492,15 @@ TArray<FString> UCharacterVoiceAsset::ResolveAudioFilesFromFolderAndFiles(const 
 
 			for (const FString& FoundFile : FoundFiles)
 			{
+				FString CleanFilename = FPaths::GetCleanFilename(FoundFile);
+				FString CleanPath = FPaths::ConvertRelativePathToFull(FoundFile);
+
+				// Exclude guide tracks (REC_... or VoiceRecording folder) and precached sound wave files (SW_...)
+				if (CleanFilename.StartsWith(TEXT("REC_")) || CleanFilename.StartsWith(TEXT("SW_")) || CleanPath.Contains(TEXT("VoiceRecording")))
+				{
+					continue;
+				}
+
 				if (IFileManager::Get().FileExists(*FoundFile))
 				{
 					ResolvedFiles.AddUnique(FoundFile);
@@ -503,6 +512,15 @@ TArray<FString> UCharacterVoiceAsset::ResolveAudioFilesFromFolderAndFiles(const 
 			IFileManager::Get().FindFilesRecursive(FoundUAssets, *FolderFullPath, TEXT("*.uasset"), true, false, false);
 			for (const FString& UAssetFile : FoundUAssets)
 			{
+				FString CleanFilename = FPaths::GetCleanFilename(UAssetFile);
+				FString CleanPath = FPaths::ConvertRelativePathToFull(UAssetFile);
+
+				// Exclude guide tracks (REC_... or VoiceRecording folder) and precached sound wave files (SW_...)
+				if (CleanFilename.StartsWith(TEXT("REC_")) || CleanFilename.StartsWith(TEXT("SW_")) || CleanPath.Contains(TEXT("VoiceRecording")))
+				{
+					continue;
+				}
+
 				FString PackageName;
 				if (FPackageName::TryConvertFilenameToLongPackageName(UAssetFile, PackageName))
 				{

@@ -198,22 +198,48 @@ FString UPlayVoiceAudioUtils::ExportSoundWaveToTempWAVFile(USoundWave* SoundWave
 		return FString();
 	}
 
+#if WITH_EDITORONLY_DATA
+	if (SoundWave->AssetImportData)
+	{
+		FString ImportedFile = SoundWave->AssetImportData->GetFirstFilename();
+		if (!ImportedFile.IsEmpty() && IFileManager::Get().FileExists(*ImportedFile))
+		{
+			return FPaths::ConvertRelativePathToFull(ImportedFile);
+		}
+	}
+#endif
+
 	TArray<uint8> WAVBytes;
 
 #if WITH_EDITORONLY_DATA
 	FSharedBuffer Payload = SoundWave->RawData.GetPayload().Get();
 	if (Payload.GetSize() >= 44)
 	{
-		WAVBytes.SetNumUninitialized(Payload.GetSize());
-		FMemory::Memcpy(WAVBytes.GetData(), Payload.GetData(), Payload.GetSize());
-	}
-
-	if (WAVBytes.Num() < 44 && SoundWave->AssetImportData)
-	{
-		FString ImportedFile = SoundWave->AssetImportData->GetFirstFilename();
-		if (!ImportedFile.IsEmpty() && IFileManager::Get().FileExists(*ImportedFile))
+		const uint8* Data = static_cast<const uint8*>(Payload.GetData());
+		bool bIsRIFF = (Data[0] == 'R' && Data[1] == 'I' && Data[2] == 'F' && Data[3] == 'F');
+		bool bHasDataChunk = false;
+		for (size_t i = 12; i < Payload.GetSize() - 8; ++i)
 		{
-			return FPaths::ConvertRelativePathToFull(ImportedFile);
+			if (Data[i] == 'd' && Data[i + 1] == 'a' && Data[i + 2] == 't' && Data[i + 3] == 'a')
+			{
+				bHasDataChunk = true;
+				break;
+			}
+		}
+
+		if (bIsRIFF && bHasDataChunk)
+		{
+			WAVBytes.SetNumUninitialized(Payload.GetSize());
+			FMemory::Memcpy(WAVBytes.GetData(), Payload.GetData(), Payload.GetSize());
+		}
+		else
+		{
+			int32 SR = FMath::Max(1, (int32)SoundWave->GetSampleRateForCurrentPlatform());
+			int32 Ch = FMath::Max(1, (int32)SoundWave->NumChannels);
+			TArray<uint8> RawPCM;
+			RawPCM.SetNumUninitialized(Payload.GetSize());
+			FMemory::Memcpy(RawPCM.GetData(), Payload.GetData(), Payload.GetSize());
+			WAVBytes = BuildWAVHeaderAndPCMBuffer(RawPCM, SR, Ch);
 		}
 	}
 #endif

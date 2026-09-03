@@ -15,7 +15,11 @@ import struct
 import argparse
 import logging
 import tempfile
+import warnings
 from typing import List, Optional, Dict, Any
+
+warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', category=FutureWarning)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("OpenVoiceService")
@@ -25,6 +29,8 @@ os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
 os.environ['HF_HUB_DISABLE_IMPLICIT_TOKEN_WARNING'] = '1'
 os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = '1'
 os.environ['NLTK_ALLOW_PROXIED_URLOPEN'] = '1'
+os.environ['TORCH_HUB_TRUSTED_REPO'] = 'snakers4/silero-vad'
+os.environ['CTRANSLATE2_FORCE_CPU'] = '1'
 
 # Suppress verbose 404/307 HTTP probe logs from httpx, huggingface_hub, transformers, and urllib3
 for noisy_logger_name in ["httpx", "huggingface_hub", "huggingface_hub.utils._http", "transformers", "urllib3", "nltk"]:
@@ -92,6 +98,40 @@ except Exception:
 HAS_OPENVOICE = False
 try:
     import torch
+
+    # Verify CUDA / cuBLAS DLL availability before allowing CUDA execution
+    bCudaAvailable = False
+    if torch.cuda.is_available():
+        try:
+            dummy = torch.zeros(1).cuda()
+            bCudaAvailable = True
+        except Exception as cuda_check_err:
+            logger.warning(f"CUDA runtime check failed ({cuda_check_err}). Disabling CUDA and forcing CPU execution.")
+            bCudaAvailable = False
+
+    if not bCudaAvailable:
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''
+        os.environ['CTRANSLATE2_FORCE_CPU'] = '1'
+        torch.cuda.is_available = lambda: False
+        logger.info("OpenVoice service configured to run on CPU mode.")
+
+    # Monkey-patch faster_whisper to force CPU execution and int8 computation
+    try:
+        import faster_whisper
+        _orig_whisper_init = faster_whisper.WhisperModel.__init__
+        def _safe_whisper_init(self, model_size_or_path, device="auto", device_index=0, compute_type="default", **kwargs):
+            if not bCudaAvailable:
+                device = "cpu"
+                compute_type = "int8"
+            try:
+                _orig_whisper_init(self, model_size_or_path, device=device, device_index=device_index, compute_type=compute_type, **kwargs)
+            except Exception as w_err:
+                logger.warning(f"WhisperModel init on {device} failed ({w_err}). Retrying on CPU...")
+                _orig_whisper_init(self, model_size_or_path, device="cpu", compute_type="int8", **kwargs)
+        faster_whisper.WhisperModel.__init__ = _safe_whisper_init
+    except Exception:
+        pass
+
     import torchaudio
     from openvoice.se_extractor import get_se
     from openvoice.api import ToneColorConverter
@@ -109,6 +149,209 @@ try:
     HAS_FASTAPI = True
 except ImportError:
     HAS_FASTAPI = False
+
+
+def load_and_convert_to_pcm16_mono(filepath: str, target_sr: int = 24000) -> Optional[List[int]]:
+    """
+    Safely reads any WAV file (16-bit, 24-bit, 32-bit float/int, 8-bit, mono/stereo)
+    and returns a list of 16-bit mono PCM samples resampled to target_sr.
+    """
+    if not filepath or not os.path.exists(filepath):
+        return None
+
+    try:
+        with wave.open(filepath, 'rb') as wf:
+            nchannels = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
+            framerate = wf.getframerate()
+            nframes = wf.getnframes()
+            comptype = wf.getcomptype()
+
+            if nframes == 0 or framerate == 0:
+                return None
+
+            frames = wf.readframes(nframes)
+
+        samples_float = []
+
+        if comptype == 'NONE':
+            if sampwidth == 2:
+                raw = struct.unpack(f'<{nframes * nchannels}h', frames)
+                samples_float = [s / 32768.0 for s in raw]
+            elif sampwidth == 1:
+                raw = struct.unpack(f'<{nframes * nchannels}B', frames)
+                samples_float = [(s - 128) / 128.0 for s in raw]
+            elif sampwidth == 3:
+                raw_bytes = frames
+                for idx in range(0, len(raw_bytes), 3):
+                    if idx + 2 < len(raw_bytes):
+                        b0, b1, b2 = raw_bytes[idx], raw_bytes[idx+1], raw_bytes[idx+2]
+                        val = b0 | (b1 << 8) | (b2 << 16)
+                        if val & 0x800000:
+                            val -= 0x1000000
+                        samples_float.append(val / 8388608.0)
+            elif sampwidth == 4:
+                try:
+                    raw_float = struct.unpack(f'<{nframes * nchannels}f', frames)
+                    samples_float = list(raw_float)
+                except Exception:
+                    raw_int = struct.unpack(f'<{nframes * nchannels}i', frames)
+                    samples_float = [s / 2147483648.0 for s in raw_int]
+        else:
+            return None
+
+        if not samples_float:
+            return None
+
+        if nchannels > 1:
+            mono_float = [sum(samples_float[i:i+nchannels]) / nchannels for i in range(0, len(samples_float), nchannels)]
+        else:
+            mono_float = samples_float
+
+        if framerate == target_sr:
+            resampled_float = mono_float
+        else:
+            num_target = int(len(mono_float) * target_sr / framerate)
+            resampled_float = []
+            for i in range(num_target):
+                src_pos = float(i) * framerate / target_sr
+                idx = int(src_pos)
+                frac = src_pos - idx
+                if idx >= len(mono_float) - 1:
+                    val = mono_float[-1] if mono_float else 0.0
+                else:
+                    val = (1.0 - frac) * mono_float[idx] + frac * mono_float[idx + 1]
+                resampled_float.append(val)
+
+        return [max(-32768, min(32767, int(s * 32767.0))) for s in resampled_float]
+    except Exception as e:
+        logger.warning(f"Could not load WAV file '{filepath}' via safe reader: {e}")
+        return None
+
+
+def create_combined_reference_wav(valid_files: List[str], min_duration_sec: float = 10.0) -> Optional[str]:
+    """
+    Concatenates multiple reference audio files into a single temporary WAV file.
+    Uses torchaudio and fallback WAV parsers to robustly load any format (WAV/MP3/FLAC/OGG, 8/16/24/32-bit).
+    """
+    if not valid_files:
+        return None
+
+    target_sr = 24000
+
+    if HAS_OPENVOICE:
+        tensors = []
+        for filepath in valid_files:
+            if not filepath or not os.path.exists(filepath):
+                continue
+            try:
+                wav, sr = torchaudio.load(filepath)
+                if wav.numel() > 0:
+                    if wav.shape[0] > 1:
+                        wav = wav.mean(dim=0, keepdim=True)
+                    if sr != target_sr:
+                        resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=target_sr)
+                        wav = resampler(wav)
+                    tensors.append(wav)
+                    tensors.append(torch.zeros(1, int(target_sr * 0.1)))
+                    continue
+            except Exception as ta_err:
+                logger.debug(f"torchaudio.load failed for '{filepath}' ({ta_err}). Retrying via wave parser...")
+
+            pcm = load_and_convert_to_pcm16_mono(filepath, target_sr=target_sr)
+            if pcm:
+                t = torch.tensor(pcm, dtype=torch.float32).unsqueeze(0) / 32768.0
+                tensors.append(t)
+                tensors.append(torch.zeros(1, int(target_sr * 0.1)))
+
+        if tensors:
+            combined_wav = torch.cat(tensors, dim=1)
+            target_total_samples = int(target_sr * min_duration_sec)
+            if combined_wav.shape[1] < target_total_samples:
+                repeats = math.ceil(target_total_samples / combined_wav.shape[1])
+                combined_wav = combined_wav.repeat(1, repeats)[:, :target_total_samples]
+
+            temp_path = os.path.join(tempfile.gettempdir(), "combined_reference_se.wav")
+            try:
+                torchaudio.save(temp_path, combined_wav, target_sr)
+                return temp_path
+            except Exception as save_err:
+                logger.error(f"Failed torchaudio save combined WAV: {save_err}")
+
+    # Fallback to pure PCM list concatenation if HAS_OPENVOICE is False
+    combined_samples = []
+    for filepath in valid_files:
+        pcm_samples = load_and_convert_to_pcm16_mono(filepath, target_sr=target_sr)
+        if pcm_samples:
+            combined_samples.extend(pcm_samples)
+            combined_samples.extend([0] * int(target_sr * 0.1))
+
+    if not combined_samples:
+        return None
+
+    target_total_samples = int(target_sr * min_duration_sec)
+    if len(combined_samples) < target_total_samples:
+        repeats = math.ceil(target_total_samples / len(combined_samples))
+        combined_samples = (combined_samples * repeats)[:target_total_samples]
+
+    temp_path = os.path.join(tempfile.gettempdir(), "combined_reference_se.wav")
+    try:
+        with wave.open(temp_path, 'wb') as out_wf:
+            out_wf.setnchannels(1)
+            out_wf.setsampwidth(2)
+            out_wf.setframerate(target_sr)
+            packed = struct.pack(f'<{len(combined_samples)}h', *combined_samples)
+            out_wf.writeframes(packed)
+        return temp_path
+    except Exception as e:
+        logger.error(f"Failed writing combined reference WAV: {e}")
+        return None
+
+
+def ensure_converter_checkpoints(checkpoint_dir: str) -> Optional[str]:
+    """
+    Ensures OpenVoice converter checkpoints (config.json and checkpoint.pth)
+    are present in checkpoint_dir/converter/. Automatically downloads from
+    HuggingFace (myshell-ai/OpenVoiceV2) if missing.
+    """
+    converter_dir = os.path.join(checkpoint_dir, "converter")
+    config_path = os.path.join(converter_dir, "config.json")
+    ckpt_path = os.path.join(converter_dir, "checkpoint.pth")
+
+    if os.path.exists(config_path) and os.path.exists(ckpt_path):
+        return converter_dir
+
+    logger.info(f"OpenVoice converter checkpoints not found at {converter_dir}. Automatically downloading OpenVoice v2 checkpoints from HuggingFace (myshell-ai/OpenVoiceV2)...")
+    os.makedirs(converter_dir, exist_ok=True)
+
+    urls = {
+        config_path: "https://huggingface.co/myshell-ai/OpenVoiceV2/raw/main/converter/config.json",
+        ckpt_path: "https://huggingface.co/myshell-ai/OpenVoiceV2/resolve/main/converter/checkpoint.pth"
+    }
+
+    import urllib.request
+    for dest_path, url in urls.items():
+        if not os.path.exists(dest_path):
+            try:
+                logger.info(f"Downloading {os.path.basename(dest_path)} from {url}...")
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req) as resp, open(dest_path + ".tmp", "wb") as out_file:
+                    out_file.write(resp.read())
+                os.rename(dest_path + ".tmp", dest_path)
+                logger.info(f"Successfully downloaded {os.path.basename(dest_path)}.")
+            except Exception as dl_err:
+                logger.error(f"Failed to download OpenVoice checkpoint {os.path.basename(dest_path)} from {url}: {dl_err}")
+                if os.path.exists(dest_path + ".tmp"):
+                    try:
+                        os.remove(dest_path + ".tmp")
+                    except Exception:
+                        pass
+                return None
+
+    if os.path.exists(config_path) and os.path.exists(ckpt_path):
+        return converter_dir
+
+    return None
 
 
 class OpenVoiceEngine:
@@ -132,19 +375,45 @@ class OpenVoiceEngine:
                 resolved_ckpt_dir = None
                 for cand in candidate_paths:
                     cand_abs = os.path.abspath(cand)
-                    if os.path.exists(os.path.join(cand_abs, "converter")):
+                    if os.path.exists(os.path.join(cand_abs, "converter", "config.json")) and os.path.exists(os.path.join(cand_abs, "converter", "checkpoint.pth")):
                         resolved_ckpt_dir = cand_abs
                         break
+
+                if not resolved_ckpt_dir:
+                    primary_dir = os.path.abspath(checkpoint_dir)
+                    ensure_converter_checkpoints(primary_dir)
+                    if os.path.exists(os.path.join(primary_dir, "converter", "config.json")) and os.path.exists(os.path.join(primary_dir, "converter", "checkpoint.pth")):
+                        resolved_ckpt_dir = primary_dir
 
                 if resolved_ckpt_dir:
                     self.checkpoint_dir = resolved_ckpt_dir
                     converter_path = os.path.join(resolved_ckpt_dir, "converter")
-                    device = "cuda" if torch.cuda.is_available() else "cpu"
-                    self.converter = ToneColorConverter(f"{converter_path}/config.json", device=device)
-                    self.converter.load_ckpt(f"{converter_path}/checkpoint.pth")
-                    logger.info(f"Loaded OpenVoice ToneColorConverter on {device} from {converter_path}")
+
+                    device = "cpu"
+                    if torch.cuda.is_available():
+                        try:
+                            # Test CUDA execution to verify cuBLAS DLLs load properly
+                            dummy = torch.zeros(1).cuda()
+                            device = "cuda"
+                        except Exception as cuda_err:
+                            logger.warning(f"CUDA runtime check failed ({cuda_err}). Defaulting OpenVoice converter to CPU device.")
+                            device = "cpu"
+
+                    try:
+                        self.converter = ToneColorConverter(f"{converter_path}/config.json", device=device)
+                        self.converter.load_ckpt(f"{converter_path}/checkpoint.pth")
+                        logger.info(f"Loaded OpenVoice ToneColorConverter on {device} from {converter_path}")
+                    except Exception as load_err:
+                        if device == "cuda":
+                            logger.warning(f"Failed loading OpenVoice converter on CUDA ({load_err}). Retrying on CPU...")
+                            device = "cpu"
+                            self.converter = ToneColorConverter(f"{converter_path}/config.json", device="cpu")
+                            self.converter.load_ckpt(f"{converter_path}/checkpoint.pth")
+                            logger.info(f"Loaded OpenVoice ToneColorConverter on CPU fallback from {converter_path}")
+                        else:
+                            raise load_err
                 else:
-                    logger.info("OpenVoice converter checkpoints not found in candidate paths. Tone color extraction will fall back gracefully to acoustic profile mode. (To enable full OpenVoice zero-shot tone color cloning, place 'checkpoints/converter' in your project root).")
+                    logger.warning("OpenVoice converter checkpoints not found and auto-download was not completed. Tone color extraction will fall back to acoustic profile mode.")
             except Exception as e:
                 logger.error(f"Failed loading OpenVoice checkpoints: {e}")
 
@@ -166,31 +435,70 @@ class OpenVoiceEngine:
 
         if HAS_OPENVOICE and self.converter is not None:
             try:
-                device = "cuda" if torch.cuda.is_available() else "cpu"
+                device = "cpu"
+                if torch.cuda.is_available():
+                    try:
+                        dummy = torch.zeros(1).cuda()
+                        device = "cuda"
+                    except Exception:
+                        device = "cpu"
+
                 target_dir = os.path.join(tempfile.gettempdir(), 'processed')
                 os.makedirs(target_dir, exist_ok=True)
-                target_se, audio_name = get_se(valid_files[0], self.converter, target_dir=target_dir, vad=True)
-                if isinstance(target_se, torch.Tensor):
-                    se_list = target_se.detach().cpu().numpy().tolist()
-                elif hasattr(target_se, 'tolist'):
-                    se_list = target_se.tolist()
-                else:
-                    se_list = list(target_se)
 
-                embedding_payload = {
-                    "character_name": character_name,
-                    "num_reference_files": len(valid_files),
-                    "valid_reference_files": valid_files,
-                    "target_se": se_list,
-                    "acoustic_profile": acoustic_profile,
-                    "engine": "OpenVoice-v2"
-                }
-                return {
-                    "status": "success",
-                    "character_name": character_name,
-                    "embedding_data": json.dumps(embedding_payload),
-                    "model_checkpoint": f"{self.checkpoint_dir}/{character_name}_se.pth"
-                }
+                # Concatenate reference audio files into a combined WAV file (>=10s) to guarantee sufficient audio length for get_se
+                combined_ref_path = create_combined_reference_wav(valid_files, min_duration_sec=10.0)
+
+                se_tensors = []
+                target_file = combined_ref_path if (combined_ref_path and os.path.exists(combined_ref_path)) else (valid_files[0] if valid_files else None)
+
+                if target_file:
+                    # Try direct speaker embedding extraction without VAD first (instant, reliable, no whisper segment errors)
+                    try:
+                        se, _ = get_se(target_file, self.converter, target_dir=target_dir, vad=False)
+                        if se is not None:
+                            se_tensors.append(se.detach().cpu() if isinstance(se, torch.Tensor) else torch.tensor(se))
+                    except Exception as err1:
+                        logger.warning(f"get_se without VAD failed ({err1}). Retrying with VAD...")
+                        try:
+                            se, _ = get_se(target_file, self.converter, target_dir=target_dir, vad=True)
+                            if se is not None:
+                                se_tensors.append(se.detach().cpu() if isinstance(se, torch.Tensor) else torch.tensor(se))
+                        except Exception as err2:
+                            logger.warning(f"get_se with VAD failed: {err2}")
+
+                # If target_file extraction didn't yield an embedding, fallback to individual files
+                if not se_tensors:
+                    for ref_file in valid_files[:3]:
+                        if not ref_file or not os.path.exists(ref_file):
+                            continue
+                        try:
+                            se, _ = get_se(ref_file, self.converter, target_dir=target_dir, vad=False)
+                            if se is not None:
+                                se_tensors.append(se.detach().cpu() if isinstance(se, torch.Tensor) else torch.tensor(se))
+                                break
+                        except Exception as e:
+                            logger.warning(f"Could not extract tone color from '{ref_file}': {e}")
+
+                if se_tensors:
+                    stacked = torch.stack([t.float() for t in se_tensors])
+                    target_se = torch.mean(stacked, dim=0)
+                    se_list = target_se.numpy().tolist()
+
+                    embedding_payload = {
+                        "character_name": character_name,
+                        "num_reference_files": len(valid_files),
+                        "valid_reference_files": valid_files,
+                        "target_se": se_list,
+                        "acoustic_profile": acoustic_profile,
+                        "engine": "OpenVoice-v2"
+                    }
+                    return {
+                        "status": "success",
+                        "character_name": character_name,
+                        "embedding_data": json.dumps(embedding_payload),
+                        "model_checkpoint": f"{self.checkpoint_dir}/{character_name}_se.pth"
+                    }
             except Exception as e:
                 logger.warning(f"OpenVoice get_se extraction failed ({e}). Falling back to acoustic profile extraction.")
 
@@ -312,6 +620,11 @@ class OpenVoiceEngine:
                                 with open(out_path, 'rb') as f:
                                     return ensure_wav_format(f.read(), target_sample_rate=24000)
 
+                # If guide track was used but tone color conversion failed or was unavailable, fall back to base TTS generation rather than returning raw guide track
+                if bUsedGuideTrack:
+                    logger.info(f"Tone color conversion on guide track was not completed for '{character_name}'. Generating speech via TTS in character reference voice.")
+                    tts_engine_model.tts_to_file(text, spk_id, src_path, speed=speed)
+
                 if os.path.exists(src_path):
                     with open(src_path, 'rb') as f:
                         return ensure_wav_format(f.read(), target_sample_rate=24000)
@@ -365,14 +678,6 @@ class OpenVoiceEngine:
         else:
             pitch_freq = 140.0 + (abs(hash(character_name)) % 100)
 
-        # If optional guide audio file exists, extract its pitch/rms profile for performance reproduction
-        if guide_audio_file and os.path.exists(guide_audio_file):
-            guide_profile = analyze_reference_audio_files([guide_audio_file])
-            if guide_profile and guide_profile.get("pitch_mean"):
-                acoustic_profile = acoustic_profile or {}
-                acoustic_profile["pitch_mean"] = (pitch_freq + float(guide_profile["pitch_mean"])) / 2.0
-                acoustic_profile["rms_mean"] = float(guide_profile.get("rms_mean", 0.25))
-
         synth_bytes = generate_synthetic_wav(text, speed=speed, pitch_freq=pitch_freq, acoustic_profile=acoustic_profile, character_name=character_name)
         return ensure_wav_format(synth_bytes, target_sample_rate=24000)
 
@@ -386,7 +691,7 @@ class OpenVoiceEngine:
 
         try:
             import whisper
-            model = whisper.load_model("base")
+            model = whisper.load_model("base", device="cpu")
             res = model.transcribe(audio_file)
             text = res.get("text", "").strip()
             if text:
@@ -603,13 +908,21 @@ def generate_synthetic_wav(text: str, speed: float = 1.0, sample_rate: int = 240
     """
     pitch_base = pitch_freq
     rms_power = 0.25
+    zcr_noise = 0.05
     if acoustic_profile:
         if acoustic_profile.get("pitch_mean"):
             pitch_base = float(acoustic_profile["pitch_mean"])
         if acoustic_profile.get("rms_mean"):
             rms_power = min(0.35, max(0.12, float(acoustic_profile["rms_mean"]) * 1.5))
+        if acoustic_profile.get("zcr_mean"):
+            zcr_noise = min(0.15, float(acoustic_profile["zcr_mean"]))
     elif character_name:
         pitch_base = 130.0 + (abs(hash(character_name)) % 140)
+
+    # Formant resonances tuned to reference speaker vocal tract length
+    f1 = pitch_base * 3.2
+    f2 = pitch_base * 6.5
+    f3 = pitch_base * 10.5
 
     words = [w for w in text.split() if w.strip()]
     if not words:
@@ -617,6 +930,9 @@ def generate_synthetic_wav(text: str, speed: float = 1.0, sample_rate: int = 240
 
     audio_data = bytearray()
     total_time = 0.0
+
+    import random
+    rng = random.Random(hash(character_name or "Character"))
 
     for word_idx, word in enumerate(words):
         word_dur = max(0.18, len(word) * 0.08 / max(0.5, speed))
@@ -632,18 +948,21 @@ def generate_synthetic_wav(text: str, speed: float = 1.0, sample_rate: int = 240
             # Dynamic pitch contour per word (natural prosody arc)
             f0 = pitch_base * (1.0 + 0.08 * math.sin(math.pi * t_word) - 0.04 * (word_idx / max(1, len(words))))
 
-            # Vocal tract formant harmonic synthesis (F0 + 2F0 + 3F0 + 4F0)
+            # Vocal tract formant harmonic synthesis
             s_f0 = math.sin(2.0 * math.pi * f0 * t_global)
-            s_f1 = 0.5 * math.sin(2.0 * math.pi * f0 * 2.0 * t_global)
-            s_f2 = 0.25 * math.sin(2.0 * math.pi * f0 * 3.0 * t_global)
-            s_f3 = 0.125 * math.sin(2.0 * math.pi * f0 * 4.0 * t_global)
+            s_f1 = 0.6 * math.sin(2.0 * math.pi * f1 * t_global)
+            s_f2 = 0.3 * math.sin(2.0 * math.pi * f2 * t_global)
+            s_f3 = 0.15 * math.sin(2.0 * math.pi * f3 * t_global)
 
-            # Vocal signal combination normalized
-            vocal_signal = (s_f0 + s_f1 + s_f2 + s_f3) / 1.875
+            vocal_signal = (s_f0 + s_f1 + s_f2 + s_f3) / 2.05
 
             # Subtle speaker pitch vibrato modulation
             vibrato = math.sin(2.0 * math.pi * 5.5 * t_global) * 0.02
             vocal_signal *= (1.0 + vibrato)
+
+            # Incorporate sibilance / noise component derived from reference zcr_noise
+            noise = (rng.random() * 2.0 - 1.0) * zcr_noise * 0.15
+            vocal_signal = vocal_signal * (1.0 - zcr_noise * 0.3) + noise
 
             sample_val = int(32767.0 * rms_power * env * vocal_signal)
             audio_data.extend(struct.pack('<h', max(-32768, min(32767, sample_val))))
