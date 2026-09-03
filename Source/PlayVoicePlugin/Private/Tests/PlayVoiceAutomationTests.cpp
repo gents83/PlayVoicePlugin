@@ -44,6 +44,11 @@ bool FCharacterVoiceAssetCachingTest::RunTest(const FString& Parameters)
 	FString MessyLine = TEXT("  HELLO WORLD, THIS IS A TEST LINE.  ");
 	TestTrue(TEXT("Voice line lookup should be case and whitespace insensitive"), VoiceAsset->HasPrecachedVoiceLine(MessyLine, TEXT("EN")));
 
+	USoundWave* DummySoundWaveES = NewObject<USoundWave>();
+	VoiceAsset->CacheVoiceLine(TestLine, DummySoundWaveES, TEXT("ES"));
+	TestEqual(TEXT("Retrieved sound wave for ES should match its language cache"), VoiceAsset->GetPrecachedVoiceLine(TestLine, TEXT("ES")), DummySoundWaveES);
+	TestEqual(TEXT("EN and ES caches should remain distinct"), VoiceAsset->GetPrecachedVoiceLine(TestLine, TEXT("EN")), DummySoundWaveEN);
+
 	// AutoLink test
 	VoiceAsset->AutoLinkPrecachedSoundWaves();
 
@@ -191,10 +196,9 @@ bool FPlayVoiceSettingsTest::RunTest(const FString& Parameters)
 	if (Settings)
 	{
 		TestEqual(TEXT("Default service URL should be http://127.0.0.1:1983"), Settings->ServiceUrl, TEXT("http://127.0.0.1:1983"));
-		TestFalse(TEXT("Default bAutoStartServiceOnEditorStartup should be false"), Settings->bAutoStartServiceOnEditorStartup);
-		TestEqual(TEXT("Default sample rate should be 24000"), Settings->DefaultSampleRate, 24000);
-		TestTrue(TEXT("Default AutoPrecacheOnStartup should be true"), Settings->bAutoPrecacheOnStartup);
-		TestTrue(TEXT("Default bEnableOnTheFlySynthesis should be true"), Settings->bEnableOnTheFlySynthesis);
+				TestEqual(TEXT("Default sample rate should be 24000"), Settings->DefaultSampleRate, 24000);
+		TestFalse(TEXT("Default AutoPrecacheOnStartup should be false"), Settings->bAutoPrecacheOnStartup);
+		TestFalse(TEXT("Default bEnableOnTheFlySynthesis should be false"), Settings->bEnableOnTheFlySynthesis);
 		TestEqual(TEXT("Default PythonExecutable should be python"), Settings->PythonExecutable, TEXT("python"));
 		TestEqual(TEXT("Default RequirementsFilePath should be Resources/OpenVoiceService/requirements.txt"), Settings->RequirementsFilePath, TEXT("Resources/OpenVoiceService/requirements.txt"));
 	}
@@ -300,6 +304,35 @@ bool FPlayVoiceLinesAssetTest::RunTest(const FString& Parameters)
 	FString RecordingFolder = VoiceAsset->GetVoiceRecordingFolderOnDisk();
 	TestFalse(TEXT("VoiceRecording folder path should not be empty"), RecordingFolder.IsEmpty());
 	TestTrue(TEXT("VoiceRecording folder path should contain VoiceRecording"), RecordingFolder.Contains(TEXT("VoiceRecording")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCharacterVoiceStringTableLookupTest, "PlayVoice.UnitTests.CharacterVoiceStringTableLookup", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FCharacterVoiceStringTableLookupTest::RunTest(const FString& Parameters)
+{
+	UCharacterVoiceAsset* VoiceAsset = NewObject<UCharacterVoiceAsset>();
+	TestNotNull(TEXT("VoiceAsset should be instantiated"), VoiceAsset);
+	if (!VoiceAsset)
+	{
+		return false;
+	}
+
+	UStringTable* FirstTable = NewObject<UStringTable>(VoiceAsset, TEXT("FirstTable"));
+	UStringTable* SecondTable = NewObject<UStringTable>(VoiceAsset, TEXT("SecondTable"));
+	FPlayVoiceLineEntry FirstEntry;
+	FirstEntry.StringTable = FirstTable;
+	FirstEntry.Key = FName(TEXT("SharedKey"));
+	FPlayVoiceLineEntry SecondEntry;
+	SecondEntry.StringTable = SecondTable;
+	SecondEntry.Key = FName(TEXT("SharedKey"));
+	VoiceAsset->VoiceLines.Add(FirstEntry);
+	VoiceAsset->VoiceLines.Add(SecondEntry);
+
+	TestTrue(TEXT("First table lookup should return the first entry"), VoiceAsset->FindVoiceLineByStringTableIdAndKey(FirstTable->GetStringTableId(), TEXT("SharedKey")) == &VoiceAsset->VoiceLines[0]);
+	TestTrue(TEXT("Second table lookup should return the second entry"), VoiceAsset->FindVoiceLineByStringTableIdAndKey(SecondTable->GetStringTableId(), TEXT("SharedKey")) == &VoiceAsset->VoiceLines[1]);
+	TestNull(TEXT("Unknown table lookup should not match by key only"), VoiceAsset->FindVoiceLineByStringTableIdAndKey(FName(TEXT("UnknownTable")), TEXT("SharedKey")));
 
 	return true;
 }

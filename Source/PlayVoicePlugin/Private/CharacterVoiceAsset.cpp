@@ -10,6 +10,16 @@
 #include "UObject/UObjectGlobals.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 
+static FString NormalizeLanguageCode(const FString& LanguageCode, const FString& DefaultLanguage = TEXT("EN"))
+{
+	FString Normalized = LanguageCode.TrimStartAndEnd().ToUpper();
+	if (Normalized.IsEmpty())
+	{
+		Normalized = DefaultLanguage.TrimStartAndEnd().ToUpper();
+	}
+	return Normalized.IsEmpty() ? TEXT("EN") : Normalized;
+}
+
 UCharacterVoiceAsset::UCharacterVoiceAsset()
 	: CharacterName(TEXT("NewCharacter"))
 	, DefaultLanguage(TEXT("EN"))
@@ -141,6 +151,48 @@ const FPlayVoiceLineEntry* UCharacterVoiceAsset::FindVoiceLineByKey(FName InKey)
 	return nullptr;
 }
 
+const FPlayVoiceLineEntry* UCharacterVoiceAsset::FindVoiceLineByStringTableIdAndKey(FName StringTableId, const FString& Key) const
+{
+	if (StringTableId.IsNone() || Key.IsEmpty())
+	{
+		return nullptr;
+	}
+
+	const FPlayVoiceLineEntry* MatchingEntry = nullptr;
+	for (const FPlayVoiceLineEntry& Entry : VoiceLines)
+	{
+		if (Entry.StringTable && Entry.StringTable->GetStringTableId() == StringTableId && Entry.Key.ToString() == Key)
+		{
+			if (MatchingEntry)
+			{
+				return nullptr;
+			}
+			MatchingEntry = &Entry;
+		}
+	}
+	return MatchingEntry;
+}
+
+USoundWave* UCharacterVoiceAsset::GetPrecachedVoiceLineForStringTableIdAndKey(FName StringTableId, const FString& Key, const FString& LanguageCode) const
+{
+	const FPlayVoiceLineEntry* Entry = FindVoiceLineByStringTableIdAndKey(StringTableId, Key);
+	if (!Entry)
+	{
+		return nullptr;
+	}
+
+	const FString NormalizedLanguage = NormalizeLanguageCode(LanguageCode, DefaultLanguage);
+	if (const TObjectPtr<USoundWave>* CachedSound = Entry->PrecachedSoundWavesByLanguage.Find(NormalizedLanguage))
+	{
+		return CachedSound->Get();
+	}
+	if (NormalizedLanguage == NormalizeLanguageCode(DefaultLanguage))
+	{
+		return Entry->PrecachedSoundWave.Get();
+	}
+	return nullptr;
+}
+
 bool UCharacterVoiceAsset::HasVoiceLineForKey(FName InKey) const
 {
 	return FindVoiceLineByKey(InKey) != nullptr;
@@ -177,6 +229,16 @@ void UCharacterVoiceAsset::FixupVoiceLineAudioReferences()
 			}
 		}
 
+		// Migrate the legacy pointer to the default language cache entry.
+		if (Entry.PrecachedSoundWave)
+		{
+			const FString DefaultLang = NormalizeLanguageCode(DefaultLanguage);
+			if (!Entry.PrecachedSoundWavesByLanguage.Contains(DefaultLang))
+			{
+				Entry.PrecachedSoundWavesByLanguage.Add(DefaultLang, Entry.PrecachedSoundWave);
+			}
+		}
+
 		// 2. Fixup Guide Track audio file paths if recorded or moved
 		FString RawPath = Entry.AudioFile.FilePath.TrimStartAndEnd();
 		if (!RawPath.IsEmpty())
@@ -195,6 +257,32 @@ void UCharacterVoiceAsset::FixupVoiceLineAudioReferences()
 					if (IFileManager::Get().FileExists(*DesiredPath))
 					{
 						Entry.AudioFile.FilePath = DesiredPath;
+					}
+					else if (!IFileManager::Get().FileExists(*RawPath))
+					{
+						const int32 TimestampSeparator = CleanFilename.Find(TEXT("_"), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+						const FString RecordingPrefix = TimestampSeparator != INDEX_NONE ? CleanFilename.Left(TimestampSeparator + 1) : CleanFilename;
+						TArray<FString> CandidateFiles;
+						IFileManager::Get().FindFilesRecursive(CandidateFiles, *TargetRecordingFolder, TEXT("*.wav"), true, false, false);
+
+						FString LatestCandidate;
+						FDateTime LatestTimestamp = FDateTime::MinValue();
+						for (const FString& CandidateFile : CandidateFiles)
+						{
+							const FString CandidateFilename = FPaths::GetCleanFilename(CandidateFile);
+							const FDateTime CandidateTimestamp = IFileManager::Get().GetTimeStamp(*CandidateFile);
+							if (CandidateFilename.StartsWith(RecordingPrefix) && CandidateTimestamp > LatestTimestamp)
+							{
+								LatestCandidate = CandidateFile;
+								LatestTimestamp = CandidateTimestamp;
+							}
+						}
+
+						if (!LatestCandidate.IsEmpty())
+						{
+							Entry.AudioFile.FilePath = LatestCandidate;
+							UE_LOG(LogTemp, Log, TEXT("Recovered missing guide track reference '%s' as '%s'."), *RawPath, *LatestCandidate);
+						}
 					}
 				}
 			}
@@ -285,6 +373,7 @@ void UCharacterVoiceAsset::ClearPrecachedVoiceLines()
 	for (FPlayVoiceLineEntry& Entry : VoiceLines)
 	{
 		Entry.PrecachedSoundWave = nullptr;
+		Entry.PrecachedSoundWavesByLanguage.Empty();
 	}
 }
 
@@ -296,7 +385,12 @@ void UCharacterVoiceAsset::CacheVoiceLineForKey(FName Key, USoundWave* InSoundWa
 		{
 			if (Entry.Key == Key)
 			{
-				Entry.PrecachedSoundWave = InSoundWave;
+				const FString NormalizedLanguage = NormalizeLanguageCode(LanguageCode, DefaultLanguage);
+				Entry.PrecachedSoundWavesByLanguage.Add(NormalizedLanguage, InSoundWave);
+				if (NormalizedLanguage == NormalizeLanguageCode(DefaultLanguage))
+				{
+					Entry.PrecachedSoundWave = InSoundWave;
+				}
 				return;
 			}
 		}
@@ -312,7 +406,15 @@ USoundWave* UCharacterVoiceAsset::GetPrecachedVoiceLineForKey(FName Key, const F
 
 	if (const FPlayVoiceLineEntry* Entry = FindVoiceLineByKey(Key))
 	{
-		return Entry->PrecachedSoundWave.Get();
+		const FString NormalizedLanguage = NormalizeLanguageCode(LanguageCode, DefaultLanguage);
+		if (const TObjectPtr<USoundWave>* CachedSound = Entry->PrecachedSoundWavesByLanguage.Find(NormalizedLanguage))
+		{
+			return CachedSound->Get();
+		}
+		if (NormalizedLanguage == NormalizeLanguageCode(DefaultLanguage))
+		{
+			return Entry->PrecachedSoundWave.Get();
+		}
 	}
 	return nullptr;
 }
@@ -332,7 +434,12 @@ void UCharacterVoiceAsset::CacheVoiceLine(const FString& TextLine, USoundWave* I
 			FString EntryText = GetResolvedTextLineForEntry(Entry);
 			if (EntryText.Equals(TargetText, ESearchCase::IgnoreCase))
 			{
-				Entry.PrecachedSoundWave = InSoundWave;
+				const FString NormalizedLanguage = NormalizeLanguageCode(LanguageCode, DefaultLanguage);
+				Entry.PrecachedSoundWavesByLanguage.Add(NormalizedLanguage, InSoundWave);
+				if (NormalizedLanguage == NormalizeLanguageCode(DefaultLanguage))
+				{
+					Entry.PrecachedSoundWave = InSoundWave;
+				}
 				return;
 			}
 		}
@@ -352,7 +459,16 @@ USoundWave* UCharacterVoiceAsset::GetPrecachedVoiceLine(const FString& TextLine,
 		FString EntryText = GetResolvedTextLineForEntry(Entry);
 		if (EntryText.Equals(TargetText, ESearchCase::IgnoreCase))
 		{
-			return Entry.PrecachedSoundWave.Get();
+			const FString NormalizedLanguage = NormalizeLanguageCode(LanguageCode, DefaultLanguage);
+			if (const TObjectPtr<USoundWave>* CachedSound = Entry.PrecachedSoundWavesByLanguage.Find(NormalizedLanguage))
+			{
+				return CachedSound->Get();
+			}
+			if (NormalizedLanguage == NormalizeLanguageCode(DefaultLanguage))
+			{
+				return Entry.PrecachedSoundWave.Get();
+			}
+			return nullptr;
 		}
 	}
 
@@ -423,6 +539,49 @@ FString UCharacterVoiceAsset::ResolveFolderPathToDisk(const FString& InFolderPat
 	}
 
 	return FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), CleanFolder);
+}
+
+FString UCharacterVoiceAsset::ResolveAudioFilePath(const FString& InFilePath)
+{
+	FString CleanPath = InFilePath.TrimStartAndEnd();
+	if (CleanPath.IsEmpty())
+	{
+		return FString();
+	}
+
+	if (CleanPath.StartsWith(TEXT("/Game/")) || CleanPath.StartsWith(TEXT("/Engine/")))
+	{
+		if (!FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+		{
+			FModuleManager::Get().LoadModule("AssetRegistry");
+		}
+
+		const FString PackageName = FPackageName::ObjectPathToPackageName(CleanPath);
+		if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+		{
+			FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+			TArray<FAssetData> AssetList;
+			AssetRegistryModule.Get().GetAssetsByPackageName(FName(*PackageName), AssetList);
+			for (const FAssetData& AssetData : AssetList)
+			{
+				if (AssetData.AssetClassPath.GetAssetName() == FName(TEXT("SoundWave")))
+				{
+					if (USoundWave* SoundWave = Cast<USoundWave>(AssetData.GetAsset()))
+					{
+						return UPlayVoiceAudioUtils::ExportSoundWaveToTempWAVFile(SoundWave);
+					}
+				}
+			}
+		}
+		return FString();
+	}
+
+	if (!FPaths::IsRelative(CleanPath))
+	{
+		return FPaths::ConvertRelativePathToFull(CleanPath);
+	}
+
+	return FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), CleanPath);
 }
 
 TArray<FString> UCharacterVoiceAsset::ResolveAudioFilesFromFolderAndFiles(const TArray<FFilePath>& FilePaths, const FDirectoryPath& FolderPath)
@@ -662,24 +821,61 @@ void UCharacterVoiceAsset::AutoLinkPrecachedSoundWaves()
 		return;
 	}
 
-	TArray<UObject*> SubObjects;
-	GetObjectsWithOuter(Package, SubObjects, EGetObjectsFlags::None);
-
-	for (UObject* Obj : SubObjects)
+	auto LinkSoundWave = [this](USoundWave* SoundWave)
 	{
-		if (USoundWave* SoundWave = Cast<USoundWave>(Obj))
+		if (!SoundWave)
 		{
-			FString SoundName = SoundWave->GetName();
-			for (FPlayVoiceLineEntry& Entry : VoiceLines)
+			return;
+		}
+
+		const FString SoundName = SoundWave->GetName();
+		for (FPlayVoiceLineEntry& Entry : VoiceLines)
+		{
+			if (Entry.Key.IsNone())
 			{
-				if (Entry.PrecachedSoundWave == nullptr && !Entry.Key.IsNone())
+				continue;
+			}
+
+			const FString SanitizedKey = Entry.Key.ToString().Replace(TEXT("."), TEXT("_"));
+			for (const FCharacterLanguageData& LanguageData : Languages)
+			{
+				const FString NormalizedLanguage = NormalizeLanguageCode(LanguageData.LanguageCode, DefaultLanguage);
+				const FString ExpectedPrefix = FString::Printf(TEXT("SW_%s_%s_%s"), *CharacterName.ToString(), *NormalizedLanguage, *SanitizedKey);
+				if (SoundName.StartsWith(ExpectedPrefix))
 				{
-					if (SoundName.Contains(Entry.Key.ToString()))
+					Entry.PrecachedSoundWavesByLanguage.Add(NormalizedLanguage, SoundWave);
+					if (NormalizedLanguage == NormalizeLanguageCode(DefaultLanguage))
 					{
 						Entry.PrecachedSoundWave = SoundWave;
-						break;
 					}
+					return;
 				}
+			}
+		}
+	};
+
+	TArray<UObject*> SubObjects;
+	GetObjectsWithOuter(Package, SubObjects, EGetObjectsFlags::None);
+	for (UObject* Obj : SubObjects)
+	{
+		LinkSoundWave(Cast<USoundWave>(Obj));
+	}
+
+	if (!FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+	{
+		FModuleManager::Get().LoadModule("AssetRegistry");
+	}
+	if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+	{
+		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+		TArray<FAssetData> AssetList;
+		const FString AssetFolder = FPaths::GetPath(Package->GetName());
+		AssetRegistryModule.Get().GetAssetsByPath(FName(*AssetFolder), AssetList, true);
+		for (const FAssetData& AssetData : AssetList)
+		{
+			if (AssetData.AssetClassPath.GetAssetName() == FName(TEXT("SoundWave")))
+			{
+				LinkSoundWave(Cast<USoundWave>(AssetData.GetAsset()));
 			}
 		}
 	}

@@ -12,6 +12,7 @@
 #include "Serialization/JsonReader.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogPlayVoice, Log, All);
 
@@ -37,7 +38,116 @@ void UPlayVoiceSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 void UPlayVoiceSubsystem::Deinitialize()
 {
+	VoiceAssetsByCharacterName.Empty();
 	Super::Deinitialize();
+}
+
+UCharacterVoiceAsset* UPlayVoiceSubsystem::FindVoiceAssetByCharacterName(FName CharacterName)
+{
+	if (CharacterName.IsNone())
+	{
+		UE_LOG(LogPlayVoice, Warning, TEXT("FindVoiceAssetByCharacterName: CharacterName is None."));
+		return nullptr;
+	}
+
+	if (!VoiceAssetsByCharacterName.Contains(CharacterName))
+	{
+		const IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+		TArray<FAssetData> Assets;
+		AssetRegistry.GetAssetsByClass(UCharacterVoiceAsset::StaticClass()->GetClassPathName(), Assets, true);
+		UE_LOG(LogPlayVoice, Log, TEXT("FindVoiceAssetByCharacterName: Asset Registry returned %d CharacterVoiceAsset assets for requested name '%s'."), Assets.Num(), *CharacterName.ToString());
+
+		TArray<TWeakObjectPtr<UCharacterVoiceAsset>>& Matches = VoiceAssetsByCharacterName.Add(CharacterName);
+		for (const FAssetData& AssetData : Assets)
+		{
+			if (UCharacterVoiceAsset* VoiceAsset = Cast<UCharacterVoiceAsset>(AssetData.GetAsset()))
+			{
+				if (VoiceAsset->CharacterName == CharacterName)
+				{
+					Matches.Add(VoiceAsset);
+					UE_LOG(LogPlayVoice, Log, TEXT("FindVoiceAssetByCharacterName: Matched '%s' at '%s'."), *VoiceAsset->GetName(), *VoiceAsset->GetPathName());
+				}
+			}
+		}
+	}
+
+	const TArray<TWeakObjectPtr<UCharacterVoiceAsset>>* Matches = VoiceAssetsByCharacterName.Find(CharacterName);
+	if (!Matches || Matches->Num() != 1)
+	{
+		UE_LOG(LogPlayVoice, Warning, TEXT("Character voice lookup for '%s' is missing or ambiguous (%d matches)."), *CharacterName.ToString(), Matches ? Matches->Num() : 0);
+		return nullptr;
+	}
+
+	return (*Matches)[0].Get();
+}
+
+UAudioComponent* UPlayVoiceSubsystem::PlayCachedSoundWave(const UObject* WorldContextObject, USoundWave* SoundWave, UAudioComponent* TargetAudioComponent, FVector Location, bool bAttachToActor, AActor* AttachToActor) const
+{
+	if (!SoundWave)
+	{
+		UE_LOG(LogPlayVoice, Warning, TEXT("PlayCachedSoundWave: SoundWave is null."));
+		return nullptr;
+	}
+
+	if (TargetAudioComponent && TargetAudioComponent->IsValidLowLevel())
+	{
+		TargetAudioComponent->SetSound(SoundWave);
+		TargetAudioComponent->Play();
+		UE_LOG(LogPlayVoice, Log, TEXT("PlayCachedSoundWave: Playing on supplied AudioComponent '%s'."), *TargetAudioComponent->GetPathName());
+		return TargetAudioComponent;
+	}
+	if (bAttachToActor && AttachToActor && AttachToActor->GetRootComponent())
+	{
+		UAudioComponent* Result = UGameplayStatics::SpawnSoundAttached(SoundWave, AttachToActor->GetRootComponent());
+		UE_LOG(LogPlayVoice, Log, TEXT("PlayCachedSoundWave: Attached playback result=%s on '%s'."), Result ? TEXT("started") : TEXT("not started"), *AttachToActor->GetPathName());
+		return Result;
+	}
+	UWorld* World = WorldContextObject ? WorldContextObject->GetWorld() : GetWorld();
+	if (!World)
+	{
+		UE_LOG(LogPlayVoice, Warning, TEXT("PlayCachedSoundWave: No world available for SoundWave '%s'."), *SoundWave->GetPathName());
+		return nullptr;
+	}
+	UAudioComponent* Result = UGameplayStatics::SpawnSoundAtLocation(World, SoundWave, Location);
+	UE_LOG(LogPlayVoice, Log, TEXT("PlayCachedSoundWave: Location playback result=%s at (%s)."), Result ? TEXT("started") : TEXT("not started"), *Location.ToString());
+	return Result;
+}
+
+UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoiceByIdentifiers(const UObject* WorldContextObject, FName CharacterName, FName StringTableId, const FString& Key, const FString& LanguageCode, UAudioComponent* TargetAudioComponent, FVector Location, bool bAttachToActor, AActor* AttachToActor)
+{
+	UE_LOG(LogPlayVoice, Log, TEXT("PlayCharacterVoiceByIdentifiers: Character='%s', Table='%s', Key='%s', Language='%s'."), *CharacterName.ToString(), *StringTableId.ToString(), *Key, *LanguageCode);
+	if (!WorldContextObject || CharacterName.IsNone() || StringTableId.IsNone() || Key.IsEmpty())
+	{
+		UE_LOG(LogPlayVoice, Warning, TEXT("PlayCharacterVoiceByIdentifiers: Invalid input. WorldContext=%s CharacterNone=%d TableNone=%d KeyEmpty=%d."), WorldContextObject ? TEXT("valid") : TEXT("null"), CharacterName.IsNone(), StringTableId.IsNone(), Key.IsEmpty());
+		return nullptr;
+	}
+
+	UCharacterVoiceAsset* VoiceAsset = FindVoiceAssetByCharacterName(CharacterName);
+	if (!VoiceAsset)
+	{
+		UE_LOG(LogPlayVoice, Warning, TEXT("PlayCharacterVoiceByIdentifiers: No unique CharacterVoiceAsset found for '%s'."), *CharacterName.ToString());
+		return nullptr;
+	}
+	UE_LOG(LogPlayVoice, Log, TEXT("PlayCharacterVoiceByIdentifiers: Resolved voice asset '%s'."), *VoiceAsset->GetPathName());
+
+	const FPlayVoiceLineEntry* Entry = VoiceAsset->FindVoiceLineByStringTableIdAndKey(StringTableId, Key);
+	if (!Entry)
+	{
+		UE_LOG(LogPlayVoice, Warning, TEXT("PlayCharacterVoiceByIdentifiers: No unique VoiceLines entry for table '%s' and key '%s' in '%s'."), *StringTableId.ToString(), *Key, *VoiceAsset->GetPathName());
+		return nullptr;
+	}
+
+	USoundWave* SoundWave = VoiceAsset->GetPrecachedVoiceLineForStringTableIdAndKey(StringTableId, Key, LanguageCode);
+	if (!SoundWave)
+	{
+		UE_LOG(LogPlayVoice, Warning, TEXT("PlayCharacterVoiceByIdentifiers: Entry matched, but no precached SoundWave exists for language '%s'."), *LanguageCode);
+		return nullptr;
+	}
+	UE_LOG(LogPlayVoice, Log, TEXT("PlayCharacterVoiceByIdentifiers: Resolved SoundWave '%s'."), *SoundWave->GetPathName());
+
+	UAudioComponent* Result = PlayCachedSoundWave(WorldContextObject, SoundWave, TargetAudioComponent, Location, bAttachToActor, AttachToActor);
+	UE_LOG(LogPlayVoice, Log, TEXT("PlayCharacterVoiceByIdentifiers: Audio playback result=%s."), Result ? TEXT("started") : TEXT("not started"));
+	return Result;
 }
 
 void UPlayVoiceSubsystem::PrecacheAllVoiceLines(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& LanguageCode, FOnPrecacheFinished OnComplete)
@@ -51,7 +161,7 @@ void UPlayVoiceSubsystem::PrecacheAllVoiceLines(UCharacterVoiceAsset* CharacterV
 	int32 PrecachedCount = 0;
 	for (const FPlayVoiceLineEntry& Entry : CharacterVoiceAsset->VoiceLines)
 	{
-		if (Entry.PrecachedSoundWave != nullptr)
+		if (CharacterVoiceAsset->GetPrecachedVoiceLineForKey(Entry.Key, LanguageCode) != nullptr)
 		{
 			PrecachedCount++;
 		}
@@ -147,8 +257,12 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoice(
 	}
 
 	// Dynamic on-the-fly voice synthesis fallback if line is not precached
+#if WITH_EDITOR
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
-	const bool bAllowOnTheFly = Settings ? Settings->bEnableOnTheFlySynthesis : true;
+	const bool bAllowOnTheFly = Settings ? Settings->bEnableOnTheFlySynthesis : false;
+#else
+	const bool bAllowOnTheFly = false;
+#endif
 
 	if (bAllowOnTheFly)
 	{
@@ -376,21 +490,32 @@ void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* Chara
 		{
 			TSharedPtr<FJsonObject> ResponseObj;
 			TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ResponseString);
-			if (FJsonSerializer::Deserialize(Reader, ResponseObj) && ResponseObj.IsValid())
+			if (FJsonSerializer::Deserialize(Reader, ResponseObj) && ResponseObj.IsValid()
+				&& ResponseObj->HasField(TEXT("status"))
+				&& ResponseObj->GetStringField(TEXT("status")).Equals(TEXT("success"), ESearchCase::IgnoreCase)
+				&& ResponseObj->HasField(TEXT("embedding_data")))
 			{
-				if (WeakAsset.IsValid())
+				const FString EmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
+				TSharedPtr<FJsonObject> EmbeddingObject;
+				TSharedRef<TJsonReader<>> EmbeddingReader = TJsonReaderFactory<>::Create(EmbeddingData);
+				const bool bEmbeddingValid = FJsonSerializer::Deserialize(EmbeddingReader, EmbeddingObject)
+					&& EmbeddingObject.IsValid()
+					&& EmbeddingObject->HasTypedField<EJson::Array>(TEXT("target_se"))
+					&& EmbeddingObject->GetArrayField(TEXT("target_se")).Num() > 0;
+				bool bSaved = false;
+				if (bEmbeddingValid && WeakAsset.IsValid())
 				{
 					FCharacterLanguageData* LangData = WeakAsset->FindLanguageData(TargetLang);
 					if (LangData)
 					{
 						LangData->ToneColorEmbeddingData = ResponseObj->GetStringField(TEXT("embedding_data"));
-						LangData->bIsModelGenerated = !LangData->ToneColorEmbeddingData.IsEmpty();
-						WeakAsset->SaveModelToFile(TEXT(""), TargetLang);
+						bSaved = !LangData->ToneColorEmbeddingData.IsEmpty() && WeakAsset->SaveModelToFile(TEXT(""), TargetLang);
+						LangData->bIsModelGenerated = bSaved;
 					}
 				}
 				if (OnComplete)
 				{
-					OnComplete(true, nullptr);
+					OnComplete(bSaved, nullptr);
 				}
 				return;
 			}
@@ -423,6 +548,7 @@ void UPlayVoiceSubsystem::SendTTSHttpRequest(const FString& Endpoint, const FStr
 	if (Settings)
 	{
 		HttpRequest->SetTimeout(Settings->RequestTimeout);
+		HttpRequest->SetActivityTimeout(Settings->RequestTimeout);
 	}
 
 	HttpRequest->OnProcessRequestComplete().BindLambda([Callback](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)

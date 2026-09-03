@@ -34,9 +34,17 @@ struct PLAYVOICEPLUGIN_API FPlayVoiceLineEntry
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice", meta = (FilePathFilter = "wav,mp3,flac"))
 	FFilePath AudioFile;
 
-	/** Precached SoundWave generated for this line entry */
+	/** Optional imported SoundWave used as the guide track source. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
+	TObjectPtr<USoundWave> GuideSoundWave = nullptr;
+
+	/** Legacy default-language SoundWave reference retained for asset migration */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	TObjectPtr<USoundWave> PrecachedSoundWave = nullptr;
+
+	/** Precached SoundWaves indexed by normalized language code */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
+	TMap<FString, TObjectPtr<USoundWave>> PrecachedSoundWavesByLanguage;
 };
 
 
@@ -135,6 +143,12 @@ public:
 	/** Finds a voice line entry matching the specified String Table key. Returns nullptr if not found. */
 	const FPlayVoiceLineEntry* FindVoiceLineByKey(FName InKey) const;
 
+	/** Finds a voice line entry matching an exact String Table ID and key. */
+	const FPlayVoiceLineEntry* FindVoiceLineByStringTableIdAndKey(FName StringTableId, const FString& Key) const;
+
+	/** Gets a language-specific cached SoundWave for an exact String Table ID and key. */
+	USoundWave* GetPrecachedVoiceLineForStringTableIdAndKey(FName StringTableId, const FString& Key, const FString& LanguageCode = TEXT("")) const;
+
 	/** Checks if this asset contains an entry for the specified String Table key */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	bool HasVoiceLineForKey(FName InKey) const;
@@ -202,6 +216,9 @@ public:
 
 	/** Helper method to convert any folder path (relative, /Game/ content path, or absolute) to a full disk path */
 	static FString ResolveFolderPathToDisk(const FString& InFolderPath);
+
+	/** Converts a filesystem guide-track path to a canonical absolute path. */
+	static FString ResolveAudioFilePath(const FString& InFilePath);
 
 	/** Scans the asset directory on disk and automatically links any pre-rendered USoundWave assets into PrecachedSoundWaves */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")

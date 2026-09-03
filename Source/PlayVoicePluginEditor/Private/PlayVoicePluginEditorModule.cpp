@@ -28,11 +28,6 @@ void FPlayVoicePluginEditorModule::StartupModule()
 	PlayVoicePinFactory = MakeShared<FPlayVoiceGraphPinFactory>();
 	FEdGraphUtilities::RegisterVisualPinFactory(PlayVoicePinFactory);
 
-	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
-	if (Settings && Settings->bAutoStartServiceOnEditorStartup)
-	{
-		StartOpenVoiceService(&AutoStartedServiceHandle);
-	}
 }
 
 void FPlayVoicePluginEditorModule::ShutdownModule()
@@ -46,14 +41,6 @@ void FPlayVoicePluginEditorModule::ShutdownModule()
 	UnregisterCustomizations();
 	UnregisterAssetTypeActions();
 
-	if (AutoStartedServiceHandle.IsValid())
-	{
-		if (FPlatformProcess::IsProcRunning(AutoStartedServiceHandle))
-		{
-			FPlatformProcess::TerminateProc(AutoStartedServiceHandle, true);
-		}
-		FPlatformProcess::CloseProc(AutoStartedServiceHandle);
-	}
 }
 
 FString FPlayVoicePluginEditorModule::ResolveResourcePath(const FString& RelativeOrAbsolutePath)
@@ -165,6 +152,7 @@ bool FPlayVoicePluginEditorModule::StartOpenVoiceService(FProcHandle* OutProcHan
 	}
 
 	FString CmdArgs = FString::Printf(TEXT("\"%s\" --mode server --host %s --port %d"), *ResolvedScriptPath, *Host, Port);
+	FString WorkingDirectory = FPaths::ProjectDir();
 
 	FProcHandle ProcHandle = FPlatformProcess::CreateProc(
 		*PythonExec,
@@ -174,7 +162,7 @@ bool FPlayVoicePluginEditorModule::StartOpenVoiceService(FProcHandle* OutProcHan
 		false, // bLaunchReallyHidden
 		nullptr, // OutProcessID
 		0,       // PriorityModifier
-		nullptr, // OptionalWorkingDirectory
+		*WorkingDirectory, // OptionalWorkingDirectory
 		nullptr  // PipeWriteChild
 	);
 

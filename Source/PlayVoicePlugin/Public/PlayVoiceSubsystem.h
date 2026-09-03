@@ -69,6 +69,20 @@ public:
 		AActor* AttachToActor = nullptr
 	);
 
+	/** Plays a language-specific cached line by character, String Table ID, and key. */
+	UFUNCTION(BlueprintCallable, Category = "PlayVoice", meta = (WorldContext = "WorldContextObject"))
+	UAudioComponent* PlayCharacterVoiceByIdentifiers(
+		const UObject* WorldContextObject,
+		FName CharacterName,
+		FName StringTableId,
+		const FString& Key,
+		const FString& LanguageCode = TEXT(""),
+		UAudioComponent* TargetAudioComponent = nullptr,
+		FVector Location = FVector::ZeroVector,
+		bool bAttachToActor = false,
+		AActor* AttachToActor = nullptr
+	);
+
 	/** Synthesizes voice line via OpenVoice backend service asynchronously */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	void SynthesizeVoiceLineAsync(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& TextLine, const FString& LanguageCode, FOnVoiceSynthesized OnComplete);
@@ -80,5 +94,9 @@ public:
 	void ExtractCharacterVoiceModel(UCharacterVoiceAsset* CharacterVoiceAsset, const FString& LanguageCode, TFunction<void(bool bSuccess, USoundWave* SoundWave)> OnComplete);
 
 private:
+	UCharacterVoiceAsset* FindVoiceAssetByCharacterName(FName CharacterName);
+	UAudioComponent* PlayCachedSoundWave(const UObject* WorldContextObject, USoundWave* SoundWave, UAudioComponent* TargetAudioComponent, FVector Location, bool bAttachToActor, AActor* AttachToActor) const;
 	void SendTTSHttpRequest(const FString& Endpoint, const FString& JsonPayload, TFunction<void(bool bSuccess, const TArray<uint8>& ResponseBytes, const FString& ResponseString)> Callback);
+
+	TMap<FName, TArray<TWeakObjectPtr<UCharacterVoiceAsset>>> VoiceAssetsByCharacterName;
 };

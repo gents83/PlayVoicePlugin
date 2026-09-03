@@ -8,7 +8,10 @@
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/SBoxPanel.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/Text/STextBlock.h"
+#include "Widgets/Images/SImage.h"
+#include "Styling/AppStyle.h"
 #include "Internationalization/StringTable.h"
 #include "Internationalization/StringTableCore.h"
 #include "Framework/Notifications/NotificationManager.h"
@@ -17,6 +20,8 @@
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetToolsModule.h"
+#include "IAssetTools.h"
 #include "Editor.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogPlayVoiceLineEntryCustomization, Log, All);
@@ -45,6 +50,7 @@ void FPlayVoiceLineEntryCustomization::CustomizeChildren(TSharedRef<IPropertyHan
 	KeyHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, Key));
 	TextLineHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, TextLine));
 	AudioFileHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, AudioFile));
+	GuideSoundWaveHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, GuideSoundWave));
 	PrecachedSoundWaveHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, PrecachedSoundWave));
 
 	// 1. String Table property picker
@@ -138,21 +144,16 @@ void FPlayVoiceLineEntryCustomization::CustomizeChildren(TSharedRef<IPropertyHan
 		ChildBuilder.AddProperty(TextLineHandle.ToSharedRef());
 	}
 
-	// 4. Precached SoundWave property reference
-	if (PrecachedSoundWaveHandle.IsValid())
+	// 4. Guide SoundWave property reference
+	if (GuideSoundWaveHandle.IsValid())
 	{
-		ChildBuilder.AddProperty(PrecachedSoundWaveHandle.ToSharedRef());
-	}
+		IDetailPropertyRow& GuideRow = ChildBuilder.AddProperty(GuideSoundWaveHandle.ToSharedRef());
+		GuideSoundWaveHandle->SetOnPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FPlayVoiceLineEntryCustomization::OnGuideSoundWaveChanged));
 
-	// 5. Audio File property + Record Guide Track button
-	if (AudioFileHandle.IsValid())
-	{
-		IDetailPropertyRow& AudioRow = ChildBuilder.AddProperty(AudioFileHandle.ToSharedRef());
-
-		AudioRow.CustomWidget()
+		GuideRow.CustomWidget()
 		.NameContent()
 		[
-			AudioFileHandle->CreatePropertyNameWidget()
+			GuideSoundWaveHandle->CreatePropertyNameWidget()
 		]
 		.ValueContent()
 		[
@@ -160,61 +161,82 @@ void FPlayVoiceLineEntryCustomization::CustomizeChildren(TSharedRef<IPropertyHan
 			+ SHorizontalBox::Slot()
 			.FillWidth(1.0f)
 			[
-				AudioFileHandle->CreatePropertyValueWidget()
+				GuideSoundWaveHandle->CreatePropertyValueWidget()
 			]
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
-			.Padding(4.0f, 0.0f, 0.0f, 0.0f)
+			.VAlign(VAlign_Center)
+			.Padding(2.0f, 0.0f, 0.0f, 0.0f)
 			[
-				SNew(SButton)
-				.Text_Lambda([this]()
-				{
-					if (bIsRecording)
-					{
-						return FText::FromString("Stop & Save");
-					}
-					return FText::FromString("Record Guide Track");
-				})
-				.ToolTipText(FText::FromString("Record reference audio guide track for prosody and emotion, saving directly to VoiceRecording folder."))
-				.OnClicked_Lambda([this]()
-				{
-					if (bIsRecording)
-					{
-						return OnStopRecordingClicked();
-					}
-					else
-					{
-						return OnRecordGuideTrackClicked();
-					}
-				})
+				SNew(SBox)
+				.WidthOverride(24.0f)
+				.HeightOverride(24.0f)
+				.MinDesiredWidth(24.0f)
+				.MinDesiredHeight(24.0f)
+				.MaxDesiredWidth(24.0f)
+				.MaxDesiredHeight(24.0f)
+				[
+					SNew(SButton)
+					.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+					.HAlign(HAlign_Center)
+					.VAlign(VAlign_Center)
+					.ContentPadding(FMargin(0.0f))
+					.Content()
+					[
+						SNew(SImage)
+						.DesiredSizeOverride(FVector2D(16.0f, 16.0f))
+						.Image_Lambda([this]()
+						{
+							return FAppStyle::Get().GetBrush(bIsPlayingPreview ? TEXT("MediaAsset.AssetActions.Stop.Small") : TEXT("MediaAsset.AssetActions.Play.Small"));
+						})
+					]
+					.ToolTipText(FText::FromString("Play or stop the selected guide track."))
+					.OnClicked(this, &FPlayVoiceLineEntryCustomization::OnPlayPreviewClicked)
+				]
 			]
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
+			.VAlign(VAlign_Center)
 			.Padding(4.0f, 0.0f, 0.0f, 0.0f)
 			[
-				SNew(SButton)
-				.Text_Lambda([this]()
-				{
-					if (bIsPlayingPreview)
+				SNew(SBox)
+				.WidthOverride(24.0f)
+				.MinDesiredWidth(24.0f)
+				.MaxDesiredWidth(24.0f)
+				.HeightOverride(24.0f)
+				.MinDesiredHeight(24.0f)
+				.MaxDesiredHeight(24.0f)
+				[
+					SNew(SButton)
+					.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+					.HAlign(HAlign_Center)
+					.VAlign(VAlign_Center)
+					.ContentPadding(FMargin(0.0f))
+					.Content()
+					[
+						SNew(SImage)
+						.DesiredSizeOverride(FVector2D(16.0f, 16.0f))
+						.Image_Lambda([this]()
+						{
+							return FAppStyle::Get().GetBrush(bIsRecording ? TEXT("SequenceRecorder.Common.StopAll.Small") : TEXT("SequenceRecorder.Common.RecordAll.Small"));
+						})
+					]
+					.ToolTipText(FText::FromString("Record a guide track for prosody and emotion. Click again to stop and save."))
+					.OnClicked_Lambda([this]()
 					{
-						return FText::FromString("Stop Preview");
-					}
-					return FText::FromString("Play Guide Track");
-				})
-				.ToolTipText(FText::FromString("Listen to the recorded or selected audio guide track directly in place."))
-				.OnClicked(this, &FPlayVoiceLineEntryCustomization::OnPlayPreviewClicked)
-			]
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(4.0f, 0.0f, 0.0f, 0.0f)
-			[
-				SNew(SButton)
-				.Text(FText::FromString("Browse Asset"))
-				.ToolTipText(FText::FromString("Navigate to and focus the precached SoundWave asset in the Content Browser."))
-				.OnClicked(this, &FPlayVoiceLineEntryCustomization::OnBrowseAssetClicked)
+						return bIsRecording ? OnStopRecordingClicked() : OnRecordGuideTrackClicked();
+					})
+				]
 			]
 		];
 	}
+
+	// 5. Precached SoundWave property with Unreal's native preview control
+	if (PrecachedSoundWaveHandle.IsValid())
+	{
+		ChildBuilder.AddProperty(PrecachedSoundWaveHandle.ToSharedRef());
+	}
+
 }
 
 void FPlayVoiceLineEntryCustomization::RefreshKeyOptions()
@@ -318,12 +340,52 @@ FReply FPlayVoiceLineEntryCustomization::OnRecordGuideTrackClicked()
 	return FReply::Handled();
 }
 
+void FPlayVoiceLineEntryCustomization::OnGuideSoundWaveChanged()
+{
+	if (!GuideSoundWaveHandle.IsValid() || !AudioFileHandle.IsValid())
+	{
+		return;
+	}
+
+	UObject* SoundObject = nullptr;
+	GuideSoundWaveHandle->GetValue(SoundObject);
+	USoundWave* GuideSoundWave = Cast<USoundWave>(SoundObject);
+	if (!GuideSoundWave)
+	{
+		return;
+	}
+
+	if (StructPropertyHandle.IsValid())
+	{
+		TArray<UObject*> OuterObjects;
+		StructPropertyHandle->GetOuterObjects(OuterObjects);
+		if (OuterObjects.Num() > 0 && OuterObjects[0])
+		{
+			OuterObjects[0]->Modify();
+		}
+	}
+
+	const FString ExportedPath = UPlayVoiceAudioUtils::ExportSoundWaveToTempWAVFile(GuideSoundWave);
+	if (ExportedPath.IsEmpty())
+	{
+		UE_LOG(LogPlayVoiceLineEntryCustomization, Warning, TEXT("Could not export guide SoundWave '%s' to WAV."), *GuideSoundWave->GetName());
+		return;
+	}
+
+	TSharedPtr<IPropertyHandle> PathHandle = AudioFileHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FFilePath, FilePath));
+	if (PathHandle.IsValid())
+	{
+		PathHandle->SetValue(ExportedPath);
+		AudioFileHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
+	}
+}
+
 FReply FPlayVoiceLineEntryCustomization::OnBrowseAssetClicked()
 {
 	USoundWave* TargetSoundWave = nullptr;
 	if (StructPropertyHandle.IsValid())
 	{
-		TSharedPtr<IPropertyHandle> SoundHandle = StructPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, PrecachedSoundWave));
+		TSharedPtr<IPropertyHandle> SoundHandle = StructPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, GuideSoundWave));
 		if (SoundHandle.IsValid())
 		{
 			UObject* SoundObj = nullptr;
@@ -345,7 +407,7 @@ FReply FPlayVoiceLineEntryCustomization::OnBrowseAssetClicked()
 	}
 	else
 	{
-		FNotificationInfo Info(FText::FromString("PlayVoice: No precached SoundWave asset linked to browse."));
+		FNotificationInfo Info(FText::FromString("PlayVoice: No guide SoundWave asset selected."));
 		Info.ExpireDuration = 3.0f;
 		FSlateNotificationManager::Get().AddNotification(Info);
 		UE_LOG(LogPlayVoiceLineEntryCustomization, Warning, TEXT("OnBrowseAssetClicked: No sound wave asset present."));
@@ -380,7 +442,7 @@ FReply FPlayVoiceLineEntryCustomization::OnPlayPreviewClicked()
 	USoundWave* TargetSoundWave = nullptr;
 	if (StructPropertyHandle.IsValid())
 	{
-		TSharedPtr<IPropertyHandle> SoundHandle = StructPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, PrecachedSoundWave));
+		TSharedPtr<IPropertyHandle> SoundHandle = StructPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FPlayVoiceLineEntry, GuideSoundWave));
 		if (SoundHandle.IsValid())
 		{
 			UObject* SoundObj = nullptr;
@@ -540,6 +602,31 @@ FReply FPlayVoiceLineEntryCustomization::OnStopRecordingClicked()
 
 	if (FFileHelper::SaveArrayToFile(WAVBytes, *FullDiskPath))
 	{
+		if (TargetVoiceAsset)
+		{
+			TargetVoiceAsset->Modify();
+		}
+
+		FString DestinationPath;
+		if (FPackageName::TryConvertFilenameToLongPackageName(SavedDir, DestinationPath))
+		{
+			TArray<FString> FilesToImport;
+			FilesToImport.Add(FullDiskPath);
+			TArray<UObject*> ImportedAssets = FAssetToolsModule::GetModule().Get().ImportAssets(FilesToImport, DestinationPath, nullptr, false);
+			for (UObject* ImportedAsset : ImportedAssets)
+			{
+				if (USoundWave* ImportedGuide = Cast<USoundWave>(ImportedAsset))
+				{
+					if (GuideSoundWaveHandle.IsValid())
+					{
+						GuideSoundWaveHandle->SetValue(ImportedGuide);
+						GuideSoundWaveHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
+					}
+					break;
+				}
+			}
+		}
+
 		if (AudioFileHandle.IsValid())
 		{
 			TSharedPtr<IPropertyHandle> PathHandle = AudioFileHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FFilePath, FilePath));

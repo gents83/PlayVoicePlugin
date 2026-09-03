@@ -29,7 +29,6 @@ private:
 	void RegisterAssetTypeActions();
 	void UnregisterAssetTypeActions();
 
-	FProcHandle AutoStartedServiceHandle;
 	TArray<TSharedPtr<IAssetTypeActions>> RegisteredAssetTypeActions;
 	TSharedPtr<class FPlayVoiceGraphPinFactory> PlayVoicePinFactory;
 };
