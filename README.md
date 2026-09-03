@@ -9,6 +9,7 @@
 1. **CharacterVoice Asset (`UCharacterVoiceAsset`)**:
    - Manage character reference audio clips (WAV/MP3/FLAC) to capture tone, speed, and voice color.
    - Configure language, speed multiplier, and model embedding parameters.
+   - Configure the final generated audio sample rate (default: 48 kHz).
    - Configure dialogue text lines for batch pre-processing.
 
 2. **Zero-Latency Playback System**:
@@ -116,7 +117,7 @@ python openvoice_service.py --mode server --host 127.0.0.1 --port 1983
 1. Copy `PlayVoicePlugin` into your project's `Plugins/` folder.
 2. Open your Unreal Engine 5.8 project.
 3. Enable **PlayVoice Plugin** in **Edit -> Plugins**.
-4. Configure service URL under **Project Settings -> Engine -> PlayVoice Settings** (default: `http://127.0.0.1:1983`).
+4. Configure service URL under **Project Settings -> Engine -> PlayVoice Settings** (default: `http://127.0.0.1:1983`). Enable **Improve Output Quality** to resample final generated SoundWaves to **Default Sample Rate** (enabled by default; default rate: `48000` Hz / 48 kHz). When disabled, output remains at OpenVoice's native 24 kHz. OpenVoice model inference and reference processing always remain at native 24 kHz.
 
 ---
 
@@ -136,7 +137,7 @@ python openvoice_service.py --mode server --host 127.0.0.1 --port 1983
 To eliminate latency during gameplay dialogue:
 1. Add String Table keys to the **Voice Lines** array in `DA_HeroVoice` and record optional guide tracks for prosody/emotion.
 2. Click **Generate Precached Sounds from VoiceLines** in the Editor details panel after generating a model for every language.
-3. Generation creates one SoundWave package for each `(language, key)` combination. Re-running it deletes and replaces the previous package, then saves the generated SoundWave and the `CharacterVoiceAsset` cache references.
+3. Generation creates one SoundWave package for each `(language, key)` combination. Re-running it deletes and replaces the previous package, then saves the generated SoundWave and the `CharacterVoiceAsset` cache references. Generated output uses the configured **Default Sample Rate**; OpenVoice processing remains at native 24 kHz.
 4. The **Clean Precached Sound Waves** action removes generated packages and clears their references. The Blueprint precache node only reports already-authored cache entries and does not run Python in a packaged game.
 
 ### 4. Play Voice Lines in Blueprints

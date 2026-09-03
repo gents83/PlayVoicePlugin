@@ -185,7 +185,31 @@ bool FPlayVoiceAudioUtilsTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-// 5. Test UPlayVoiceSettings default values
+// 5. Test PCM peak normalization
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlayVoiceAudioNormalizationTest, "PlayVoice.UnitTests.AudioNormalization", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FPlayVoiceAudioNormalizationTest::RunTest(const FString& Parameters)
+{
+	TArray<uint8> PCMData;
+	PCMData.SetNumUninitialized(3 * sizeof(int16));
+	int16* Samples = reinterpret_cast<int16*>(PCMData.GetData());
+	Samples[0] = 1000;
+	Samples[1] = -2000;
+	Samples[2] = 500;
+
+	TestEqual(TEXT("Initial PCM peak should be 2000"), UPlayVoiceAudioUtils::GetPCM16Peak(PCMData), 2000);
+	TestTrue(TEXT("PCM normalization should succeed for non-silent data"), UPlayVoiceAudioUtils::NormalizePCM16ToPeak(PCMData, 10000));
+	TestEqual(TEXT("Normalized PCM peak should reach the requested target"), UPlayVoiceAudioUtils::GetPCM16Peak(PCMData), 10000);
+	TestEqual(TEXT("Normalization should preserve sample polarity"), reinterpret_cast<int16*>(PCMData.GetData())[1], static_cast<int16>(-10000));
+
+	TArray<uint8> SilentPCM;
+	SilentPCM.SetNumZeroed(sizeof(int16));
+	TestFalse(TEXT("Silent PCM should not be normalized"), UPlayVoiceAudioUtils::NormalizePCM16ToPeak(SilentPCM, 10000));
+
+	return true;
+}
+
+// 6. Test UPlayVoiceSettings default values
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlayVoiceSettingsTest, "PlayVoice.UnitTests.PlayVoiceSettingsDefaults", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
 
 bool FPlayVoiceSettingsTest::RunTest(const FString& Parameters)
@@ -196,7 +220,8 @@ bool FPlayVoiceSettingsTest::RunTest(const FString& Parameters)
 	if (Settings)
 	{
 		TestEqual(TEXT("Default service URL should be http://127.0.0.1:1983"), Settings->ServiceUrl, TEXT("http://127.0.0.1:1983"));
-				TestEqual(TEXT("Default sample rate should be 24000"), Settings->DefaultSampleRate, 24000);
+				TestEqual(TEXT("Default sample rate should be 48000"), Settings->DefaultSampleRate, 48000);
+		TestTrue(TEXT("Improve Output Quality should be enabled by default"), Settings->bImproveOutputQuality);
 		TestFalse(TEXT("Default AutoPrecacheOnStartup should be false"), Settings->bAutoPrecacheOnStartup);
 		TestFalse(TEXT("Default bEnableOnTheFlySynthesis should be false"), Settings->bEnableOnTheFlySynthesis);
 		TestEqual(TEXT("Default PythonExecutable should be python"), Settings->PythonExecutable, TEXT("python"));

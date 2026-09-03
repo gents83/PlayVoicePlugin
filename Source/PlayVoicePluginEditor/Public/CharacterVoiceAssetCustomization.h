@@ -17,6 +17,7 @@ public:
 private:
 	FReply OnGenerateModelClicked();
 	FReply OnGenerateFromVoiceLinesClicked();
+	FReply OnNormalizePrecachedSoundLevelsClicked();
 	FReply OnCleanPrecachedSoundWavesClicked();
 
 	TWeakObjectPtr<class UCharacterVoiceAsset> TargetVoiceAsset;

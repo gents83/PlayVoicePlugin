@@ -27,6 +27,7 @@
 #include "HAL/FileManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Async/Async.h"
+#include "Memory/SharedBuffer.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogCharacterVoiceCustomization, Log, All);
 
@@ -63,6 +64,69 @@ static FString MakeSafePackageComponent(const FString& InValue)
 	}
 
 	return SafeValue.IsEmpty() ? TEXT("Voice") : SafeValue;
+}
+
+static bool GetSoundWavePCM16Data(USoundWave* SoundWave, TArray<uint8>& OutPCMData)
+{
+	if (!SoundWave)
+	{
+		return false;
+	}
+
+	if (SoundWave->RawPCMData && SoundWave->RawPCMDataSize >= sizeof(int16))
+	{
+		OutPCMData.SetNumUninitialized(SoundWave->RawPCMDataSize);
+		FMemory::Memcpy(OutPCMData.GetData(), SoundWave->RawPCMData, SoundWave->RawPCMDataSize);
+		return true;
+	}
+
+#if WITH_EDITORONLY_DATA
+	const FSharedBuffer Payload = SoundWave->RawData.GetPayload().Get();
+	const uint8* Data = static_cast<const uint8*>(Payload.GetData());
+	const int64 PayloadSize = static_cast<int64>(Payload.GetSize());
+	for (int64 Offset = 12; Offset + 8 <= PayloadSize; ++Offset)
+	{
+		if (Data[Offset] == 'd' && Data[Offset + 1] == 'a' && Data[Offset + 2] == 't' && Data[Offset + 3] == 'a')
+		{
+			uint32 ChunkSize = 0;
+			FMemory::Memcpy(&ChunkSize, Data + Offset + 4, sizeof(ChunkSize));
+			const int64 AvailableSize = FMath::Min<int64>(ChunkSize, PayloadSize - Offset - 8);
+			if (AvailableSize >= sizeof(int16))
+			{
+				OutPCMData.SetNumUninitialized(static_cast<int32>(AvailableSize));
+				FMemory::Memcpy(OutPCMData.GetData(), Data + Offset + 8, AvailableSize);
+				return true;
+			}
+		}
+	}
+#endif
+
+	return false;
+}
+
+static bool UpdateSoundWavePCM16Data(USoundWave* SoundWave, const TArray<uint8>& PCMData)
+{
+	if (!SoundWave || PCMData.Num() < sizeof(int16) || SoundWave->NumChannels <= 0 || SoundWave->GetSampleRateForCurrentPlatform() <= 0)
+	{
+		return false;
+	}
+
+#if WITH_EDITORONLY_DATA
+	const TArray<uint8> WAVData = UPlayVoiceAudioUtils::CreateWAVBufferFromPCM(PCMData, SoundWave->GetSampleRateForCurrentPlatform(), SoundWave->NumChannels);
+	SoundWave->RawData.UpdatePayload(FSharedBuffer::Clone(WAVData.GetData(), WAVData.Num()));
+#endif
+
+	if (SoundWave->RawPCMData)
+	{
+		FMemory::Free(SoundWave->RawPCMData);
+	}
+	SoundWave->RawPCMDataSize = PCMData.Num();
+	SoundWave->RawPCMData = static_cast<uint8*>(FMemory::Malloc(PCMData.Num()));
+	FMemory::Memcpy(SoundWave->RawPCMData, PCMData.GetData(), PCMData.Num());
+	SoundWave->Duration = static_cast<float>(PCMData.Num()) / static_cast<float>(SoundWave->GetSampleRateForCurrentPlatform() * SoundWave->NumChannels * sizeof(int16));
+	SoundWave->TotalSamples = PCMData.Num() / (SoundWave->NumChannels * sizeof(int16));
+	SoundWave->MarkPackageDirty();
+	return true;
 }
 
 static void DeleteGeneratedSoundWavePackage(const FString& PackagePath)
@@ -180,6 +244,21 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 		.ToolTipText(FText::FromString("Iterates over VoiceLines entries, uses entry audio files as speed/emotion guide tracks, and generates OpenVoice sound waves mapped automatically to String Table Keys."))
 		.OnClicked(this, &FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked)
 	];
+
+	OpenVoiceCategory.AddCustomRow(FText::FromString("Normalize Precached Sound Levels"))
+		.NameContent()
+		[
+			SNew(STextBlock)
+			.Text(FText::FromString("Precached Sound Levels"))
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+		]
+		.ValueContent()
+		[
+			SNew(SButton)
+			.Text(FText::FromString("Normalize Precached Sound Levels"))
+			.ToolTipText(FText::FromString("Scales all precached SoundWaves to the loudest non-silent wave in this CharacterVoiceAsset."))
+			.OnClicked(this, &FCharacterVoiceAssetCustomization::OnNormalizePrecachedSoundLevelsClicked)
+		];
 
 	OpenVoiceCategory.AddCustomRow(FText::FromString("Clean Precached Sound Waves"))
 	.NameContent()
@@ -595,6 +674,8 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 		FString BaseUrl = Settings && !Settings->ServiceUrl.IsEmpty() ? Settings->ServiceUrl.TrimStartAndEnd() : TEXT("http://127.0.0.1:1983");
 		BaseUrl.RemoveFromEnd(TEXT("/"));
 		float TimeoutSecs = Settings && Settings->RequestTimeout > 0.0f ? FMath::Max(Settings->RequestTimeout, 300.0f) : 300.0f;
+		const int32 OutputSampleRate = Settings && Settings->DefaultSampleRate > 0 ? Settings->DefaultSampleRate : 48000;
+		const bool bImproveOutputQuality = Settings ? Settings->bImproveOutputQuality : true;
 
 		UPackage* OuterPackage = VoiceAsset->GetOutermost();
 		FString AssetFolderPath = FPaths::GetPath(OuterPackage->GetName());
@@ -667,6 +748,8 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 				JsonObj->SetStringField(TEXT("text"), Item.TextLine);
 				JsonObj->SetStringField(TEXT("language"), CurrentLangCode);
 				JsonObj->SetNumberField(TEXT("speed"), CurrentSpeed);
+					JsonObj->SetNumberField(TEXT("sample_rate"), OutputSampleRate);
+					JsonObj->SetBoolField(TEXT("improve_output"), bImproveOutputQuality);
 				JsonObj->SetStringField(TEXT("embedding_data"), EmbeddingData);
 
 				TArray<FString> RefAudioFiles = VoiceAsset->GetResolvedReferenceAudioFilesForLanguage(CurrentLangCode);
@@ -793,6 +876,122 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 			}
 		}
 	});
+
+	return FReply::Handled();
+}
+
+FReply FCharacterVoiceAssetCustomization::OnNormalizePrecachedSoundLevelsClicked()
+{
+	if (!TargetVoiceAsset.IsValid())
+	{
+		UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnNormalizePrecachedSoundLevelsClicked: Target voice asset is invalid."));
+		return FReply::Handled();
+	}
+
+	UCharacterVoiceAsset* Asset = TargetVoiceAsset.Get();
+	TSet<USoundWave*> SoundWaves;
+	for (const FPlayVoiceLineEntry& Entry : Asset->VoiceLines)
+	{
+		if (USoundWave* SoundWave = Entry.PrecachedSoundWave.Get())
+		{
+			SoundWaves.Add(SoundWave);
+		}
+		for (const TPair<FString, TObjectPtr<USoundWave>>& CachedPair : Entry.PrecachedSoundWavesByLanguage)
+		{
+			if (USoundWave* SoundWave = CachedPair.Value.Get())
+			{
+				SoundWaves.Add(SoundWave);
+			}
+		}
+	}
+
+	TMap<USoundWave*, TArray<uint8>> PCMDataBySoundWave;
+	int32 GlobalPeak = 0;
+	for (USoundWave* SoundWave : SoundWaves)
+	{
+		TArray<uint8> PCMData;
+		if (GetSoundWavePCM16Data(SoundWave, PCMData))
+		{
+			const int32 Peak = UPlayVoiceAudioUtils::GetPCM16Peak(PCMData);
+			if (Peak > 0)
+			{
+				GlobalPeak = FMath::Max(GlobalPeak, Peak);
+				PCMDataBySoundWave.Add(SoundWave, MoveTemp(PCMData));
+			}
+		}
+	}
+
+	if (GlobalPeak <= 0)
+	{
+		FNotificationInfo NotificationInfo(FText::FromString("PlayVoice: No non-silent precached sound waves were found."));
+		NotificationInfo.ExpireDuration = 4.0f;
+		FSlateNotificationManager::Get().AddNotification(NotificationInfo);
+		return FReply::Handled();
+	}
+
+	int32 ChangedCount = 0;
+	int32 FailedCount = 0;
+	for (TPair<USoundWave*, TArray<uint8>>& SoundWaveData : PCMDataBySoundWave)
+	{
+		USoundWave* SoundWave = SoundWaveData.Key;
+		if (UPlayVoiceAudioUtils::GetPCM16Peak(SoundWaveData.Value) >= GlobalPeak)
+		{
+			continue;
+		}
+
+		UPackage* SoundWavePackage = SoundWave->GetOutermost();
+		if (!SoundWavePackage || SoundWavePackage == GetTransientPackage())
+		{
+			FailedCount++;
+			UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnNormalizePrecachedSoundLevelsClicked: SoundWave '%s' is not in a persistent package."), *SoundWave->GetPathName());
+			continue;
+		}
+
+		if (!UPlayVoiceAudioUtils::NormalizePCM16ToPeak(SoundWaveData.Value, GlobalPeak)
+			|| !UpdateSoundWavePCM16Data(SoundWave, SoundWaveData.Value))
+		{
+			FailedCount++;
+			UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnNormalizePrecachedSoundLevelsClicked: Could not update SoundWave '%s'."), *SoundWave->GetPathName());
+			continue;
+		}
+
+		const FString PackageFilename = FPackageName::LongPackageNameToFilename(SoundWavePackage->GetName(), FPackageName::GetAssetPackageExtension());
+		FSavePackageArgs SaveArgs;
+		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+		if (!UPackage::SavePackage(SoundWavePackage, SoundWave, *PackageFilename, SaveArgs))
+		{
+			FailedCount++;
+			UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnNormalizePrecachedSoundLevelsClicked: Could not save SoundWave package '%s'."), *PackageFilename);
+			continue;
+		}
+
+		ChangedCount++;
+	}
+
+	if (ChangedCount > 0)
+	{
+		Asset->MarkPackageDirty();
+		UPackage* AssetPackage = Asset->GetOutermost();
+		if (AssetPackage && AssetPackage != GetTransientPackage())
+		{
+			const FString AssetFilename = FPackageName::LongPackageNameToFilename(AssetPackage->GetName(), FPackageName::GetAssetPackageExtension());
+			FSavePackageArgs SaveArgs;
+			SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+			if (!UPackage::SavePackage(AssetPackage, Asset, *AssetFilename, SaveArgs))
+			{
+				FailedCount++;
+				UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnNormalizePrecachedSoundLevelsClicked: Could not save CharacterVoiceAsset package '%s'."), *AssetFilename);
+			}
+		}
+	}
+
+	FNotificationInfo NotificationInfo(FText::Format(
+		FText::FromString("PlayVoice: Normalized {0} precached sound waves to the global peak ({1} failures)."),
+		FText::AsNumber(ChangedCount),
+		FText::AsNumber(FailedCount)));
+	NotificationInfo.ExpireDuration = 5.0f;
+	FSlateNotificationManager::Get().AddNotification(NotificationInfo);
+	UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnNormalizePrecachedSoundLevelsClicked: Normalized %d sound waves to peak %d (%d failures)."), ChangedCount, GlobalPeak, FailedCount);
 
 	return FReply::Handled();
 }

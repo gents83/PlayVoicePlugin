@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 import os
 import tempfile
@@ -107,6 +108,66 @@ class ServiceContractTests(unittest.TestCase):
                 character_name="TestHero",
                 embedding_data=json.dumps({"target_se": [1.0]}),
                 guide_audio_file="missing-guide.wav",
+            )
+
+    def test_synthesize_request_forwards_configured_sample_rate(self):
+        if not self.service.HAS_FASTAPI:
+            self.skipTest("FastAPI is unavailable")
+
+        class CapturingEngine:
+            def __init__(self):
+                self.sample_rate = None
+                self.improve_output = None
+
+            def synthesize(self, **kwargs):
+                self.sample_rate = kwargs["output_sample_rate"]
+                self.improve_output = kwargs["improve_output"]
+                return b"RIFF" + b"\x00" * 40
+
+        previous_engine = self.service.engine
+        capturing_engine = CapturingEngine()
+        self.service.engine = capturing_engine
+        try:
+            request = self.service.SynthesizeRequest(
+                character_name="TestHero",
+                text="Hello",
+                sample_rate=48000,
+                improve_output=True,
+            )
+            self.service.api_synthesize(request)
+            self.assertEqual(capturing_engine.sample_rate, 48000)
+            self.assertTrue(capturing_engine.improve_output)
+
+            request.improve_output = False
+            self.service.api_synthesize(request)
+            self.assertEqual(capturing_engine.sample_rate, 24000)
+            self.assertFalse(capturing_engine.improve_output)
+        finally:
+            self.service.engine = previous_engine
+
+    def test_invalid_output_sample_rate_is_rejected(self):
+        engine = self.service.OpenVoiceEngine.__new__(self.service.OpenVoiceEngine)
+        with self.assertRaises(ValueError):
+            engine.synthesize(
+                text="Hello",
+                character_name="TestHero",
+                output_sample_rate=0,
+            )
+
+    def test_output_sample_rate_is_applied_to_wav(self):
+        input_buffer = self.service.generate_synthetic_wav("Hello", sample_rate=24000)
+        output_buffer = self.service.ensure_wav_format(input_buffer, target_sample_rate=192000)
+
+        with wave.open(io.BytesIO(input_buffer), "rb") as input_wav:
+            input_duration = input_wav.getnframes() / input_wav.getframerate()
+        with wave.open(io.BytesIO(output_buffer), "rb") as output_wav:
+            self.assertEqual(output_wav.getframerate(), 192000)
+            self.assertEqual(output_wav.getnchannels(), 1)
+            self.assertEqual(output_wav.getsampwidth(), 2)
+            self.assertAlmostEqual(
+                output_wav.getnframes() / output_wav.getframerate(),
+                input_duration,
+                delta=1 / 24000,
             )
 
 

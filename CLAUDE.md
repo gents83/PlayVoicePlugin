@@ -27,7 +27,7 @@ PlayVoicePlugin is an Unreal Engine 5.8 plugin for editor-time OpenVoice-v2 voic
 3. Start the service from Project Settings or trigger a generation action; the service is started on demand. `/health` is ready only after OpenVoice-v2 imports and converter checkpoints load.
 4. Configure reference audio per language and click **Generate OpenVoice Model**.
 5. Configure String Table keys in `Voice Lines`; record optional guide tracks; click **Generate Precached Sounds from VoiceLines** before packaging.
-6. Verify generated SoundWaves for every required `(language, key)` combination in the asset and reload the asset before packaging. Each generation replaces the matching package and saves both the SoundWave and CharacterVoiceAsset references.
+6. Verify generated SoundWaves for every required `(language, key)` combination in the asset and reload the asset before packaging. Each generation replaces the matching package and saves both the SoundWave and CharacterVoiceAsset references. **Improve Output Quality** is enabled by default and resamples final output to **Default Sample Rate** (default 48 kHz); disabling it leaves output at native 24 kHz. OpenVoice inference and reference processing remain at native 24 kHz.
 
 Manual service command:
 
@@ -54,6 +54,7 @@ Run Unreal automation tests from Session Frontend by filtering for `PlayVoice.Un
 - Generation persists cache references by saving the `CharacterVoiceAsset` package after saving each generated SoundWave package.
 - The module-level Python engine is intentionally deferred (`load_existing=False`); checkpoint readiness is established by the server-mode engine, so an import-time readiness failure is not actionable.
 - A requested guide conversion failure must be reported; do not silently substitute unrelated fallback TTS.
+- `/synthesize` accepts `sample_rate` and `improve_output`; when enabled, `sample_rate` controls final output resampling, and when disabled output remains 24000 Hz. Keep OpenVoice reference normalization, embeddings, guide conversion input, and inference at native 24000 Hz; `/extract` does not use these fields.
 - Do not copy inference code from `D:/PROJECTS/mgentile/speechtospeech`: its committed converter uses obsolete OpenVoice-v1 APIs, although its explicit reference/guide data flow is useful as a UI comparison.
 - `PrecacheCharacterVoiceLines` cannot create audio in a packaged build. Generation is an editor authoring action.
 

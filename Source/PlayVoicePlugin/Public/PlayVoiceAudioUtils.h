@@ -33,6 +33,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	static USoundWave* CreateSoundWaveFromWAVBuffer(const TArray<uint8>& WAVData, UObject* Outer = nullptr, FName Name = NAME_None);
 
+	/** Returns the peak absolute sample value in a 16-bit PCM buffer. */
+	static int32 GetPCM16Peak(const TArray<uint8>& PCMData);
+
+	/** Scales a 16-bit PCM buffer to the requested peak sample value. */
+	static bool NormalizePCM16ToPeak(TArray<uint8>& PCMData, int32 TargetPeak);
+
 	/**
 	 * Exports a USoundWave asset to a temporary .wav disk file for backend service consumption.
 	 * Returns the absolute disk path of the created .wav file, or empty string on failure.

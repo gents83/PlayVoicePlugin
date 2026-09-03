@@ -50,6 +50,42 @@ TArray<uint8> UPlayVoiceAudioUtils::CreateWAVBufferFromPCM(const TArray<uint8>& 
 	return BuildWAVHeaderAndPCMBuffer(PCMData, SampleRate, NumChannels);
 }
 
+int32 UPlayVoiceAudioUtils::GetPCM16Peak(const TArray<uint8>& PCMData)
+{
+	const int32 SampleCount = PCMData.Num() / sizeof(int16);
+	int32 Peak = 0;
+	for (int32 SampleIndex = 0; SampleIndex < SampleCount; ++SampleIndex)
+	{
+		int16 Sample = 0;
+		FMemory::Memcpy(&Sample, PCMData.GetData() + SampleIndex * sizeof(int16), sizeof(int16));
+		Peak = FMath::Max(Peak, FMath::Abs(static_cast<int32>(Sample)));
+	}
+
+	return Peak;
+}
+
+bool UPlayVoiceAudioUtils::NormalizePCM16ToPeak(TArray<uint8>& PCMData, int32 TargetPeak)
+{
+	const int32 SourcePeak = GetPCM16Peak(PCMData);
+	if (SourcePeak <= 0 || TargetPeak <= 0)
+	{
+		return false;
+	}
+
+	const float Scale = static_cast<float>(FMath::Min(TargetPeak, 32767)) / static_cast<float>(SourcePeak);
+	const int32 SampleCount = PCMData.Num() / sizeof(int16);
+	for (int32 SampleIndex = 0; SampleIndex < SampleCount; ++SampleIndex)
+	{
+		int16 Sample = 0;
+		FMemory::Memcpy(&Sample, PCMData.GetData() + SampleIndex * sizeof(int16), sizeof(int16));
+		const int32 ScaledSample = FMath::Clamp(FMath::RoundToInt(static_cast<float>(Sample) * Scale), -32768, 32767);
+		const int16 OutputSample = static_cast<int16>(ScaledSample);
+		FMemory::Memcpy(PCMData.GetData() + SampleIndex * sizeof(int16), &OutputSample, sizeof(int16));
+	}
+
+	return true;
+}
+
 USoundWave* UPlayVoiceAudioUtils::CreateSoundWaveFromPCM(const TArray<uint8>& PCMData, int32 SampleRate, int32 NumChannels, UObject* Outer, FName Name)
 {
 	if (PCMData.Num() == 0 || SampleRate <= 0 || NumChannels <= 0)

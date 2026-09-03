@@ -12,6 +12,7 @@ UPlayVoiceSettings::UPlayVoiceSettings()
 	, RequestTimeout(300.0f)
 	, bAutoPrecacheOnStartup(false)
 	, bEnableOnTheFlySynthesis(false)
-	, DefaultSampleRate(24000)
+	, DefaultSampleRate(48000)
+	, bImproveOutputQuality(true)
 {
 }

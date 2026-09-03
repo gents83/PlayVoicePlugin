@@ -405,6 +405,11 @@ void UPlayVoiceSubsystem::SynthesizeVoiceLineAsync(UCharacterVoiceAsset* Charact
 	JsonObj->SetStringField(TEXT("text"), TextLine);
 	JsonObj->SetStringField(TEXT("language"), TargetLang);
 	JsonObj->SetNumberField(TEXT("speed"), Speed);
+	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
+	const int32 OutputSampleRate = Settings && Settings->DefaultSampleRate > 0 ? Settings->DefaultSampleRate : 48000;
+	const bool bImproveOutputQuality = Settings ? Settings->bImproveOutputQuality : true;
+	JsonObj->SetNumberField(TEXT("sample_rate"), OutputSampleRate);
+	JsonObj->SetBoolField(TEXT("improve_output"), bImproveOutputQuality);
 	JsonObj->SetStringField(TEXT("embedding_data"), EmbeddingData);
 
 	TArray<FString> AudioPaths = CharacterVoiceAsset->GetResolvedReferenceAudioFilesForLanguage(TargetLang);

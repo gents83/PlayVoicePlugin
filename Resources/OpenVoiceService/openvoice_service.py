@@ -544,12 +544,20 @@ class OpenVoiceEngine:
             "message": message
         }
 
-    def synthesize(self, text: str, character_name: str, language: str = "EN", speed: float = 1.0, embedding_data: Optional[str] = None, reference_audio_files: Optional[List[str]] = None, guide_audio_file: Optional[str] = None, emotion: Optional[str] = None) -> bytes:
+    def synthesize(self, text: str, character_name: str, language: str = "EN", speed: float = 1.0, embedding_data: Optional[str] = None, reference_audio_files: Optional[List[str]] = None, guide_audio_file: Optional[str] = None, emotion: Optional[str] = None, output_sample_rate: int = 24000, improve_output: bool = True) -> bytes:
         """
         Synthesizes text into voice matching character reference tone, pitch, and speed.
         If embedding_data is not provided, extracts tone color automatically on the fly from reference_audio_files.
         If guide_audio_file is provided, uses the recorded guide track as source speech to transfer custom speed and emotions.
+        The model and reference processing remain at the native 24 kHz rate; output_sample_rate controls the returned WAV.
         """
+        final_sample_rate = output_sample_rate if improve_output else 24000
+        if final_sample_rate <= 0:
+            raise ValueError("Output sample rate must be positive.")
+
+        def finalize_output(wav_data: bytes) -> bytes:
+            return ensure_wav_format(wav_data, target_sample_rate=final_sample_rate)
+
         if guide_audio_file and not os.path.isfile(guide_audio_file):
             raise FileNotFoundError(f"Guide audio file does not exist: {guide_audio_file}")
 
@@ -660,7 +668,7 @@ class OpenVoiceEngine:
                             )
                             if os.path.exists(out_path):
                                 with open(out_path, 'rb') as f:
-                                    return ensure_wav_format(f.read(), target_sample_rate=24000)
+                                    return finalize_output(f.read())
 
                 if bUsedGuideTrack:
                     detail = f" Source embedding error: {source_se_error}" if source_se_error else " No converted output was produced."
@@ -668,7 +676,7 @@ class OpenVoiceEngine:
 
                 if os.path.exists(src_path):
                     with open(src_path, 'rb') as f:
-                        return ensure_wav_format(f.read(), target_sample_rate=24000)
+                        return finalize_output(f.read())
             except Exception as e:
                 logger.error(f"OpenVoice synthesis exception: {e}")
                 if guide_audio_file:
@@ -687,7 +695,7 @@ class OpenVoiceEngine:
                 with open(pyttsx_path, 'rb') as f:
                     wav_data = f.read()
                     if len(wav_data) >= 44 and wav_data.startswith(b'RIFF'):
-                        return ensure_wav_format(wav_data, target_sample_rate=24000)
+                        return finalize_output(wav_data)
         except Exception as e:
             logger.debug(f"pyttsx3 fallback exception: {e}")
 
@@ -711,7 +719,7 @@ class OpenVoiceEngine:
                 with open(plat_path, 'rb') as f:
                     wav_data = f.read()
                     if len(wav_data) >= 44 and wav_data.startswith(b'RIFF'):
-                        return ensure_wav_format(wav_data, target_sample_rate=24000)
+                        return finalize_output(wav_data)
         except Exception as e:
             logger.debug(f"Platform TTS fallback exception: {e}")
 
@@ -723,7 +731,7 @@ class OpenVoiceEngine:
             pitch_freq = 140.0 + (abs(hash(character_name)) % 100)
 
         synth_bytes = generate_synthetic_wav(text, speed=speed, pitch_freq=pitch_freq, acoustic_profile=acoustic_profile, character_name=character_name)
-        return ensure_wav_format(synth_bytes, target_sample_rate=24000)
+        return finalize_output(synth_bytes)
 
     def transcribe_audio(self, audio_file: str) -> str:
         """
@@ -1054,6 +1062,8 @@ if HAS_FASTAPI:
         reference_audio_files: Optional[List[str]] = []
         guide_audio_file: Optional[str] = None
         emotion: Optional[str] = None
+        sample_rate: Optional[int] = 48000
+        improve_output: Optional[bool] = True
 
     class TranscribeRequest(BaseModel):
         audio_file: Optional[str] = ""
@@ -1107,7 +1117,9 @@ if HAS_FASTAPI:
                 embedding_data=req.embedding_data,
                 reference_audio_files=refs,
                 guide_audio_file=req.guide_audio_file,
-                emotion=req.emotion
+                emotion=req.emotion,
+                output_sample_rate=(req.sample_rate if req.sample_rate is not None else 48000) if req.improve_output is not False else 24000,
+                improve_output=req.improve_output is not False
             )
             if not wav_bytes:
                 return JSONResponse(status_code=500, content={

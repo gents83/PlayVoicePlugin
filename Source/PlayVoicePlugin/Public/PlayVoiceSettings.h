@@ -50,7 +50,11 @@ public:
 	UPROPERTY(EditAnywhere, Config, Category = "Voice Playback", meta = (DisplayName = "Enable On-The-Fly Synthesis"))
 	bool bEnableOnTheFlySynthesis;
 
-	/** Output audio sample rate in Hz (default: 24000 for OpenVoice) */
-	UPROPERTY(EditAnywhere, Config, Category = "Audio Settings", meta = (DisplayName = "Default Sample Rate"))
+	/** Final generated SoundWave output sample rate in Hz. OpenVoice inference and reference processing remain at native 24000 Hz. */
+	UPROPERTY(EditAnywhere, Config, Category = "Audio Settings", meta = (DisplayName = "Default Sample Rate", ClampMin = "1"))
 	int32 DefaultSampleRate;
+
+	/** Resample final generated output to DefaultSampleRate instead of retaining OpenVoice's native 24000 Hz rate. */
+	UPROPERTY(EditAnywhere, Config, Category = "Audio Settings", meta = (DisplayName = "Improve Output Quality"))
+	bool bImproveOutputQuality;
 };
