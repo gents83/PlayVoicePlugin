@@ -79,3 +79,6 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+CLAUDE.md
+.mcp.json
+tasks/todo.md

@@ -41,3 +41,5 @@ unidic
 gruut
 tensorboard
 gradio
+git+https://github.com/myshell-ai/OpenVoice.git
+git+https://github.com/myshell-ai/MeloTTS.git

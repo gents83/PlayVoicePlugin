@@ -41,7 +41,8 @@ public class PlayVoicePlugin : ModuleRules
 				"Projects",
 				"InputCore",
 				"AudioCaptureCore",
-				"AudioExtensions"
+				"AudioExtensions",
+				"AssetRegistry"
 			}
 		);
 

@@ -21,14 +21,15 @@ class PLAYVOICEPLUGIN_API UPlayVoiceBlueprintLibrary : public UBlueprintFunction
 
 public:
 	/**
-	 * Plays a character voice line given a text string and optional language code using OpenVoice audio model.
-	 * If the voice line is precached in CharacterVoiceAsset, it plays instantly with ZERO DELAY.
+	 * Plays a precached character voice line using CharacterName, StringTableId, and a String Table key.
+	 * CharacterName is Text; StringTableId is FName; Key matches StringTableIdAndKeyFromText output.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice", meta = (WorldContext = "WorldContextObject"))
 	static UAudioComponent* PlayCharacterVoice(
 		const UObject* WorldContextObject,
-		UCharacterVoiceAsset* CharacterVoiceAsset,
-		FString TextLine,
+		FText CharacterName,
+		FName StringTableId,
+		FString Key,
 		FString LanguageCode = TEXT(""),
 		UAudioComponent* TargetAudioComponent = nullptr,
 		FVector Location = FVector::ZeroVector,

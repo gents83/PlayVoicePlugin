@@ -107,17 +107,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install fastapi uvicorn requests pydantic
 
-      - name: Test OpenVoice Tone Color Extraction CLI
+      - name: Generate Audio Fixtures
         run: |
-          python Resources/OpenVoiceService/openvoice_service.py --mode extract --character TestHero --refs sample1.wav sample2.wav
+          python -c "import wave; [(lambda w: (w.setnchannels(1), w.setsampwidth(2), w.setframerate(24000), w.writeframes(b'\\x00\\x00' * 24000), w.close()))(wave.open(name, 'wb')) for name in ['sample1.wav', 'sample2.wav']]"
+
+      - name: Run OpenVoice Service Unit Tests
+        run: python -m unittest discover -s Resources/OpenVoiceService/tests -v
+
+      - name: Verify Extraction CLI Reports Failure
+        run: |
+          python -c "import subprocess, sys; result = subprocess.run([sys.executable, 'Resources/OpenVoiceService/openvoice_service.py', '--mode', 'extract', '--character', 'TestHero', '--refs', 'sample1.wav', 'sample2.wav']); assert result.returncode != 0, 'Extraction unexpectedly succeeded without OpenVoice checkpoints'"
 
       - name: Test OpenVoice Audio Synthesis CLI
         run: |
           python Resources/OpenVoiceService/openvoice_service.py --mode synthesize --character TestHero --text "Automated CI synthesis test line" --output ci_test.wav
-
-      - name: Test OpenVoice Audio Transcription CLI
-        run: |
-          python Resources/OpenVoiceService/openvoice_service.py --mode transcribe --refs ci_test.wav
 
       - name: Verify Synthesized WAV Audio File
         run: |

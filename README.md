@@ -1,6 +1,6 @@
 # PlayVoice Plugin for Unreal Engine 5.8
 
-**PlayVoice** is a powerful, cross-platform plugin for **Unreal Engine 5.8** that integrates open-source **OpenVoice** zero-shot Text-To-Speech (TTS) voice cloning and synthesis into Unreal Engine Blueprints and C++.
+**PlayVoice** is an Unreal Engine 5.8 plugin that uses an OpenVoice-v2 Python service during editor authoring to create language-specific voice models and pre-rendered SoundWaves. Packaged games play those generated SoundWaves without Python, HTTP, or runtime synthesis.
 
 ---
 
@@ -16,19 +16,20 @@
    - Instantaneous playback during gameplay with zero delay or synthesis lag when triggering voice lines.
 
 3. **OpenVoice Model Extraction & Synthesis**:
-   - OpenVoice open-source zero-shot voice cloning framework support.
-   - Standalone Python backend server (`openvoice_service.py`) using FastAPI and Uvicorn.
-   - Extracts speaker tone color embedding vectors and performs flexible speech synthesis.
+   - OpenVoice-v2 zero-shot voice cloning through the standalone FastAPI/Uvicorn backend.
+   - Extracts a real speaker tone-color embedding for each configured language.
+   - A recorded guide track supplies source prosody and emotion; the `emotion` text field is metadata only.
+   - Model extraction and line rendering require a ready OpenVoice-v2 backend; fallback TTS is not a valid model.
 
 4. **Blueprint Library & Details Customization**:
    - Simple Blueprint node: `PlayCharacterVoice` to play lines instantly.
    - Blueprint nodes: `PrecacheCharacterVoiceLines` and `GenerateVoiceSoundWave`.
    - Custom Editor Detail Panel (`FCharacterVoiceAssetCustomization`) for `CharacterVoice` assets in Unreal Editor with **"Generate OpenVoice Model"** and **"Pre-process All Voice Lines"** buttons.
-   - Custom Settings Details Panel (`FPlayVoiceSettingsCustomization`) in **Project Settings -> Engine -> PlayVoice Settings** with **"Start OpenVoice Service"**, **"Check Requirements Status"**, and **"Launch Setup / Install Requirements"** buttons, plus an option to automatically start the REST service on editor startup (`bAutoStartServiceOnEditorStartup`).
+   - Custom Settings Details Panel (`FPlayVoiceSettingsCustomization`) in **Project Settings -> Engine -> PlayVoice Settings** with **"Start OpenVoice Service"**, **"Check Requirements Status"**, and **"Launch Setup / Install Requirements"** buttons. The service starts only when one of these actions or a generation action needs it.
 
-5. **Cross-Platform Readiness**:
-   - Designed to run on **Windows (Win64), macOS, Linux, Android, iOS, PlayStation 5 (PS5), Xbox Series X/S, and Nintendo Switch**.
-   - Uses standard platform-agnostic Unreal Engine memory and audio abstractions.
+5. **Editor Authoring / Packaged Playback**:
+   - The Python service and model-generation actions run in supported desktop editor environments.
+   - Packaged targets use platform-supported `USoundWave` playback only; they do not launch Python or perform HTTP synthesis.
 
 6. **Automated Testing & CI/CD**:
    - C++ Automation Unit Tests (`PlayVoiceAutomationTests.cpp`) testing asset caching, PCM/WAV conversion, and settings defaults.
@@ -86,22 +87,23 @@ We selected **OpenVoice** (developed by MyShell.ai) as the primary open-source T
 2. Go to **Project Settings -> Engine -> PlayVoice Settings**.
 3. Under **Service Setup**:
    - **Start OpenVoice Service**: Click this button to manually launch the local OpenVoice REST service backend from Unreal Editor.
-   - **Auto Start Service On Editor Startup**: Enable this option to automatically start the OpenVoice REST service whenever Unreal Editor opens.
+   - The OpenVoice service is started on demand by **Start OpenVoice Service**, model extraction, or voice-line pre-rendering.
 4. Under **Requirements Setup**, customize your setup preferences if desired:
    - **Python Executable Path**: Path to Python binary (default: `python`).
    - **Requirements File Path**: Path to requirements file (default: `Resources/OpenVoiceService/requirements.txt`).
-   - **Target Installation Directory**: Optional custom installation folder (`--target` parameter).
+   - **Target Installation Directory**: Leave empty. Dependencies are installed into the environment selected by **Python Executable Path**.
    - **Extra Pip Arguments**: Optional additional flags for `pip install` (e.g. `--upgrade`, `--no-cache-dir`).
 5. Click **Check Requirements Status** to verify if all required Python packages are installed.
 6. Click **Launch Setup / Install Requirements** to launch automated dependency installation.
 
 ### 2. Manual Python Backend Setup (Alternative)
-Navigate to `Resources/OpenVoiceService` and install dependencies manually:
+Navigate to `Resources/OpenVoiceService` and install dependencies into the Python environment used by the editor:
 
 ```bash
-cd Resources/OpenVoiceService
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
+
+The first server start downloads the OpenVoice-v2 converter checkpoints when they are missing. Keep the editor's **Python Executable Path** pointed at this same environment.
 
 ### 3. Start OpenVoice Service
 Run the OpenVoice REST service:
@@ -131,17 +133,20 @@ python openvoice_service.py --mode server --host 127.0.0.1 --port 1983
 3. In the **OpenVoice Model Actions** section of the details panel, click **Generate OpenVoice Model**.
 
 ### 3. Ensure Zero-Delay Playback (Pre-processing)
-To eliminate any latency during gameplay dialogue:
-1. Add dialogue text strings to the **Lines To Preprocess** array in `DA_HeroVoice`.
-2. Click **Pre-process All Voice Lines** in the Editor details panel (or call `PrecacheCharacterVoiceLines` in Blueprint on game startup).
+To eliminate latency during gameplay dialogue:
+1. Add String Table keys to the **Voice Lines** array in `DA_HeroVoice` and record optional guide tracks for prosody/emotion.
+2. Click **Pre-process All Voice Lines** in the Editor details panel after generating a model for every language.
+3. Generate each language/key combination before packaging. The Blueprint precache node only reports already-authored cache entries and does not run Python in a packaged game.
 
 ### 4. Play Voice Lines in Blueprints
-Use the `Play Character Voice` Blueprint node anywhere in your Blueprints:
-- **Target Asset**: `DA_HeroVoice`
-- **Text Line**: `"Hello brave adventurer!"`
-- **Target Audio Component / Location**: Optional audio component or world location.
+Use **Get String Table ID and Key from Text** on the localized text, then connect its outputs to the new `Play Character Voice` node:
+- **Character Name**: the `CharacterName` value from the voice asset, such as `Rayman`.
+- **String Table Id**: the node’s `String Table Id` output.
+- **Key**: the node’s `Key` output.
+- **Language Code**: the generated language, such as `EN`.
+- **Target Audio Component / Location**: optional audio component or world location.
 
-Because the voice line was precached, it will play **instantly with zero delay**.
+The node resolves the matching `CharacterVoiceAsset`, String Table, key, and language-specific precached SoundWave. It never starts Python or performs runtime synthesis.
 
 ---
 

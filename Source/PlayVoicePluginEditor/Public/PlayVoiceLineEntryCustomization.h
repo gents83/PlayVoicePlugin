@@ -22,6 +22,7 @@ private:
 	TSharedPtr<IPropertyHandle> KeyHandle;
 	TSharedPtr<IPropertyHandle> TextLineHandle;
 	TSharedPtr<IPropertyHandle> AudioFileHandle;
+	TSharedPtr<IPropertyHandle> GuideSoundWaveHandle;
 	TSharedPtr<IPropertyHandle> PrecachedSoundWaveHandle;
 
 	struct FKeyOption
@@ -47,6 +48,7 @@ private:
 	TSharedPtr<FKeyOption> CurrentlySelectedKey;
 
 	void RefreshKeyOptions();
+	void OnGuideSoundWaveChanged();
 	FReply OnRecordGuideTrackClicked();
 	FReply OnStopRecordingClicked();
 	FReply OnPlayPreviewClicked();

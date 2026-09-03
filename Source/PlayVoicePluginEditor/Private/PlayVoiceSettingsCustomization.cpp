@@ -216,7 +216,6 @@ FReply FPlayVoiceSettingsCustomization::OnLaunchSetupClicked()
 	const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
 	FString PythonExec = Settings && !Settings->PythonExecutable.IsEmpty() ? Settings->PythonExecutable : TEXT("python");
 	FString ReqFile = Settings && !Settings->RequirementsFilePath.IsEmpty() ? Settings->RequirementsFilePath : TEXT("Resources/OpenVoiceService/requirements.txt");
-	FString TargetDir = Settings ? Settings->TargetInstallDir : TEXT("");
 	FString ExtraArgs = Settings ? Settings->ExtraPipArgs : TEXT("");
 
 	FString ResolvedReqFile = FPlayVoicePluginEditorModule::ResolveResourcePath(ReqFile);
@@ -226,16 +225,7 @@ FReply FPlayVoiceSettingsCustomization::OnLaunchSetupClicked()
 	FString BaseExtraArgs = ExtraArgs.IsEmpty() ? TEXT("--prefer-binary --no-warn-script-location") : ExtraArgs;
 
 	FString CmdArgs = FString::Printf(TEXT("-m pip install %s -r \"%s\""), *BaseExtraArgs, *ResolvedReqFile);
-	if (!TargetDir.IsEmpty())
-	{
-		CmdArgs += FString::Printf(TEXT(" --target \"%s\""), *TargetDir);
-	}
-
 	FString GitCmdArgs = FString::Printf(TEXT("-m pip install %s --no-deps git+https://github.com/myshell-ai/OpenVoice.git git+https://github.com/myshell-ai/MeloTTS.git"), *BaseExtraArgs);
-	if (!TargetDir.IsEmpty())
-	{
-		GitCmdArgs += FString::Printf(TEXT(" --target \"%s\""), *TargetDir);
-	}
 
 	FNotificationInfo NotificationInfo(FText::FromString("PlayVoice: Installing Python requirements via pip..."));
 	NotificationInfo.bFireAndForget = false;

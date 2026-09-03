@@ -5,49 +5,67 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogPlayVoiceBlueprint, Log, All);
+
 UAudioComponent* UPlayVoiceBlueprintLibrary::PlayCharacterVoice(
 	const UObject* WorldContextObject,
-	UCharacterVoiceAsset* CharacterVoiceAsset,
-	FString TextLine,
+	FText CharacterName,
+	FName StringTableId,
+	FString Key,
 	FString LanguageCode,
 	UAudioComponent* TargetAudioComponent,
 	FVector Location,
 	bool bAttachToActor,
 	AActor* AttachToActor)
 {
-	if (!WorldContextObject || !CharacterVoiceAsset)
+	UE_LOG(LogPlayVoiceBlueprint, Log, TEXT("PlayCharacterVoice: Request CharacterName='%s', StringTableId='%s', Key='%s', Language='%s'."), *CharacterName.ToString(), *StringTableId.ToString(), *Key, *LanguageCode);
+	if (!WorldContextObject || CharacterName.IsEmpty() || StringTableId.IsNone() || Key.IsEmpty())
 	{
+		UE_LOG(LogPlayVoiceBlueprint, Warning, TEXT("PlayCharacterVoice: Invalid input. WorldContext=%s CharacterNameEmpty=%d StringTableIdNone=%d KeyEmpty=%d."), WorldContextObject ? TEXT("valid") : TEXT("null"), CharacterName.IsEmpty(), StringTableId.IsNone(), Key.IsEmpty());
+		return nullptr;
+	}
+
+	const FName CharacterNameId(*CharacterName.ToString());
+	if (CharacterNameId.IsNone())
+	{
+		UE_LOG(LogPlayVoiceBlueprint, Warning, TEXT("PlayCharacterVoice: CharacterName '%s' converted to None."), *CharacterName.ToString());
 		return nullptr;
 	}
 
 	UWorld* World = WorldContextObject->GetWorld();
 	if (!World)
 	{
+		UE_LOG(LogPlayVoiceBlueprint, Warning, TEXT("PlayCharacterVoice: WorldContext '%s' has no world."), *GetNameSafe(WorldContextObject));
 		return nullptr;
 	}
 
 	UGameInstance* GameInstance = World->GetGameInstance();
 	if (!GameInstance)
 	{
+		UE_LOG(LogPlayVoiceBlueprint, Warning, TEXT("PlayCharacterVoice: World '%s' has no GameInstance."), *GetNameSafe(World));
 		return nullptr;
 	}
 
 	UPlayVoiceSubsystem* Subsystem = GameInstance->GetSubsystem<UPlayVoiceSubsystem>();
 	if (!Subsystem)
 	{
+		UE_LOG(LogPlayVoiceBlueprint, Warning, TEXT("PlayCharacterVoice: PlayVoiceSubsystem is unavailable."));
 		return nullptr;
 	}
 
-	return Subsystem->PlayCharacterVoice(
+	UAudioComponent* Result = Subsystem->PlayCharacterVoiceByIdentifiers(
 		WorldContextObject,
-		CharacterVoiceAsset,
-		TextLine,
+		CharacterNameId,
+		StringTableId,
+		Key,
 		LanguageCode,
 		TargetAudioComponent,
 		Location,
 		bAttachToActor,
 		AttachToActor
 	);
+	UE_LOG(LogPlayVoiceBlueprint, Log, TEXT("PlayCharacterVoice: Playback result=%s."), Result ? TEXT("started") : TEXT("not started"));
+	return Result;
 }
 
 UAudioComponent* UPlayVoiceBlueprintLibrary::PlayCharacterVoiceFromKey(
