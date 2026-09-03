@@ -232,20 +232,58 @@ def load_and_convert_to_pcm16_mono(filepath: str, target_sr: int = 24000) -> Opt
 def create_combined_reference_wav(valid_files: List[str], min_duration_sec: float = 10.0) -> Optional[str]:
     """
     Concatenates multiple reference audio files into a single temporary WAV file.
-    Supports 8-bit, 16-bit, 24-bit, and 32-bit WAV files at any sample rate.
-    Repeats audio clips if total duration is less than min_duration_sec.
+    Uses torchaudio and fallback WAV parsers to robustly load any format (WAV/MP3/FLAC/OGG, 8/16/24/32-bit).
     """
     if not valid_files:
         return None
 
-    combined_samples = []
     target_sr = 24000
 
+    if HAS_OPENVOICE:
+        tensors = []
+        for filepath in valid_files:
+            if not filepath or not os.path.exists(filepath):
+                continue
+            try:
+                wav, sr = torchaudio.load(filepath)
+                if wav.numel() > 0:
+                    if wav.shape[0] > 1:
+                        wav = wav.mean(dim=0, keepdim=True)
+                    if sr != target_sr:
+                        resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=target_sr)
+                        wav = resampler(wav)
+                    tensors.append(wav)
+                    tensors.append(torch.zeros(1, int(target_sr * 0.1)))
+                    continue
+            except Exception as ta_err:
+                logger.debug(f"torchaudio.load failed for '{filepath}' ({ta_err}). Retrying via wave parser...")
+
+            pcm = load_and_convert_to_pcm16_mono(filepath, target_sr=target_sr)
+            if pcm:
+                t = torch.tensor(pcm, dtype=torch.float32).unsqueeze(0) / 32768.0
+                tensors.append(t)
+                tensors.append(torch.zeros(1, int(target_sr * 0.1)))
+
+        if tensors:
+            combined_wav = torch.cat(tensors, dim=1)
+            target_total_samples = int(target_sr * min_duration_sec)
+            if combined_wav.shape[1] < target_total_samples:
+                repeats = math.ceil(target_total_samples / combined_wav.shape[1])
+                combined_wav = combined_wav.repeat(1, repeats)[:, :target_total_samples]
+
+            temp_path = os.path.join(tempfile.gettempdir(), "combined_reference_se.wav")
+            try:
+                torchaudio.save(temp_path, combined_wav, target_sr)
+                return temp_path
+            except Exception as save_err:
+                logger.error(f"Failed torchaudio save combined WAV: {save_err}")
+
+    # Fallback to pure PCM list concatenation if HAS_OPENVOICE is False
+    combined_samples = []
     for filepath in valid_files:
         pcm_samples = load_and_convert_to_pcm16_mono(filepath, target_sr=target_sr)
         if pcm_samples:
             combined_samples.extend(pcm_samples)
-            # Add 0.1s silence pause between clips
             combined_samples.extend([0] * int(target_sr * 0.1))
 
     if not combined_samples:
