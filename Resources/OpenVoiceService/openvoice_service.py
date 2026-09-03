@@ -371,22 +371,24 @@ class OpenVoiceEngine:
                 combined_ref_path = create_combined_reference_wav(valid_files, min_duration_sec=10.0)
 
                 se_tensors = []
-                # First try get_se on the combined reference audio track (fast & robust)
-                if combined_ref_path and os.path.exists(combined_ref_path):
+                target_file = combined_ref_path if (combined_ref_path and os.path.exists(combined_ref_path)) else (valid_files[0] if valid_files else None)
+
+                if target_file:
+                    # Try direct speaker embedding extraction without VAD first (instant, reliable, no whisper segment errors)
                     try:
-                        se, _ = get_se(combined_ref_path, self.converter, target_dir=target_dir, vad=True)
+                        se, _ = get_se(target_file, self.converter, target_dir=target_dir, vad=False)
                         if se is not None:
                             se_tensors.append(se.detach().cpu() if isinstance(se, torch.Tensor) else torch.tensor(se))
-                    except Exception as comb_err:
-                        logger.warning(f"get_se with VAD on combined audio track failed ({comb_err}). Retrying without VAD...")
+                    except Exception as err1:
+                        logger.warning(f"get_se without VAD failed ({err1}). Retrying with VAD...")
                         try:
-                            se, _ = get_se(combined_ref_path, self.converter, target_dir=target_dir, vad=False)
+                            se, _ = get_se(target_file, self.converter, target_dir=target_dir, vad=True)
                             if se is not None:
                                 se_tensors.append(se.detach().cpu() if isinstance(se, torch.Tensor) else torch.tensor(se))
-                        except Exception as comb_novad_err:
-                            logger.warning(f"get_se without VAD on combined audio track failed: {comb_novad_err}")
+                        except Exception as err2:
+                            logger.warning(f"get_se with VAD failed: {err2}")
 
-                # If combined track extraction didn't yield an embedding, fallback to individual files (up to first 3 valid files for speed)
+                # If target_file extraction didn't yield an embedding, fallback to individual files
                 if not se_tensors:
                     for ref_file in valid_files[:3]:
                         if not ref_file or not os.path.exists(ref_file):
@@ -395,6 +397,7 @@ class OpenVoiceEngine:
                             se, _ = get_se(ref_file, self.converter, target_dir=target_dir, vad=False)
                             if se is not None:
                                 se_tensors.append(se.detach().cpu() if isinstance(se, torch.Tensor) else torch.tensor(se))
+                                break
                         except Exception as e:
                             logger.warning(f"Could not extract tone color from '{ref_file}': {e}")
 
