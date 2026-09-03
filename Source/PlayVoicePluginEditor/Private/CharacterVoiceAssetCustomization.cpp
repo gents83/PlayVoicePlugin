@@ -47,6 +47,89 @@ static bool IsCompatibleOpenVoiceServiceResponse(const FHttpResponsePtr& Respons
 		&& HealthObject->GetStringField(TEXT("service_version")) == TEXT("1.1.0");
 }
 
+static FString MakeSafePackageComponent(const FString& InValue)
+{
+	FString SafeValue;
+	for (TCHAR Character : InValue.TrimStartAndEnd())
+	{
+		if (FChar::IsAlnum(Character) || Character == TCHAR('_'))
+		{
+			SafeValue.AppendChar(Character);
+		}
+		else
+		{
+			SafeValue.AppendChar(TCHAR('_'));
+		}
+	}
+
+	return SafeValue.IsEmpty() ? TEXT("Voice") : SafeValue;
+}
+
+static void DeleteGeneratedSoundWavePackage(const FString& PackagePath)
+{
+	TArray<USoundWave*> ExistingSoundWaves;
+	UPackage* ExistingPackage = FindPackage(nullptr, *PackagePath);
+	if (ExistingPackage)
+	{
+		TArray<UObject*> Objects;
+		GetObjectsWithOuter(ExistingPackage, Objects, EGetObjectsFlags::None);
+		for (UObject* Object : Objects)
+		{
+			if (USoundWave* SoundWave = Cast<USoundWave>(Object))
+			{
+				ExistingSoundWaves.AddUnique(SoundWave);
+			}
+		}
+	}
+
+	if (!FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+	{
+		FModuleManager::Get().LoadModule("AssetRegistry");
+	}
+	if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+	{
+		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+		TArray<FAssetData> Assets;
+		AssetRegistryModule.Get().GetAssetsByPackageName(FName(*PackagePath), Assets);
+		for (const FAssetData& AssetData : Assets)
+		{
+			if (USoundWave* SoundWave = Cast<USoundWave>(AssetData.GetAsset()))
+			{
+				ExistingSoundWaves.AddUnique(SoundWave);
+				ExistingPackage = SoundWave->GetOutermost();
+			}
+		}
+
+		for (USoundWave* SoundWave : ExistingSoundWaves)
+		{
+			AssetRegistryModule.AssetDeleted(SoundWave);
+		}
+	}
+
+	for (USoundWave* SoundWave : ExistingSoundWaves)
+	{
+		if (SoundWave)
+		{
+			SoundWave->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional);
+			SoundWave->MarkAsGarbage();
+		}
+	}
+	if (ExistingPackage && ExistingPackage != GetTransientPackage())
+	{
+		ExistingPackage->MarkAsGarbage();
+	}
+	if (ExistingSoundWaves.Num() > 0 || ExistingPackage)
+	{
+		CollectGarbage(RF_NoFlags);
+	}
+
+	FString PackageFilename;
+	if (FPackageName::DoesPackageExist(PackagePath, &PackageFilename) && IFileManager::Get().FileExists(*PackageFilename))
+	{
+		IFileManager::Get().Delete(*PackageFilename);
+	}
+}
+
 TSharedRef<IDetailCustomization> FCharacterVoiceAssetCustomization::MakeInstance()
 {
 	return MakeShareable(new FCharacterVoiceAssetCustomization());
@@ -627,44 +710,79 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 					}
 					else if (WeakTargetAsset.IsValid())
 					{
-						FString KeySanitized = FString::Printf(TEXT("SW_%s_%s_%s"), *WeakTargetAsset->CharacterName.ToString(), *NormalizedLangCode, *EntryKey.ToString().Replace(TEXT("."), TEXT("_")));
-						FString PackagePath = AssetFolderPath / KeySanitized;
+						const FString SafeCharacterName = MakeSafePackageComponent(WeakTargetAsset->CharacterName.ToString());
+						const FString SafeKey = MakeSafePackageComponent(EntryKey.ToString());
+						const FString KeySanitized = FString::Printf(TEXT("SW_%s_%s_%s"), *SafeCharacterName, *NormalizedLangCode, *SafeKey);
+						const FString PackagePath = AssetFolderPath / KeySanitized;
 
-						UPackage* SoundWavePackage = CreatePackage(*PackagePath);
-						if (SoundWavePackage)
+						if (!FPackageName::IsValidLongPackageName(PackagePath))
 						{
-							SoundWavePackage->FullyLoad();
-						}
-						USoundWave* SoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(Response->GetContent(), SoundWavePackage, FName(*KeySanitized));
-
-						if (SoundWave && SoundWavePackage)
-						{
-							const FString PackageFilename = FPackageName::LongPackageNameToFilename(PackagePath, FPackageName::GetAssetPackageExtension());
-							FSavePackageArgs SaveArgs;
-							SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-							const bool bSaved = UPackage::SavePackage(SoundWavePackage, SoundWave, *PackageFilename, SaveArgs);
-							if (!bSaved)
-							{
-								(*FailedTasks)++;
-								UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateFromVoiceLinesClicked: Could not save generated sound wave package '%s'."), *PackageFilename);
-							}
-							else
-							{
-								WeakTargetAsset->CacheVoiceLineForKey(EntryKey, SoundWave, CurrentLangCode);
-								WeakTargetAsset->MarkPackageDirty();
-
-								if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
-								{
-									FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
-									AssetRegistryModule.AssetCreated(SoundWave);
-								}
-								UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateFromVoiceLinesClicked: Pre-rendered sound wave '%s' for Key '%s'"), *KeySanitized, *EntryKey.ToString());
-							}
+							(*FailedTasks)++;
+							UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateFromVoiceLinesClicked: Invalid generated sound wave package path '%s'."), *PackagePath);
 						}
 						else
 						{
-							(*FailedTasks)++;
-							UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateFromVoiceLinesClicked: Could not create generated sound wave '%s'."), *KeySanitized);
+							for (FPlayVoiceLineEntry& ExistingEntry : WeakTargetAsset->VoiceLines)
+							{
+								if (ExistingEntry.Key == EntryKey)
+								{
+									ExistingEntry.PrecachedSoundWavesByLanguage.Remove(NormalizedLangCode);
+									const FString NormalizedDefaultLanguage = WeakTargetAsset->DefaultLanguage.TrimStartAndEnd().ToUpper();
+									if (NormalizedLangCode == (NormalizedDefaultLanguage.IsEmpty() ? TEXT("EN") : *NormalizedDefaultLanguage))
+									{
+										ExistingEntry.PrecachedSoundWave = nullptr;
+									}
+									break;
+								}
+							}
+
+							DeleteGeneratedSoundWavePackage(PackagePath);
+							UPackage* SoundWavePackage = CreatePackage(*PackagePath);
+							if (SoundWavePackage)
+							{
+								SoundWavePackage->FullyLoad();
+							}
+							USoundWave* SoundWave = UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(Response->GetContent(), SoundWavePackage, FName(*KeySanitized));
+
+							if (SoundWave && SoundWavePackage)
+							{
+								const FString PackageFilename = FPackageName::LongPackageNameToFilename(PackagePath, FPackageName::GetAssetPackageExtension());
+								FSavePackageArgs SaveArgs;
+								SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+								const bool bSaved = UPackage::SavePackage(SoundWavePackage, SoundWave, *PackageFilename, SaveArgs);
+								if (!bSaved)
+								{
+									(*FailedTasks)++;
+									UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateFromVoiceLinesClicked: Could not save generated sound wave package '%s'."), *PackageFilename);
+								}
+								else
+								{
+									WeakTargetAsset->CacheVoiceLineForKey(EntryKey, SoundWave, CurrentLangCode);
+									WeakTargetAsset->MarkPackageDirty();
+
+									UPackage* VoiceAssetPackage = WeakTargetAsset->GetOutermost();
+									const FString VoiceAssetFilename = FPackageName::LongPackageNameToFilename(VoiceAssetPackage->GetName(), FPackageName::GetAssetPackageExtension());
+									FSavePackageArgs VoiceAssetSaveArgs;
+									VoiceAssetSaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+									if (!UPackage::SavePackage(VoiceAssetPackage, WeakTargetAsset.Get(), *VoiceAssetFilename, VoiceAssetSaveArgs))
+									{
+										(*FailedTasks)++;
+										UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateFromVoiceLinesClicked: Could not save voice asset package '%s'."), *VoiceAssetFilename);
+									}
+
+									if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+									{
+										FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+										AssetRegistryModule.AssetCreated(SoundWave);
+									}
+									UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnGenerateFromVoiceLinesClicked: Pre-rendered sound wave '%s' for Key '%s'"), *KeySanitized, *EntryKey.ToString());
+								}
+							}
+							else
+							{
+								(*FailedTasks)++;
+								UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateFromVoiceLinesClicked: Could not create generated sound wave '%s'."), *KeySanitized);
+							}
 						}
 					}
 

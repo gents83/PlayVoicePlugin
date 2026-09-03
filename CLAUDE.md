@@ -26,8 +26,8 @@ PlayVoicePlugin is an Unreal Engine 5.8 plugin for editor-time OpenVoice-v2 voic
 2. Install `Resources/OpenVoiceService/requirements.txt` with that same interpreter. Do not use `TargetInstallDir`; the launched service does not support a separate pip target.
 3. Start the service from Project Settings or trigger a generation action; the service is started on demand. `/health` is ready only after OpenVoice-v2 imports and converter checkpoints load.
 4. Configure reference audio per language and click **Generate OpenVoice Model**.
-5. Configure String Table keys in `Voice Lines`; record optional guide tracks; click **Pre-process All Voice Lines** before packaging.
-6. Verify generated SoundWaves for every required `(language, key)` combination in the asset and reload the asset before packaging.
+5. Configure String Table keys in `Voice Lines`; record optional guide tracks; click **Generate Precached Sounds from VoiceLines** before packaging.
+6. Verify generated SoundWaves for every required `(language, key)` combination in the asset and reload the asset before packaging. Each generation replaces the matching package and saves both the SoundWave and CharacterVoiceAsset references.
 
 Manual service command:
 
@@ -50,6 +50,9 @@ Run Unreal automation tests from Session Frontend by filtering for `PlayVoice.Un
 - `/extract` succeeds only with a real nonempty OpenVoice-v2 `target_se`. Acoustic-profile or fallback TTS data is not a model.
 - `ModelCheckpointPath` points to the JSON embedding persisted by `SaveModelToFile`; the service must not report a nonexistent `.pth` artifact.
 - SoundWave cache lookup is language-specific. Never replace a legacy single pointer without migrating it to the default-language entry.
+- Generated package names sanitize character and String Table key components to valid Unreal object-name characters; regeneration deletes the prior `(language, key)` package before creating its replacement.
+- Generation persists cache references by saving the `CharacterVoiceAsset` package after saving each generated SoundWave package.
+- The module-level Python engine is intentionally deferred (`load_existing=False`); checkpoint readiness is established by the server-mode engine, so an import-time readiness failure is not actionable.
 - A requested guide conversion failure must be reported; do not silently substitute unrelated fallback TTS.
 - Do not copy inference code from `D:/PROJECTS/mgentile/speechtospeech`: its committed converter uses obsolete OpenVoice-v1 APIs, although its explicit reference/guide data flow is useful as a UI comparison.
 - `PrecacheCharacterVoiceLines` cannot create audio in a packaged build. Generation is an editor authoring action.

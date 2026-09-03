@@ -442,13 +442,13 @@ class OpenVoiceEngine:
                         else:
                             raise load_err
                     self.ready = self.converter is not None
-                else:
+                elif load_existing:
                     self.initialization_error = "OpenVoice converter checkpoints are unavailable."
                     logger.error(self.initialization_error)
             except Exception as e:
                 self.initialization_error = str(e)
                 logger.error(f"Failed loading OpenVoice checkpoints: {e}")
-        elif not HAS_OPENVOICE:
+        elif load_existing:
             self.initialization_error = "OpenVoice and MeloTTS imports are unavailable."
 
     def extract_tone_color(self, reference_files: List[str], character_name: str) -> Dict[str, Any]:

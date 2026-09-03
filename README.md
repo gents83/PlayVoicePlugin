@@ -24,7 +24,7 @@
 4. **Blueprint Library & Details Customization**:
    - Simple Blueprint node: `PlayCharacterVoice` to play lines instantly.
    - Blueprint nodes: `PrecacheCharacterVoiceLines` and `GenerateVoiceSoundWave`.
-   - Custom Editor Detail Panel (`FCharacterVoiceAssetCustomization`) for `CharacterVoice` assets in Unreal Editor with **"Generate OpenVoice Model"** and **"Pre-process All Voice Lines"** buttons.
+   - Custom Editor Detail Panel (`FCharacterVoiceAssetCustomization`) for `CharacterVoice` assets in Unreal Editor with **"Generate OpenVoice Model"**, **"Generate Precached Sounds from VoiceLines"**, and cleanup controls.
    - Custom Settings Details Panel (`FPlayVoiceSettingsCustomization`) in **Project Settings -> Engine -> PlayVoice Settings** with **"Start OpenVoice Service"**, **"Check Requirements Status"**, and **"Launch Setup / Install Requirements"** buttons. The service starts only when one of these actions or a generation action needs it.
 
 5. **Editor Authoring / Packaged Playback**:
@@ -135,8 +135,9 @@ python openvoice_service.py --mode server --host 127.0.0.1 --port 1983
 ### 3. Ensure Zero-Delay Playback (Pre-processing)
 To eliminate latency during gameplay dialogue:
 1. Add String Table keys to the **Voice Lines** array in `DA_HeroVoice` and record optional guide tracks for prosody/emotion.
-2. Click **Pre-process All Voice Lines** in the Editor details panel after generating a model for every language.
-3. Generate each language/key combination before packaging. The Blueprint precache node only reports already-authored cache entries and does not run Python in a packaged game.
+2. Click **Generate Precached Sounds from VoiceLines** in the Editor details panel after generating a model for every language.
+3. Generation creates one SoundWave package for each `(language, key)` combination. Re-running it deletes and replaces the previous package, then saves the generated SoundWave and the `CharacterVoiceAsset` cache references.
+4. The **Clean Precached Sound Waves** action removes generated packages and clears their references. The Blueprint precache node only reports already-authored cache entries and does not run Python in a packaged game.
 
 ### 4. Play Voice Lines in Blueprints
 Use **Get String Table ID and Key from Text** on the localized text, then connect its outputs to the new `Play Character Voice` node:
