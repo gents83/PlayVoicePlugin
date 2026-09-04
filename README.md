@@ -1,40 +1,82 @@
 # PlayVoice Plugin for Unreal Engine 5.8
 
-**PlayVoice** is an Unreal Engine 5.8 plugin that uses an OpenVoice-v2 Python service during editor authoring to create language-specific voice models and pre-rendered SoundWaves. Packaged games play those generated SoundWaves without Python, HTTP, or runtime synthesis.
+## Bring Your Characters to Life
+
+Give every character a voice that feels memorable, expressive, and truly their own. **PlayVoice** brings OpenVoice-v2 voice cloning into Unreal Engine authoring, so you can turn a short, clean reference recording into a reusable character voice and generate localized dialogue directly from your project.
+
+Create a gruff hero, a bright sidekick, a mysterious narrator, or an entire cast of original voices. You can also reproduce a recognizable or famous person's voice **only when you have their permission and the necessary rights**. PlayVoice is designed for authorized voice replication, character prototyping, localization, machinima, cinematics, and interactive storytelling.
+
+### From Voice Sample to In-Game Dialogue
+
+1. Add a few reference recordings for a character.
+2. Extract a language-specific voice model in the Unreal Editor.
+3. Add your dialogue lines and optional guide tracks for timing, emotion, and delivery.
+4. Pre-render the lines into SoundWave assets.
+5. Play them instantly in gameplay through Blueprint.
+
+The result is production-friendly dialogue that is authored ahead of time, packaged with your game, and ready to play without runtime synthesis or network calls.
+
+### Why Creators Use PlayVoice
+
+- **Distinctive character voices:** Capture tone color from a short reference recording instead of commissioning a complete voice library for every iteration.
+- **Expressive delivery:** Use guide tracks to transfer the pacing, emotion, and prosody of a performance into generated dialogue.
+- **Localization at scale:** Build separate voice models and cached lines for each supported language.
+- **Fast iteration:** Rewrite a line, regenerate its SoundWave, and hear the result in the editor without rebuilding a voice pipeline.
+- **Gameplay-ready output:** Ship pre-rendered Unreal SoundWaves with predictable, zero-synthesis-latency playback.
+- **Local authoring:** Run the OpenVoice service locally during editor-time creation, keeping packaged builds independent from Python and HTTP.
+
+> **Responsible use:** Only clone or imitate voices when you have the speaker's consent and the rights to use the recordings. Do not use PlayVoice to impersonate people, mislead audiences, or create unauthorized replicas.
 
 ---
 
-## Key Features
+## Technical Overview
+
+**PlayVoice** is an Unreal Engine 5.8 plugin that uses an OpenVoice-v2 Python service during editor authoring to create language-specific voice models and pre-rendered SoundWaves. Packaged games play those generated SoundWaves without Python, HTTP, or runtime synthesis.
+
+### Key Features
 
 1. **CharacterVoice Asset (`UCharacterVoiceAsset`)**:
-   - Manage character reference audio clips (WAV/MP3/FLAC) to capture tone, speed, and voice color.
-   - Configure language, speed multiplier, and model embedding parameters.
-   - Configure the final generated audio sample rate (default: 48 kHz).
-   - Configure dialogue text lines for batch pre-processing. Each cached line is identified by String Table ID, key, and language.
+   - Manage character reference audio clips in WAV, MP3, or FLAC format.
+   - Capture tone color from reference recordings and persist language-specific embeddings.
+   - Configure language, speed multiplier, output sample rate, and model parameters.
+   - Organize dialogue text lines by String Table ID, key, and language.
 
 2. **Zero-Latency Playback System**:
-   - Plays dialogue lines from authored SoundWave assets; editor rendering is performed by the detail panel generation action.
-   - Instantaneous playback during gameplay with zero delay or synthesis lag when triggering voice lines.
+   - Plays authored SoundWave assets during gameplay.
+   - Pre-render dialogue in the editor instead of synthesizing during play.
+   - Resolve the matching character, String Table key, and language-specific cache entry through Blueprint.
 
-3. **OpenVoice Model Extraction & Synthesis**:
-   - OpenVoice-v2 zero-shot voice cloning through the standalone FastAPI/Uvicorn backend.
-   - Extracts a real speaker tone-color embedding for each configured language.
-   - A recorded guide track supplies source prosody and emotion; the `emotion` text field is metadata only.
-   - Model extraction and line rendering require a ready OpenVoice-v2 backend; fallback TTS is not a valid model.
+3. **OpenVoice Model Extraction and Synthesis**:
+   - Use zero-shot voice cloning through a standalone FastAPI/Uvicorn backend.
+   - Extract a real OpenVoice-v2 speaker tone-color embedding for each configured language.
+   - Use a recorded guide track as the source for prosody and emotion transfer.
+   - Keep inference and reference processing at OpenVoice's native 24 kHz, with optional final output resampling.
 
-4. **Blueprint Library & Details Customization**:
-   - Simple Blueprint node: `PlayCharacterVoice` to play lines instantly.
-   - Blueprint nodes: `PrecacheCharacterVoiceLines` and `GenerateVoiceSoundWave`.
-   - Custom Editor Detail Panel (`FCharacterVoiceAssetCustomization`) for `CharacterVoice` assets in Unreal Editor with **"Generate OpenVoice Model"**, **"Generate Precached Sounds from VoiceLines"**, and cleanup controls.
-   - Custom Settings Details Panel (`FPlayVoiceSettingsCustomization`) in **Project Settings -> Project -> PlayVoice Settings** with **"Start OpenVoice Service"**, **"Check Requirements Status"**, and **"Launch Setup / Install Requirements"** buttons. The service starts only when one of these actions or a generation action needs it.
+4. **Blueprint Library and Editor Customization**:
+   - Use `PlayCharacterVoice` to play cached lines from Blueprint.
+   - Use `PrecacheCharacterVoiceLines` and `GenerateVoiceSoundWave` for authoring workflows.
+   - Generate models and batches of localized lines from the `CharacterVoice` details panel.
+   - Configure service startup, dependency checks, and Python setup from Project Settings.
 
-5. **Editor Authoring / Packaged Playback**:
-   - The Python service and model-generation actions run in supported desktop editor environments.
-   - Packaged targets use platform-supported `USoundWave` playback only; they do not launch Python or perform HTTP synthesis.
+5. **Editor Authoring and Packaged Playback**:
+   - Run Python, model extraction, and line rendering in supported desktop editor environments.
+   - Package only authored `USoundWave` assets for runtime playback.
+   - Keep Python, HTTP, and synthesis out of packaged targets.
 
-6. **Automated Testing & CI/CD**:
-   - C++ Automation Unit Tests (`PlayVoiceAutomationTests.cpp`) testing asset caching, PCM/WAV conversion, and settings defaults.
-   - GitHub Actions workflow (`.github/workflows/ci.yml`) testing plugin structure, JSON syntax, and Python service contracts on Linux and Windows.
+6. **Automated Testing and CI/CD**:
+   - C++ Automation Unit Tests cover asset caching, PCM/WAV conversion, normalization, settings, Blueprint behavior, and String Table integration.
+   - GitHub Actions validate plugin structure, JSON syntax, and Python service contracts on Linux and Windows.
+
+---
+
+## OpenVoice Model Choice
+
+We selected **OpenVoice** (developed by MyShell.ai) as the primary open-source voice model for this plugin because it provides:
+
+- **Zero-shot voice cloning:** Extract tone color from a short reference recording without full model fine-tuning.
+- **Tone color control:** Separate a speaker's voice identity from language and speech delivery.
+- **Fast local inference:** Author voice lines through a local service rather than a hosted runtime dependency.
+- **Open-source availability:** Review the upstream model's license and usage terms before distributing a product that uses it.
 
 ---
 
@@ -52,33 +94,24 @@ PlayVoicePlugin/
 │   │   ├── PlayVoicePlugin.Build.cs
 │   │   ├── Public/
 │   │   │   ├── CharacterVoiceAsset.h     # CharacterVoice Data Asset definition
-│   │   │   ├── PlayVoiceSubsystem.h      # GameInstance subsystem managing TTS & caching
-│   │   │   ├── PlayVoiceBlueprintLibrary.h# Blueprint Callable Nodes
+│   │   │   ├── PlayVoiceSubsystem.h      # GameInstance subsystem managing playback and caching
+│   │   │   ├── PlayVoiceBlueprintLibrary.h# Blueprint-callable nodes
 │   │   │   ├── PlayVoiceAudioUtils.h     # Dynamic SoundWave PCM/WAV loader
 │   │   │   └── PlayVoiceSettings.h       # Project Developer Settings
 │   │   └── Private/
 │   │       └── Tests/
-│   │           └── PlayVoiceAutomationTests.cpp # C++ Unit & Automation Tests
+│   │           └── PlayVoiceAutomationTests.cpp # C++ unit and automation tests
 │   └── PlayVoicePluginEditor/             # Editor Module
 │       ├── PlayVoicePluginEditor.Build.cs
 │       ├── Public/
-│       │   ├── CharacterVoiceAssetCustomization.h # Asset Editor Detail Panel Customization
-│       │   └── PlayVoiceSettingsCustomization.h   # Settings Editor Detail Panel Customization
+│       │   ├── CharacterVoiceAssetCustomization.h # Asset Editor detail panel customization
+│       │   └── PlayVoiceSettingsCustomization.h   # Settings detail panel customization
 │       └── Private/
 └── Resources/
     └── OpenVoiceService/
-        ├── openvoice_service.py           # OpenVoice REST Backend & CLI
+        ├── openvoice_service.py           # OpenVoice REST backend and CLI
         └── requirements.txt               # Python dependencies
 ```
-
----
-
-## OpenVoice Model Choice
-
-We selected **OpenVoice** (developed by MyShell.ai) as the primary open-source TTS model for this plugin for several reasons:
-- **Zero-Shot Voice Cloning**: Only requires a few seconds of reference audio clips to extract tone color without full fine-tuning.
-- **Tone Color Control**: Decouples tone color from base language and speech style.
-- **Performance & Licensing**: Free, open-source license with fast inference speed.
 
 ---
 
