@@ -1,6 +1,7 @@
+setuptools<81
 torch
 torchaudio
-numpy
+numpy==1.22.0
 scipy
 librosa
 soundfile
@@ -41,5 +42,5 @@ unidic
 gruut
 tensorboard
 gradio
-git+https://github.com/myshell-ai/OpenVoice.git
-git+https://github.com/myshell-ai/MeloTTS.git
+
+# OpenVoice and MeloTTS are installed from pinned commits with --no-deps by the editor setup pipeline.

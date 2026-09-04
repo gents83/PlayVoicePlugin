@@ -9,6 +9,7 @@
 #include "Sound/SoundWave.h"
 #include "GameplayTagContainer.h"
 #include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -222,9 +223,8 @@ bool FPlayVoiceSettingsTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Default service URL should be http://127.0.0.1:1983"), Settings->ServiceUrl, TEXT("http://127.0.0.1:1983"));
 				TestEqual(TEXT("Default sample rate should be 48000"), Settings->DefaultSampleRate, 48000);
 		TestTrue(TEXT("Improve Output Quality should be enabled by default"), Settings->bImproveOutputQuality);
-		TestFalse(TEXT("Default AutoPrecacheOnStartup should be false"), Settings->bAutoPrecacheOnStartup);
 		TestFalse(TEXT("Default bEnableOnTheFlySynthesis should be false"), Settings->bEnableOnTheFlySynthesis);
-		TestEqual(TEXT("Default PythonExecutable should be python"), Settings->PythonExecutable, TEXT("python"));
+		TestTrue(TEXT("Default PythonExecutable should use automatic interpreter discovery"), Settings->PythonExecutable.IsEmpty());
 		TestEqual(TEXT("Default RequirementsFilePath should be Resources/OpenVoiceService/requirements.txt"), Settings->RequirementsFilePath, TEXT("Resources/OpenVoiceService/requirements.txt"));
 	}
 
@@ -359,6 +359,54 @@ bool FCharacterVoiceStringTableLookupTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Second table lookup should return the second entry"), VoiceAsset->FindVoiceLineByStringTableIdAndKey(SecondTable->GetStringTableId(), TEXT("SharedKey")) == &VoiceAsset->VoiceLines[1]);
 	TestNull(TEXT("Unknown table lookup should not match by key only"), VoiceAsset->FindVoiceLineByStringTableIdAndKey(FName(TEXT("UnknownTable")), TEXT("SharedKey")));
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlayVoiceMalformedWavTest, "PlayVoice.UnitTests.MalformedWAVRejected", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FPlayVoiceMalformedWavTest::RunTest(const FString& Parameters)
+{
+	TArray<uint8> TruncatedWav;
+	TruncatedWav.SetNumZeroed(44);
+	TestNull(TEXT("A zeroed buffer is not a valid RIFF WAV"), UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(TruncatedWav));
+
+	TArray<uint8> OddPCM;
+	OddPCM.SetNumZeroed(3);
+	TestNull(TEXT("Odd-byte PCM input is rejected"), UPlayVoiceAudioUtils::CreateSoundWaveFromPCM(OddPCM, 24000, 1));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPlayVoiceCompositeCacheTest, "PlayVoice.UnitTests.CompositeStringTableCache", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+
+bool FPlayVoiceCompositeCacheTest::RunTest(const FString& Parameters)
+{
+	UCharacterVoiceAsset* VoiceAsset = NewObject<UCharacterVoiceAsset>();
+	TestNotNull(TEXT("VoiceAsset should be instantiated"), VoiceAsset);
+	if (!VoiceAsset)
+	{
+		return false;
+	}
+
+	UStringTable* FirstTable = NewObject<UStringTable>(VoiceAsset, TEXT("FirstTable"));
+	UStringTable* SecondTable = NewObject<UStringTable>(VoiceAsset, TEXT("SecondTable"));
+	FPlayVoiceLineEntry FirstEntry;
+	FirstEntry.StringTable = FirstTable;
+	FirstEntry.StringTableId = FirstTable->GetStringTableId();
+	FirstEntry.Key = FName(TEXT("SharedKey"));
+	FPlayVoiceLineEntry SecondEntry;
+	SecondEntry.StringTable = SecondTable;
+	SecondEntry.StringTableId = SecondTable->GetStringTableId();
+	SecondEntry.Key = FName(TEXT("SharedKey"));
+	VoiceAsset->VoiceLines.Add(FirstEntry);
+	VoiceAsset->VoiceLines.Add(SecondEntry);
+
+	USoundWave* FirstWave = NewObject<USoundWave>(VoiceAsset);
+	USoundWave* SecondWave = NewObject<USoundWave>(VoiceAsset);
+	VoiceAsset->CacheVoiceLineForStringTableIdAndKey(FirstEntry.StringTableId, TEXT("SharedKey"), FirstWave, TEXT("EN"));
+	VoiceAsset->CacheVoiceLineForStringTableIdAndKey(SecondEntry.StringTableId, TEXT("SharedKey"), SecondWave, TEXT("EN"));
+	TestEqual(TEXT("First table cache should remain distinct"), VoiceAsset->GetPrecachedVoiceLineForStringTableIdAndKey(FirstEntry.StringTableId, TEXT("SharedKey"), TEXT("EN")), FirstWave);
+	TestEqual(TEXT("Second table cache should remain distinct"), VoiceAsset->GetPrecachedVoiceLineForStringTableIdAndKey(SecondEntry.StringTableId, TEXT("SharedKey"), TEXT("EN")), SecondWave);
+	TestNull(TEXT("Key-only lookup is ambiguous across tables"), VoiceAsset->GetPrecachedVoiceLineForKey(FName(TEXT("SharedKey")), TEXT("EN")));
 	return true;
 }
 

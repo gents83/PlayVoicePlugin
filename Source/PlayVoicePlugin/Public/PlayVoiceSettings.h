@@ -14,47 +14,46 @@ class PLAYVOICEPLUGIN_API UPlayVoiceSettings : public UDeveloperSettings
 public:
 	UPlayVoiceSettings();
 
-	/** URL endpoint of the local or remote OpenVoice TTS service (e.g. http://127.0.0.1:1983) */
+	virtual FName GetContainerName() const override
+	{
+		return TEXT("Project");
+	}
+
+	virtual FName GetCategoryName() const override
+	{
+		return TEXT("PlayVoice");
+	}
+
+	UFUNCTION(BlueprintPure, Category = "PlayVoice Settings")
+	static const UPlayVoiceSettings* Get()
+	{
+		return GetDefault<UPlayVoiceSettings>();
+	}
+
 	UPROPERTY(EditAnywhere, Config, Category = "Service Setup", meta = (DisplayName = "Service URL"))
 	FString ServiceUrl;
 
-	/** Directory path to python executable or openvoice script */
 	UPROPERTY(EditAnywhere, Config, Category = "Service Setup", meta = (DisplayName = "Python Script Path"))
 	FString PythonScriptPath;
 
-	/** Path or name of the Python executable used for checking and installing requirements (e.g., python or python3) */
-	UPROPERTY(EditAnywhere, Config, Category = "Requirements Setup", meta = (DisplayName = "Python Executable Path"))
+	UPROPERTY(EditAnywhere, Config, Category = "Requirements Setup", meta = (DisplayName = "Python Executable Path (optional; auto-detect Python 3.10)"))
 	FString PythonExecutable;
 
-	/** Path to the requirements.txt file */
 	UPROPERTY(EditAnywhere, Config, Category = "Requirements Setup", meta = (DisplayName = "Requirements File Path"))
 	FString RequirementsFilePath;
 
-	/** Optional target installation directory for dependencies (--target flag for pip) */
-	UPROPERTY(EditAnywhere, Config, Category = "Requirements Setup", meta = (DisplayName = "Target Installation Directory"))
-	FString TargetInstallDir;
-
-	/** Optional extra command line flags for pip install (e.g. --upgrade, --no-cache-dir) */
 	UPROPERTY(EditAnywhere, Config, Category = "Requirements Setup", meta = (DisplayName = "Extra Pip Arguments"))
 	FString ExtraPipArgs;
 
-	/** Timeout in seconds for HTTP generation requests */
-	UPROPERTY(EditAnywhere, Config, Category = "Service Setup", meta = (DisplayName = "Request Timeout (Seconds)"))
+	UPROPERTY(EditAnywhere, Config, Category = "Service Setup", meta = (DisplayName = "Request Timeout (Seconds)", ClampMin = "1.0", ClampMax = "3600.0"))
 	float RequestTimeout;
 
-	/** Automatically precache registered voice lines on game startup */
-	UPROPERTY(EditAnywhere, Config, Category = "Zero Latency Settings", meta = (DisplayName = "Auto Precache On Startup"))
-	bool bAutoPrecacheOnStartup;
-
-	/** Allow dynamic on-the-fly voice synthesis using OpenVoice when a voice line is not precached */
-	UPROPERTY(EditAnywhere, Config, Category = "Voice Playback", meta = (DisplayName = "Enable On-The-Fly Synthesis"))
+	UPROPERTY(EditAnywhere, Config, Category = "Voice Playback", meta = (DisplayName = "Enable On-The-Fly Synthesis", DeprecatedProperty, EditCondition = "false"))
 	bool bEnableOnTheFlySynthesis;
 
-	/** Final generated SoundWave output sample rate in Hz. OpenVoice inference and reference processing remain at native 24000 Hz. */
-	UPROPERTY(EditAnywhere, Config, Category = "Audio Settings", meta = (DisplayName = "Default Sample Rate", ClampMin = "1"))
+	UPROPERTY(EditAnywhere, Config, Category = "Audio Settings", meta = (DisplayName = "Default Sample Rate", ClampMin = "8000", ClampMax = "192000"))
 	int32 DefaultSampleRate;
 
-	/** Resample final generated output to DefaultSampleRate instead of retaining OpenVoice's native 24000 Hz rate. */
 	UPROPERTY(EditAnywhere, Config, Category = "Audio Settings", meta = (DisplayName = "Improve Output Quality"))
 	bool bImproveOutputQuality;
 };

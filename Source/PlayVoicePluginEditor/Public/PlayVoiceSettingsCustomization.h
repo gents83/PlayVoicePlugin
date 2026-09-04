@@ -15,6 +15,8 @@ public:
 
 private:
 	FReply OnCheckRequirementsClicked();
+	FReply OnInstallPythonClicked();
+	FReply OnCancelSetupClicked();
 	FReply OnLaunchSetupClicked();
 	FReply OnStartServiceClicked();
 };

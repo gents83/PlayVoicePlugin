@@ -22,7 +22,7 @@
 		"IOS",
 		"PS5",
 		"XSX",
-		"Switch"
+		"Switch2"
 	],
 	"Modules": [
 		{
@@ -37,7 +37,7 @@
 				"IOS",
 				"PS5",
 				"XSX",
-				"Switch"
+				"Switch2"
 			]
 		},
 		{

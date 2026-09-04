@@ -22,6 +22,14 @@ class ServiceContractTests(unittest.TestCase):
     def setUpClass(cls):
         cls.service = load_service()
 
+    def setUp(self):
+        self.previous_has_openvoice = self.service.HAS_OPENVOICE
+        self.previous_engine = self.service.engine
+
+    def tearDown(self):
+        self.service.HAS_OPENVOICE = self.previous_has_openvoice
+        self.service.engine = self.previous_engine
+
     def make_wav(self, directory, name="reference.wav"):
         path = os.path.join(directory, name)
         with wave.open(path, "wb") as output:
@@ -96,6 +104,15 @@ class ServiceContractTests(unittest.TestCase):
                     embedding_data=json.dumps({"target_se": [1.0]}),
                     guide_audio_file=guide,
                 )
+
+    def test_synthesis_requires_openvoice_engine(self):
+        engine = self.service.OpenVoiceEngine.__new__(self.service.OpenVoiceEngine)
+        engine.converter = None
+        engine.ready = False
+        self.service.HAS_OPENVOICE = False
+
+        with self.assertRaises(RuntimeError):
+            engine.synthesize(text="Hello", character_name="TestHero")
 
     def test_missing_requested_guide_is_rejected(self):
         engine = self.service.OpenVoiceEngine.__new__(self.service.OpenVoiceEngine)

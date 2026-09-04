@@ -8,16 +8,6 @@ public class PlayVoicePluginEditor : ModuleRules
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
-		PublicIncludePaths.AddRange(
-			new string[] {
-			}
-		);
-
-		PrivateIncludePaths.AddRange(
-			new string[] {
-			}
-		);
-
 		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{
@@ -25,7 +15,8 @@ public class PlayVoicePluginEditor : ModuleRules
 				"CoreUObject",
 				"Engine",
 				"GameplayTags",
-				"PlayVoicePlugin"
+				"PlayVoicePlugin",
+				"AudioCaptureCore"
 			}
 		);
 
@@ -47,8 +38,7 @@ public class PlayVoicePluginEditor : ModuleRules
 				"BlueprintGraph",
 				"GraphEditor",
 				"AssetRegistry",
-				"Projects",
-				"AudioCaptureCore"
+				"Projects"
 			}
 		);
 	}

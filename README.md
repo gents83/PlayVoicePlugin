@@ -10,10 +10,10 @@
    - Manage character reference audio clips (WAV/MP3/FLAC) to capture tone, speed, and voice color.
    - Configure language, speed multiplier, and model embedding parameters.
    - Configure the final generated audio sample rate (default: 48 kHz).
-   - Configure dialogue text lines for batch pre-processing.
+   - Configure dialogue text lines for batch pre-processing. Each cached line is identified by String Table ID, key, and language.
 
 2. **Zero-Latency Playback System**:
-   - Pre-renders dialogue lines in advance (`PrecacheAllVoiceLines` or editor detail panel button).
+   - Plays dialogue lines from authored SoundWave assets; editor rendering is performed by the detail panel generation action.
    - Instantaneous playback during gameplay with zero delay or synthesis lag when triggering voice lines.
 
 3. **OpenVoice Model Extraction & Synthesis**:
@@ -26,7 +26,7 @@
    - Simple Blueprint node: `PlayCharacterVoice` to play lines instantly.
    - Blueprint nodes: `PrecacheCharacterVoiceLines` and `GenerateVoiceSoundWave`.
    - Custom Editor Detail Panel (`FCharacterVoiceAssetCustomization`) for `CharacterVoice` assets in Unreal Editor with **"Generate OpenVoice Model"**, **"Generate Precached Sounds from VoiceLines"**, and cleanup controls.
-   - Custom Settings Details Panel (`FPlayVoiceSettingsCustomization`) in **Project Settings -> Engine -> PlayVoice Settings** with **"Start OpenVoice Service"**, **"Check Requirements Status"**, and **"Launch Setup / Install Requirements"** buttons. The service starts only when one of these actions or a generation action needs it.
+   - Custom Settings Details Panel (`FPlayVoiceSettingsCustomization`) in **Project Settings -> Project -> PlayVoice Settings** with **"Start OpenVoice Service"**, **"Check Requirements Status"**, and **"Launch Setup / Install Requirements"** buttons. The service starts only when one of these actions or a generation action needs it.
 
 5. **Editor Authoring / Packaged Playback**:
    - The Python service and model-generation actions run in supported desktop editor environments.
@@ -34,7 +34,7 @@
 
 6. **Automated Testing & CI/CD**:
    - C++ Automation Unit Tests (`PlayVoiceAutomationTests.cpp`) testing asset caching, PCM/WAV conversion, and settings defaults.
-   - GitHub Actions CI/CD workflow (`.github/workflows/ci.yml`) testing plugin structure, JSON syntax, and backend audio synthesis on Linux, Windows, and macOS.
+   - GitHub Actions workflow (`.github/workflows/ci.yml`) testing plugin structure, JSON syntax, and Python service contracts on Linux and Windows.
 
 ---
 
@@ -42,6 +42,7 @@
 
 ```text
 PlayVoicePlugin/
+├── PlayVoicePlugin.pkg.json
 ├── .github/
 │   └── workflows/
 │       └── ci.yml                          # GitHub Actions CI/CD pipeline
@@ -84,24 +85,26 @@ We selected **OpenVoice** (developed by MyShell.ai) as the primary open-source T
 ## Setup Instructions
 
 ### 1. In-Editor Requirements Setup & Verification (Recommended)
-1. Open your Unreal Engine 5.8 project containing the **PlayVoice** plugin.
-2. Go to **Project Settings -> Engine -> PlayVoice Settings**.
-3. Under **Service Setup**:
+1. Create or select a fresh Python **3.10.x** virtual environment. The current OpenVoice dependency pins require Python 3.10; Python 3.11+ is not supported by this requirements set.
+2. Open your Unreal Engine 5.8 project containing the **PlayVoice** plugin.
+3. Go to **Project Settings -> Project -> PlayVoice Settings**.
+4. Under **Service Setup**:
    - **Start OpenVoice Service**: Click this button to manually launch the local OpenVoice REST service backend from Unreal Editor.
    - The OpenVoice service is started on demand by **Start OpenVoice Service**, model extraction, or voice-line pre-rendering.
-4. Under **Requirements Setup**, customize your setup preferences if desired:
-   - **Python Executable Path**: Path to Python binary (default: `python`).
+5. Under **Requirements Setup**, click **Install Python 3.10** if the required interpreter is not installed; the button downloads the official Python 3.10.11 Windows installer. Run the downloaded installer, leave the executable path empty for automatic discovery or select the new executable, then rerun setup.
+6. Customize your setup preferences if desired:
+   - **Python Executable Path**: Optional Python 3.10 executable. Leave empty for automatic Windows `py.exe -3.10` discovery.
+   - Setup creates/reuses `Resources/OpenVoiceService/.venv` and saves its verified Python executable path.
    - **Requirements File Path**: Path to requirements file (default: `Resources/OpenVoiceService/requirements.txt`).
-   - **Target Installation Directory**: Leave empty. Dependencies are installed into the environment selected by **Python Executable Path**.
    - **Extra Pip Arguments**: Optional additional flags for `pip install` (e.g. `--upgrade`, `--no-cache-dir`).
-5. Click **Check Requirements Status** to verify if all required Python packages are installed.
-6. Click **Launch Setup / Install Requirements** to launch automated dependency installation.
+7. Click **Check Requirements Status** to verify if all required Python packages are installed.
+8. Click **Launch Setup / Install Requirements** to launch automated dependency installation.
 
 ### 2. Manual Python Backend Setup (Alternative)
-Navigate to `Resources/OpenVoiceService` and install dependencies into the Python environment used by the editor:
+Navigate to `Resources/OpenVoiceService`. Use the verified interpreter saved by the plugin (on Windows, `.venv/Scripts/python.exe`) to install dependencies manually if needed:
 
 ```bash
-python -m pip install -r requirements.txt
+.venv/Scripts/python.exe -m pip install -r requirements.txt
 ```
 
 The first server start downloads the OpenVoice-v2 converter checkpoints when they are missing. Keep the editor's **Python Executable Path** pointed at this same environment.
@@ -117,7 +120,7 @@ python openvoice_service.py --mode server --host 127.0.0.1 --port 1983
 1. Copy `PlayVoicePlugin` into your project's `Plugins/` folder.
 2. Open your Unreal Engine 5.8 project.
 3. Enable **PlayVoice Plugin** in **Edit -> Plugins**.
-4. Configure service URL under **Project Settings -> Engine -> PlayVoice Settings** (default: `http://127.0.0.1:1983`). Enable **Improve Output Quality** to resample final generated SoundWaves to **Default Sample Rate** (enabled by default; default rate: `48000` Hz / 48 kHz). When disabled, output remains at OpenVoice's native 24 kHz. OpenVoice model inference and reference processing always remain at native 24 kHz.
+4. Configure service URL under **Project Settings -> Project -> PlayVoice Settings** (default: `http://127.0.0.1:1983`). Enable **Improve Output Quality** to resample final generated SoundWaves to **Default Sample Rate** (enabled by default; default rate: `48000` Hz / 48 kHz). When disabled, output remains at OpenVoice's native 24 kHz. OpenVoice model inference and reference processing always remain at native 24 kHz.
 
 ---
 
@@ -157,7 +160,7 @@ The node resolves the matching `CharacterVoiceAsset`, String Table, key, and lan
 In Unreal Editor:
 1. Open **Tools -> Session Frontend** (or `Tools -> Automation`).
 2. Filter for `PlayVoice`.
-3. Check `PlayVoice.UnitTests.CharacterVoiceAssetCaching`, `PlayVoice.UnitTests.AudioUtilsPCMAndWAVParsing`, and `PlayVoice.UnitTests.PlayVoiceSettingsDefaults`.
+3. Filter for `PlayVoice.UnitTests` to run the complete asset, cache, audio, normalization, settings, Blueprint, and String Table coverage.
 4. Click **Start Tests**.
 
 ---

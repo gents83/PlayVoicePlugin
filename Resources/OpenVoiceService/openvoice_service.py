@@ -7,6 +7,7 @@ Provides tone color extraction, zero-shot TTS synthesis, and REST server API.
 
 import os
 import sys
+import ipaddress
 import io
 import json
 import wave
@@ -15,6 +16,9 @@ import struct
 import argparse
 import logging
 import tempfile
+import shutil
+import threading
+from pathlib import Path
 import warnings
 from typing import List, Optional, Dict, Any
 
@@ -23,7 +27,7 @@ warnings.filterwarnings('ignore', category=FutureWarning)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("OpenVoiceService")
-SERVICE_VERSION = "1.1.0"
+SERVICE_VERSION = "1.2.0"
 
 # Suppress HuggingFace symlink warnings, unauthenticated HF Hub warnings, and allow proxied NLTK downloads
 os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
@@ -140,12 +144,12 @@ try:
     HAS_OPENVOICE = True
     logger.info("Successfully initialized OpenVoice and MeloTTS engine.")
 except ImportError as e:
-    logger.info(f"OpenVoice / MeloTTS engine not loaded ({e}). Running in built-in fallback TTS voice synthesis mode.")
+    logger.error(f"OpenVoice / MeloTTS engine imports are unavailable ({e}).")
 
 try:
     from fastapi import FastAPI, HTTPException, Response
     from fastapi.responses import Response, JSONResponse
-    from pydantic import BaseModel
+    from pydantic import BaseModel, Field
     import uvicorn
     HAS_FASTAPI = True
 except ImportError:
@@ -174,6 +178,14 @@ def load_and_convert_to_pcm16_mono(filepath: str, target_sr: int = 24000) -> Opt
             frames = wf.readframes(nframes)
 
         samples_float = []
+        audio_format = 1
+        try:
+            with open(filepath, 'rb') as raw_file:
+                header = raw_file.read(64)
+            if len(header) >= 22 and header[:4] == b'RIFF' and header[8:12] == b'WAVE':
+                audio_format = struct.unpack_from('<H', header, 20)[0]
+        except OSError:
+            pass
 
         if comptype == 'NONE':
             if sampwidth == 2:
@@ -192,12 +204,14 @@ def load_and_convert_to_pcm16_mono(filepath: str, target_sr: int = 24000) -> Opt
                             val -= 0x1000000
                         samples_float.append(val / 8388608.0)
             elif sampwidth == 4:
-                try:
+                if audio_format == 3:
                     raw_float = struct.unpack(f'<{nframes * nchannels}f', frames)
                     samples_float = list(raw_float)
-                except Exception:
+                elif audio_format == 1:
                     raw_int = struct.unpack(f'<{nframes * nchannels}i', frames)
                     samples_float = [s / 2147483648.0 for s in raw_int]
+                else:
+                    return None
         else:
             return None
 
@@ -301,7 +315,21 @@ def create_combined_reference_wav(valid_files: List[str], min_duration_sec: floa
                 torchaudio.save(temp_path, combined_wav, target_sr)
                 return temp_path
             except Exception as save_err:
-                logger.error(f"Failed torchaudio save combined WAV: {save_err}")
+                logger.warning(f"torchaudio.save unavailable ({save_err}); writing the combined WAV with the standard wave module.")
+                try:
+                    samples = combined_wav.squeeze(0).detach().cpu().clamp(-1.0, 1.0).mul(32767.0).to(torch.int16).numpy().tobytes()
+                    with wave.open(temp_path, "wb") as output:
+                        output.setnchannels(1)
+                        output.setsampwidth(2)
+                        output.setframerate(target_sr)
+                        output.writeframes(samples)
+                    return temp_path
+                except Exception as fallback_err:
+                    logger.error(f"Failed writing combined reference WAV fallback: {fallback_err}")
+                    try:
+                        os.remove(temp_path)
+                    except OSError:
+                        pass
 
     # Fallback to pure PCM list concatenation if HAS_OPENVOICE is False
     combined_samples = []
@@ -331,6 +359,10 @@ def create_combined_reference_wav(valid_files: List[str], min_duration_sec: floa
         return temp_path
     except Exception as e:
         logger.error(f"Failed writing combined reference WAV: {e}")
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
         return None
 
 
@@ -477,8 +509,7 @@ class OpenVoiceEngine:
                     except Exception:
                         device = "cpu"
 
-                target_dir = os.path.join(tempfile.gettempdir(), 'processed')
-                os.makedirs(target_dir, exist_ok=True)
+                target_dir = tempfile.mkdtemp(prefix="playvoice_processed_")
 
                 # Concatenate reference audio files into a combined WAV file (>=10s) to guarantee sufficient audio length for get_se
                 combined_ref_path = create_combined_reference_wav(valid_files, min_duration_sec=10.0)
@@ -527,14 +558,36 @@ class OpenVoiceEngine:
                         "acoustic_profile": acoustic_profile,
                         "engine": "OpenVoice-v2"
                     }
-                    return {
+                    result = {
                         "status": "success",
                         "character_name": character_name,
                         "embedding_data": json.dumps(embedding_payload),
                         "engine": "OpenVoice-v2"
                     }
+                    shutil.rmtree(target_dir, ignore_errors=True)
+                    if combined_ref_path:
+                        try:
+                            os.remove(combined_ref_path)
+                        except OSError:
+                            pass
+                    return result
             except Exception as e:
+                if 'combined_ref_path' in locals() and combined_ref_path:
+                    try:
+                        os.remove(combined_ref_path)
+                    except OSError:
+                        pass
+                if 'target_dir' in locals():
+                    shutil.rmtree(target_dir, ignore_errors=True)
                 logger.warning(f"OpenVoice get_se extraction failed: {e}")
+
+        if 'combined_ref_path' in locals() and combined_ref_path:
+            try:
+                os.remove(combined_ref_path)
+            except OSError:
+                pass
+        if 'target_dir' in locals():
+            shutil.rmtree(target_dir, ignore_errors=True)
 
         message = getattr(self, "initialization_error", None) or f"Could not extract an OpenVoice-v2 embedding from references for '{character_name}'."
         return {
@@ -551,9 +604,11 @@ class OpenVoiceEngine:
         If guide_audio_file is provided, uses the recorded guide track as source speech to transfer custom speed and emotions.
         The model and reference processing remain at the native 24 kHz rate; output_sample_rate controls the returned WAV.
         """
+        if speed < 0.5 or speed > 2.0:
+            raise ValueError("Speed must be between 0.5 and 2.0.")
         final_sample_rate = output_sample_rate if improve_output else 24000
-        if final_sample_rate <= 0:
-            raise ValueError("Output sample rate must be positive.")
+        if final_sample_rate < 8000 or final_sample_rate > 192000:
+            raise ValueError("Output sample rate must be between 8000 and 192000 Hz.")
 
         def finalize_output(wav_data: bytes) -> bytes:
             return ensure_wav_format(wav_data, target_sample_rate=final_sample_rate)
@@ -668,7 +723,9 @@ class OpenVoiceEngine:
                             )
                             if os.path.exists(out_path):
                                 with open(out_path, 'rb') as f:
-                                    return finalize_output(f.read())
+                                    result = finalize_output(f.read())
+                                shutil.rmtree(temp_dir, ignore_errors=True)
+                                return result
 
                 if bUsedGuideTrack:
                     detail = f" Source embedding error: {source_se_error}" if source_se_error else " No converted output was produced."
@@ -676,62 +733,17 @@ class OpenVoiceEngine:
 
                 if os.path.exists(src_path):
                     with open(src_path, 'rb') as f:
-                        return finalize_output(f.read())
+                        result = finalize_output(f.read())
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    return result
             except Exception as e:
+                if 'temp_dir' in locals():
+                    shutil.rmtree(temp_dir, ignore_errors=True)
                 logger.error(f"OpenVoice synthesis exception: {e}")
                 if guide_audio_file:
                     raise
 
-        # System TTS fallback attempt via pyttsx3 if installed (generates 16-bit mono PCM WAV)
-        try:
-            import pyttsx3
-            tts_engine = pyttsx3.init()
-            fd, pyttsx_path = tempfile.mkstemp(prefix="playvoice_tts_", suffix=".wav")
-            os.close(fd)
-            tts_engine.setProperty('rate', int(150 * speed))
-            tts_engine.save_to_file(text, pyttsx_path)
-            tts_engine.runAndWait()
-            if os.path.exists(pyttsx_path):
-                with open(pyttsx_path, 'rb') as f:
-                    wav_data = f.read()
-                    if len(wav_data) >= 44 and wav_data.startswith(b'RIFF'):
-                        return finalize_output(wav_data)
-        except Exception as e:
-            logger.debug(f"pyttsx3 fallback exception: {e}")
-
-        # Native platform TTS engines (SAPI on Windows, say on macOS, espeak on Linux)
-        try:
-            import subprocess
-            fd, plat_path = tempfile.mkstemp(prefix="playvoice_platform_", suffix=".wav")
-            os.close(fd)
-            if sys.platform == "darwin":
-                aiff_fd, aiff_path = tempfile.mkstemp(prefix="playvoice_platform_", suffix=".aiff")
-                os.close(aiff_fd)
-                subprocess.run(["say", "-o", aiff_path, text], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16", aiff_path, plat_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            elif sys.platform == "win32":
-                ps_cmd = f"Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.SetOutputToWaveFile('{plat_path}'); $s.Speak('{text}')"
-                subprocess.run(["powershell", "-Command", ps_cmd], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            else:
-                subprocess.run(["espeak-ng", "-w", plat_path, text], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-            if os.path.exists(plat_path):
-                with open(plat_path, 'rb') as f:
-                    wav_data = f.read()
-                    if len(wav_data) >= 44 and wav_data.startswith(b'RIFF'):
-                        return finalize_output(wav_data)
-        except Exception as e:
-            logger.debug(f"Platform TTS fallback exception: {e}")
-
-        # Voice cloning synthesis generator with pitch/harmonic reference modeling
-        pitch_freq = 170.0
-        if acoustic_profile and acoustic_profile.get("pitch_mean"):
-            pitch_freq = float(acoustic_profile["pitch_mean"])
-        else:
-            pitch_freq = 140.0 + (abs(hash(character_name)) % 100)
-
-        synth_bytes = generate_synthetic_wav(text, speed=speed, pitch_freq=pitch_freq, acoustic_profile=acoustic_profile, character_name=character_name)
-        return finalize_output(synth_bytes)
+        raise RuntimeError("OpenVoice-v2 synthesis is unavailable; fallback TTS is disabled.")
 
     def transcribe_audio(self, audio_file: str) -> str:
         """
@@ -762,10 +774,8 @@ class OpenVoiceEngine:
         except Exception:
             pass
 
-        # Fallback automatic text extraction from filename
-        base_name = os.path.splitext(os.path.basename(audio_file))[0]
-        clean_name = base_name.replace("_", " ").replace("-", " ").title()
-        return f"Reference voice guide line for {clean_name}"
+        logger.warning("No transcription engine produced text for '%s'.", audio_file)
+        return ""
 
 
 def analyze_reference_audio_files(valid_files: List[str]) -> Dict[str, Any]:
@@ -898,6 +908,8 @@ def ensure_wav_format(wav_bytes: bytes, target_sample_rate: int = 24000) -> byte
     """
     if not wav_bytes or len(wav_bytes) < 44 or not wav_bytes.startswith(b'RIFF'):
         return wav_bytes
+    if target_sample_rate < 8000 or target_sample_rate > 192000:
+        raise ValueError("Target sample rate must be between 8000 and 192000 Hz.")
 
     try:
         wf = wave.open(io.BytesIO(wav_bytes), 'rb')
@@ -1044,59 +1056,100 @@ def generate_synthetic_wav(text: str, speed: float = 1.0, sample_rate: int = 240
 
 
 engine = OpenVoiceEngine(load_existing=False)
+INFERENCE_LOCK = threading.RLock()
+
+
+def _allowed_roots() -> Optional[List[Path]]:
+    configured_roots = [Path(raw_root).expanduser().resolve() for raw_root in os.environ.get("PLAYVOICE_ALLOWED_ROOTS", "").split(os.pathsep) if raw_root.strip()]
+    return configured_roots or None
+
+
+def _validate_audio_path(raw_path: str) -> str:
+    if not raw_path:
+        raise ValueError("Audio path cannot be empty.")
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        raise ValueError("Audio paths must be absolute.")
+    resolved = path.resolve(strict=True)
+    if not resolved.is_file():
+        raise ValueError(f"Audio path is not a file: {resolved}")
+    if resolved.suffix.lower() not in {".wav", ".mp3", ".flac", ".ogg", ".aiff", ".wma"}:
+        raise ValueError(f"Unsupported audio extension: {resolved.suffix}")
+    allowed_roots = _allowed_roots()
+    if allowed_roots is not None:
+        try:
+            is_allowed = any(os.path.commonpath((str(resolved), str(root))) == str(root) for root in allowed_roots)
+        except ValueError:
+            is_allowed = False
+        if not is_allowed:
+            raise ValueError("Audio path is outside the configured service roots.")
+    if resolved.stat().st_size > 100 * 1024 * 1024:
+        raise ValueError("Audio file exceeds the 100 MiB limit.")
+    return str(resolved)
+
 
 if HAS_FASTAPI:
     app = FastAPI(title="PlayVoice OpenVoice Backend Service", version="1.0.0")
 
     class ExtractRequest(BaseModel):
-        character_name: str
-        reference_audio_files: Optional[List[str]] = []
-        language: Optional[str] = "EN"
+        character_name: str = Field(..., min_length=1, max_length=128)
+        reference_audio_files: List[str] = Field(default_factory=list, max_length=64)
+        language: str = Field(default="EN", min_length=1, max_length=16)
 
     class SynthesizeRequest(BaseModel):
-        character_name: str
-        text: str
-        language: Optional[str] = "EN"
-        speed: Optional[float] = 1.0
-        embedding_data: Optional[str] = None
-        reference_audio_files: Optional[List[str]] = []
+        character_name: str = Field(..., min_length=1, max_length=128)
+        text: str = Field(..., min_length=1, max_length=4000)
+        language: str = Field(default="EN", min_length=1, max_length=16)
+        speed: float = Field(default=1.0, ge=0.5, le=2.0)
+        embedding_data: Optional[str] = Field(default=None, max_length=2_000_000)
+        reference_audio_files: List[str] = Field(default_factory=list, max_length=64)
         guide_audio_file: Optional[str] = None
-        emotion: Optional[str] = None
-        sample_rate: Optional[int] = 48000
-        improve_output: Optional[bool] = True
+        emotion: Optional[str] = Field(default=None, max_length=128)
+        sample_rate: int = Field(default=48000, ge=8000, le=192000)
+        improve_output: bool = True
 
     class TranscribeRequest(BaseModel):
-        audio_file: Optional[str] = ""
-        reference_audio_files: Optional[List[str]] = []
+        audio_file: Optional[str] = Field(default=None, max_length=4096)
+        reference_audio_files: List[str] = Field(default_factory=list, max_length=64)
 
     @app.get("/health")
     def health_check():
         ready = bool(HAS_OPENVOICE and getattr(engine, "ready", False))
+        initialization_error = getattr(engine, "initialization_error", None)
+        is_unavailable = not HAS_OPENVOICE or bool(initialization_error)
         payload = {
-            "status": "ok" if ready else "error",
+            "status": "ok" if ready else "error" if is_unavailable else "starting",
             "ready": ready,
             "service": "PlayVoice-OpenVoice",
             "service_version": SERVICE_VERSION,
             "has_openvoice_engine": HAS_OPENVOICE,
-            "message": "Ready for OpenVoice-v2 inference." if ready else getattr(engine, "initialization_error", None) or "OpenVoice-v2 engine is not ready."
+            "message": "Ready for OpenVoice-v2 inference." if ready else initialization_error or "OpenVoice-v2 engine is still loading."
         }
-        return JSONResponse(status_code=200 if ready else 503, content=payload)
+        return JSONResponse(status_code=503 if is_unavailable else 200, content=payload)
 
     @app.post("/extract")
     def api_extract(req: ExtractRequest):
         try:
-            refs = [str(f) for f in req.reference_audio_files if f] if req.reference_audio_files else []
-            res = engine.extract_tone_color(refs, req.character_name or "Character")
+            refs = [_validate_audio_path(str(f)) for f in req.reference_audio_files if f]
+            with INFERENCE_LOCK:
+                res = engine.extract_tone_color(refs, req.character_name or "Character")
             if res.get("status") == "error":
                 status_code = 503 if res.get("error_code") == "openvoice_unavailable" else 400
                 return JSONResponse(status_code=status_code, content=res)
             return JSONResponse(content=res)
+        except (FileNotFoundError, ValueError) as e:
+            return JSONResponse(status_code=400, content={
+                "status": "error",
+                "error_code": "invalid_audio_input",
+                "message": str(e),
+                "character_name": req.character_name
+            })
         except Exception as e:
             logger.error(f"Error in api_extract: {e}", exc_info=True)
             return JSONResponse(status_code=500, content={
                 "status": "error",
                 "message": f"Server extraction exception: {str(e)}",
-                "character_name": req.character_name or "Character"
+                "character_name": req.character_name
             })
 
     @app.post("/synthesize")
@@ -1108,19 +1161,21 @@ if HAS_FASTAPI:
                     "message": "Text line cannot be empty."
                 })
 
-            refs = [str(f) for f in req.reference_audio_files if f] if req.reference_audio_files else []
-            wav_bytes = engine.synthesize(
-                text=req.text,
-                character_name=req.character_name or "Character",
-                language=req.language or "EN",
-                speed=req.speed or 1.0,
-                embedding_data=req.embedding_data,
-                reference_audio_files=refs,
-                guide_audio_file=req.guide_audio_file,
-                emotion=req.emotion,
-                output_sample_rate=(req.sample_rate if req.sample_rate is not None else 48000) if req.improve_output is not False else 24000,
-                improve_output=req.improve_output is not False
-            )
+            refs = [_validate_audio_path(str(f)) for f in req.reference_audio_files if f]
+            guide_audio_file = _validate_audio_path(req.guide_audio_file) if req.guide_audio_file else None
+            with INFERENCE_LOCK:
+                wav_bytes = engine.synthesize(
+                    text=req.text,
+                    character_name=req.character_name,
+                    language=req.language,
+                    speed=req.speed,
+                    embedding_data=req.embedding_data,
+                    reference_audio_files=refs,
+                    guide_audio_file=guide_audio_file,
+                    emotion=req.emotion,
+                    output_sample_rate=req.sample_rate if req.improve_output else 24000,
+                    improve_output=req.improve_output
+                )
             if not wav_bytes:
                 return JSONResponse(status_code=500, content={
                     "status": "error",
@@ -1148,12 +1203,20 @@ if HAS_FASTAPI:
             transcriptions = {}
             for f in files_to_transcribe:
                 if f:
-                    transcriptions[f] = engine.transcribe_audio(str(f))
+                    validated_path = _validate_audio_path(str(f))
+                    with INFERENCE_LOCK:
+                        transcriptions[validated_path] = engine.transcribe_audio(validated_path)
             default_text = list(transcriptions.values())[0] if transcriptions else ""
             return JSONResponse(content={
                 "status": "success",
                 "transcriptions": transcriptions,
                 "transcribed_text": default_text
+            })
+        except (FileNotFoundError, ValueError) as e:
+            return JSONResponse(status_code=400, content={
+                "status": "error",
+                "error_code": "invalid_audio_input",
+                "message": str(e)
             })
         except Exception as e:
             logger.error(f"Error in api_transcribe: {e}", exc_info=True)
@@ -1161,6 +1224,15 @@ if HAS_FASTAPI:
                 "status": "error",
                 "message": f"Server transcription exception: {str(e)}"
             })
+
+
+def _is_loopback_host(host: str) -> bool:
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def main():
@@ -1178,6 +1250,9 @@ def main():
     global engine
 
     if args.mode == "server":
+        if not _is_loopback_host(args.host):
+            logger.error("Refusing non-loopback host '%s'; the local service must remain loopback-only.", args.host)
+            sys.exit(1)
         if not HAS_FASTAPI:
             print("FastAPI and Uvicorn are required to run in server mode. Install with: pip install fastapi uvicorn")
             sys.exit(1)
@@ -1185,10 +1260,11 @@ def main():
         if not engine.ready:
             logger.error(engine.initialization_error or "OpenVoice-v2 engine is not ready.")
         print(f"Starting PlayVoice OpenVoice REST Service at http://{args.host}:{args.port}")
-        uvicorn.run(app, host=args.host, port=args.port)
+        uvicorn.run(app, host=args.host, port=args.port, access_log=False)
     elif args.mode == "extract":
         engine = OpenVoiceEngine(auto_download=True)
-        res = engine.extract_tone_color(args.refs, args.character)
+        validated_refs = [_validate_audio_path(path) for path in args.refs]
+        res = engine.extract_tone_color(validated_refs, args.character)
         print(json.dumps(res, indent=2))
         if res.get("status") != "success":
             sys.exit(1)
@@ -1205,7 +1281,8 @@ def main():
             print(json.dumps({"status": "error", "message": str(e)}))
             sys.exit(1)
     elif args.mode == "transcribe":
-        target_file = args.refs[0] if args.refs else ""
+        engine = OpenVoiceEngine(auto_download=True)
+        target_file = _validate_audio_path(args.refs[0]) if args.refs else ""
         text = engine.transcribe_audio(target_file)
         if not text:
             print(json.dumps({"status": "error", "message": "No transcription was produced.", "audio_file": target_file}))

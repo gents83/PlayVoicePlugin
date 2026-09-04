@@ -30,6 +30,7 @@ jobs:
           import os
           required = [
               'PlayVoicePlugin.uplugin',
+              'PlayVoicePlugin.pkg.json',
               'Source/PlayVoicePlugin/PlayVoicePlugin.Build.cs',
               'Source/PlayVoicePlugin/Public/CharacterVoiceAsset.h',
               'Source/PlayVoicePlugin/Private/CharacterVoiceAsset.cpp',
@@ -91,7 +92,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10"]
 
     steps:
       - name: Checkout Repository
@@ -105,11 +106,17 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install fastapi uvicorn requests pydantic
+          pip install fastapi uvicorn pydantic
 
       - name: Generate Audio Fixtures
         run: |
           python -c "import wave; [(lambda w: (w.setnchannels(1), w.setsampwidth(2), w.setframerate(24000), w.writeframes(b'\\x00\\x00' * 24000), w.close()))(wave.open(name, 'wb')) for name in ['sample1.wav', 'sample2.wav']]"
+
+      - name: Compile Python Sources
+        run: python -m py_compile Resources/OpenVoiceService/openvoice_service.py Resources/OpenVoiceService/check_requirements.py
+
+      - name: Validate Supported Python Interpreter
+        run: python Resources/OpenVoiceService/check_requirements.py --preflight-only Resources/OpenVoiceService/requirements.txt
 
       - name: Run OpenVoice Service Unit Tests
         run: python -m unittest discover -s Resources/OpenVoiceService/tests -v
@@ -118,18 +125,6 @@ jobs:
         run: |
           python -c "import subprocess, sys; result = subprocess.run([sys.executable, 'Resources/OpenVoiceService/openvoice_service.py', '--mode', 'extract', '--character', 'TestHero', '--refs', 'sample1.wav', 'sample2.wav']); assert result.returncode != 0, 'Extraction unexpectedly succeeded without OpenVoice checkpoints'"
 
-      - name: Test OpenVoice Audio Synthesis CLI
+      - name: Verify Synthesis Fails Closed Without OpenVoice
         run: |
-          python Resources/OpenVoiceService/openvoice_service.py --mode synthesize --character TestHero --text "Automated CI synthesis test line" --output ci_test.wav
-
-      - name: Verify Synthesized WAV Audio File
-        run: |
-          python -c "
-          import os, wave
-          assert os.path.exists('ci_test.wav'), 'WAV file was not created'
-          with wave.open('ci_test.wav', 'rb') as wf:
-              assert wf.getnchannels() == 1, 'Audio should be mono'
-              assert wf.getframerate() == 24000, 'Sample rate should be 24000Hz'
-              assert wf.getnframes() > 0, 'Audio should contain frames'
-          print('Successfully verified synthesized WAV audio file.')
-          "
+          python -c "import subprocess, sys; result = subprocess.run([sys.executable, 'Resources/OpenVoiceService/openvoice_service.py', '--mode', 'synthesize', '--character', 'TestHero', '--text', 'Automated CI synthesis test line', '--output', 'ci_test.wav']); assert result.returncode != 0, 'Synthesis unexpectedly succeeded without OpenVoice-v2'; assert not __import__('os').path.exists('ci_test.wav'), 'Fallback audio was produced'"

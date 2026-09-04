@@ -11,6 +11,8 @@
 class FPlayVoiceLineEntryCustomization : public IPropertyTypeCustomization
 {
 public:
+	~FPlayVoiceLineEntryCustomization() override;
+
 	static TSharedRef<IPropertyTypeCustomization> MakeInstance();
 
 	virtual void CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils) override;
@@ -57,7 +59,17 @@ private:
 	bool bIsRecording = false;
 	bool bIsPlayingPreview = false;
 
+	struct FRecordingState
+	{
+		FCriticalSection Section;
+		TArray<int16> Samples;
+		int32 SampleRate = 24000;
+		int32 Channels = 1;
+		bool bActive = true;
+	};
+
 	Audio::FAudioCapture AudioCapture;
+	TSharedPtr<FRecordingState> RecordingState;
 	FCriticalSection RecordedPCMSection;
 	TArray<int16> RecordedPCMSamples;
 	int32 CapturedSampleRate = 24000;

@@ -24,6 +24,7 @@
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/Crc.h"
 #include "HAL/FileManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Async/Async.h"
@@ -45,7 +46,7 @@ static bool IsCompatibleOpenVoiceServiceResponse(const FHttpResponsePtr& Respons
 		&& HealthObject->HasField(TEXT("ready"))
 		&& HealthObject->GetBoolField(TEXT("ready"))
 		&& HealthObject->HasField(TEXT("service_version"))
-		&& HealthObject->GetStringField(TEXT("service_version")) == TEXT("1.1.0");
+		&& HealthObject->GetStringField(TEXT("service_version")) == TEXT("1.2.0");
 }
 
 static FString MakeSafePackageComponent(const FString& InValue)
@@ -64,6 +65,12 @@ static FString MakeSafePackageComponent(const FString& InValue)
 	}
 
 	return SafeValue.IsEmpty() ? TEXT("Voice") : SafeValue;
+}
+
+static uint32 MakeVoiceLineIdentityHash(FName StringTableId, FName Key, const FString& LanguageCode)
+{
+	const FString Identity = StringTableId.ToString().ToLower() + TEXT("|") + Key.ToString().ToLower() + TEXT("|") + LanguageCode.ToUpper();
+	return FCrc::StrCrc32(*Identity);
 }
 
 static bool GetSoundWavePCM16Data(USoundWave* SoundWave, TArray<uint8>& OutPCMData)
@@ -184,7 +191,7 @@ static void DeleteGeneratedSoundWavePackage(const FString& PackagePath)
 	}
 	if (ExistingSoundWaves.Num() > 0 || ExistingPackage)
 	{
-		CollectGarbage(RF_NoFlags);
+		// Allow normal editor garbage collection to release deleted packages.
 	}
 
 	FString PackageFilename;
@@ -209,6 +216,7 @@ void FCharacterVoiceAssetCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 		TargetVoiceAsset = Cast<UCharacterVoiceAsset>(ObjectsBeingCustomized[0].Get());
 		if (TargetVoiceAsset.IsValid())
 		{
+			TargetVoiceAsset->FixupVoiceLineAudioReferences();
 			TargetVoiceAsset->AutoLinkPrecachedSoundWaves();
 		}
 	}
@@ -303,6 +311,15 @@ static void EnsureServiceReadyAndExecute(TFunction<void(bool bReady)> OnComplete
 		{
 			FProcHandle ProcHandle;
 			bool bStarted = FPlayVoicePluginEditorModule::StartOpenVoiceService(&ProcHandle);
+			if (!bStarted)
+			{
+					UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("EnsureServiceReadyAndExecute: Could not launch OpenVoice service."));
+					Async(EAsyncExecution::TaskGraphMainThread, [OnComplete]()
+					{
+						OnComplete(false);
+					});
+					return;
+				}
 			UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("StartOpenVoiceService requested from EnsureServiceReadyAndExecute (Started: %d)"), bStarted);
 
 			Async(EAsyncExecution::TaskGraphMainThread, [BaseUrl, MaxAttempts, OnComplete]()
@@ -352,7 +369,12 @@ static void EnsureServiceReadyAndExecute(TFunction<void(bool bReady)> OnComplete
 						}
 					});
 
-					PollReq->ProcessRequest();
+					if (!PollReq->ProcessRequest())
+					{
+						UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("EnsureServiceReadyAndExecute: Failed to submit health poll request."));
+							Context->PollFunc = nullptr;
+							OnComplete(false);
+						}
 				};
 
 				Context->PollFunc(*Context);
@@ -360,7 +382,11 @@ static void EnsureServiceReadyAndExecute(TFunction<void(bool bReady)> OnComplete
 		});
 	});
 
-	InitialHealthReq->ProcessRequest();
+	if (!InitialHealthReq->ProcessRequest())
+	{
+		UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("EnsureServiceReadyAndExecute: Failed to submit initial health request."));
+		OnComplete(false);
+	}
 }
 
 FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
@@ -528,13 +554,17 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 					TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ResponseContent);
 					if (FJsonSerializer::Deserialize(Reader, ResponseObj) && ResponseObj.IsValid())
 					{
-						if (ResponseObj->HasField(TEXT("message")))
+						if (ResponseObj->HasTypedField<EJson::String>(TEXT("message")))
 						{
 							ErrorMessage = ResponseObj->GetStringField(TEXT("message"));
 						}
-						else if (ResponseObj->HasField(TEXT("detail")))
+						else if (ResponseObj->HasTypedField<EJson::String>(TEXT("detail")))
 						{
 							ErrorMessage = ResponseObj->GetStringField(TEXT("detail"));
+						}
+						else if (ResponseObj->HasField(TEXT("detail")))
+						{
+							ErrorMessage = ResponseContent;
 						}
 					}
 				}
@@ -568,7 +598,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateModelClicked()
 					else
 					{
 						bSuccess = false;
-						if (ResponseObj->HasField(TEXT("message")))
+						if (ResponseObj->HasTypedField<EJson::String>(TEXT("message")))
 						{
 							ErrorMessage = ResponseObj->GetStringField(TEXT("message"));
 						}
@@ -626,9 +656,10 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 
 		UCharacterVoiceAsset* VoiceAsset = WeakTargetAsset.Get();
 		VoiceAsset->FixupVoiceLineAudioReferences();
-		TSet<FName> ProcessedKeys;
+		TSet<FString> ProcessedKeys;
 		struct FKeyWorkItem
 		{
+			FName StringTableId;
 			FName Key;
 			FString TextLine;
 			FString GuideAudioFile;
@@ -638,22 +669,30 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 		for (int32 i = 0; i < VoiceAsset->VoiceLines.Num(); ++i)
 		{
 			const FPlayVoiceLineEntry& Entry = VoiceAsset->VoiceLines[i];
-			if (Entry.Key.IsNone())
+			const FName EntryTableId = Entry.StringTable ? Entry.StringTable->GetStringTableId() : Entry.StringTableId;
+			if (Entry.Key.IsNone() || EntryTableId.IsNone())
 			{
 				continue;
 			}
 
-			if (ProcessedKeys.Contains(Entry.Key))
+			const FString EntryIdentity = EntryTableId.ToString().ToLower() + TEXT(":") + Entry.Key.ToString().ToLower();
+			if (ProcessedKeys.Contains(EntryIdentity))
 			{
 				UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("Duplicate String Table Key '%s' found in VoiceLines. First entry takes precedence."), *Entry.Key.ToString());
 				continue;
 			}
 
-			ProcessedKeys.Add(Entry.Key);
+			ProcessedKeys.Add(EntryIdentity);
 
 			FKeyWorkItem Item;
+			Item.StringTableId = EntryTableId;
 			Item.Key = Entry.Key;
 			Item.TextLine = VoiceAsset->GetResolvedTextLineForEntry(Entry);
+			if (Item.TextLine.TrimStartAndEnd().IsEmpty())
+			{
+				UE_LOG(LogCharacterVoiceCustomization, Warning, TEXT("OnGenerateFromVoiceLinesClicked: Skipping empty text for key '%s'."), *Entry.Key.ToString());
+				continue;
+			}
 			Item.GuideAudioFile = Entry.GuideSoundWave
 				? UPlayVoiceAudioUtils::ExportSoundWaveToTempWAVFile(Entry.GuideSoundWave)
 				: UCharacterVoiceAsset::ResolveAudioFilePath(Entry.AudioFile.FilePath);
@@ -778,9 +817,10 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 				HttpRequest->SetActivityTimeout(TimeoutSecs);
 
 				FName EntryKey = Item.Key;
+				FName EntryTableId = Item.StringTableId;
 				FString NormalizedLangCode = CurrentLangCode.TrimStartAndEnd().ToUpper();
 
-				HttpRequest->OnProcessRequestComplete().BindLambda([HttpRequest, WeakTargetAsset, EntryKey, CurrentLangCode, NormalizedLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
+				HttpRequest->OnProcessRequestComplete().BindLambda([WeakTargetAsset, EntryKey, EntryTableId, CurrentLangCode, NormalizedLangCode, AssetFolderPath, StepTaskProgress, FailedTasks](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
 				{
 					bool bSynthOk = bWasSuccessful && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode());
 					int32 ResponseCode = Response.IsValid() ? Response->GetResponseCode() : 0;
@@ -795,7 +835,8 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 					{
 						const FString SafeCharacterName = MakeSafePackageComponent(WeakTargetAsset->CharacterName.ToString());
 						const FString SafeKey = MakeSafePackageComponent(EntryKey.ToString());
-						const FString KeySanitized = FString::Printf(TEXT("SW_%s_%s_%s"), *SafeCharacterName, *NormalizedLangCode, *SafeKey);
+						const FString SafeTableId = MakeSafePackageComponent(EntryTableId.ToString());
+						const FString KeySanitized = FString::Printf(TEXT("SW_%s_%s_%s_%s_%08X"), *SafeCharacterName, *NormalizedLangCode, *SafeTableId, *SafeKey, MakeVoiceLineIdentityHash(EntryTableId, EntryKey, NormalizedLangCode));
 						const FString PackagePath = AssetFolderPath / KeySanitized;
 
 						if (!FPackageName::IsValidLongPackageName(PackagePath))
@@ -807,7 +848,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 						{
 							for (FPlayVoiceLineEntry& ExistingEntry : WeakTargetAsset->VoiceLines)
 							{
-								if (ExistingEntry.Key == EntryKey)
+								if (ExistingEntry.Key == EntryKey && (ExistingEntry.StringTable ? ExistingEntry.StringTable->GetStringTableId() : ExistingEntry.StringTableId) == EntryTableId)
 								{
 									ExistingEntry.PrecachedSoundWavesByLanguage.Remove(NormalizedLangCode);
 									const FString NormalizedDefaultLanguage = WeakTargetAsset->DefaultLanguage.TrimStartAndEnd().ToUpper();
@@ -840,7 +881,7 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 								}
 								else
 								{
-									WeakTargetAsset->CacheVoiceLineForKey(EntryKey, SoundWave, CurrentLangCode);
+									WeakTargetAsset->CacheVoiceLineForStringTableIdAndKey(EntryTableId, EntryKey.ToString(), SoundWave, CurrentLangCode);
 									WeakTargetAsset->MarkPackageDirty();
 
 									UPackage* VoiceAssetPackage = WeakTargetAsset->GetOutermost();
@@ -872,7 +913,12 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 					StepTaskProgress();
 				});
 
-				HttpRequest->ProcessRequest();
+				if (!HttpRequest->ProcessRequest())
+				{
+					UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateFromVoiceLinesClicked: Failed to submit synthesis request for key '%s'."), *EntryKey.ToString());
+					(*FailedTasks)++;
+					StepTaskProgress();
+				}
 			}
 		}
 	});
@@ -1026,8 +1072,33 @@ FReply FCharacterVoiceAssetCustomization::OnCleanPrecachedSoundWavesClicked()
 			}
 		}
 
+		const FName EntryTableId = Entry.StringTable ? Entry.StringTable->GetStringTableId() : Entry.StringTableId;
 		for (USoundWave* SoundWave : EntrySoundWaves)
 		{
+			bool bMatchesGeneratedIdentity = false;
+			for (const FCharacterLanguageData& LanguageData : Asset->Languages)
+			{
+				FString LanguageCode = LanguageData.LanguageCode.TrimStartAndEnd().ToUpper();
+				if (LanguageCode.IsEmpty())
+				{
+					LanguageCode = Asset->DefaultLanguage.TrimStartAndEnd().ToUpper();
+				}
+				if (LanguageCode.IsEmpty())
+				{
+					LanguageCode = TEXT("EN");
+				}
+				const FString HashSuffix = FString::Printf(TEXT("_%08X"), MakeVoiceLineIdentityHash(EntryTableId, Entry.Key, LanguageCode));
+				if (SoundWave && SoundWave->GetName().EndsWith(HashSuffix))
+				{
+					bMatchesGeneratedIdentity = true;
+					break;
+				}
+			}
+			if (!bMatchesGeneratedIdentity || !SoundWave->GetOutermost()
+				|| !SoundWave->GetOutermost()->GetName().StartsWith(FPaths::GetPath(Asset->GetOutermost()->GetName())))
+			{
+				continue;
+			}
 			RemovedCount++;
 			SoundWavesToDelete.AddUnique(SoundWave);
 			UPackage* Pkg = SoundWave->GetOutermost();
@@ -1040,8 +1111,17 @@ FReply FCharacterVoiceAssetCustomization::OnCleanPrecachedSoundWavesClicked()
 				}
 			}
 		}
-		Entry.PrecachedSoundWave = nullptr;
-		Entry.PrecachedSoundWavesByLanguage.Empty();
+		if (SoundWavesToDelete.Contains(Entry.PrecachedSoundWave.Get()))
+		{
+			Entry.PrecachedSoundWave = nullptr;
+		}
+		for (auto CacheIt = Entry.PrecachedSoundWavesByLanguage.CreateIterator(); CacheIt; ++CacheIt)
+		{
+			if (SoundWavesToDelete.Contains(CacheIt.Value().Get()))
+			{
+				CacheIt.RemoveCurrent();
+			}
+		}
 	}
 
 	Asset->MarkPackageDirty();
@@ -1078,7 +1158,7 @@ FReply FCharacterVoiceAssetCustomization::OnCleanPrecachedSoundWavesClicked()
 		}
 	}
 
-	CollectGarbage(RF_NoFlags);
+	// Allow normal editor garbage collection to release deleted packages.
 
 	for (FString& FilePath : FilePathsToDelete)
 	{
