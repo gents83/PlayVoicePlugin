@@ -12,6 +12,9 @@ class FCharacterVoiceAssetCustomization : public IDetailCustomization
 public:
 	static TSharedRef<IDetailCustomization> MakeInstance();
 
+	/** Returns whether a SoundWave name has the generated identity suffix for a voice line. */
+	static bool IsGeneratedSoundWaveNameForVoiceLine(const FString& SoundWaveName, FName StringTableId, FName Key, const FString& LanguageCode);
+
 	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
 
 private:

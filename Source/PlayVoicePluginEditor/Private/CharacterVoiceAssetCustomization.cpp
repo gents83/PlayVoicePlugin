@@ -32,6 +32,10 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogCharacterVoiceCustomization, Log, All);
 
+// Tracks generated package ownership for the lifetime of the editor session. The asset package
+// path is stable when CharacterName changes, unlike the generated SoundWave object name.
+static TMap<FString, TSet<FString>> GGeneratedPrecachedPackagesByAsset;
+
 static bool IsCompatibleOpenVoiceServiceResponse(const FHttpResponsePtr& Response)
 {
 	if (!Response.IsValid() || !EHttpResponseCodes::IsOk(Response->GetResponseCode()))
@@ -136,7 +140,7 @@ static bool UpdateSoundWavePCM16Data(USoundWave* SoundWave, const TArray<uint8>&
 	return true;
 }
 
-static void DeleteGeneratedSoundWavePackage(const FString& PackagePath)
+static bool DeleteGeneratedSoundWavePackage(const FString& PackagePath, FName ExpectedSoundWaveName)
 {
 	TArray<USoundWave*> ExistingSoundWaves;
 	UPackage* ExistingPackage = FindPackage(nullptr, *PackagePath);
@@ -146,10 +150,13 @@ static void DeleteGeneratedSoundWavePackage(const FString& PackagePath)
 		GetObjectsWithOuter(ExistingPackage, Objects, EGetObjectsFlags::None);
 		for (UObject* Object : Objects)
 		{
-			if (USoundWave* SoundWave = Cast<USoundWave>(Object))
+			USoundWave* SoundWave = Cast<USoundWave>(Object);
+			if (!SoundWave || SoundWave->GetFName() != ExpectedSoundWaveName)
 			{
-				ExistingSoundWaves.AddUnique(SoundWave);
+				UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("DeleteGeneratedSoundWavePackage: Refusing to replace unexpected object in package '%s'."), *PackagePath);
+				return false;
 			}
+			ExistingSoundWaves.AddUnique(SoundWave);
 		}
 	}
 
@@ -164,16 +171,29 @@ static void DeleteGeneratedSoundWavePackage(const FString& PackagePath)
 		AssetRegistryModule.Get().GetAssetsByPackageName(FName(*PackagePath), Assets);
 		for (const FAssetData& AssetData : Assets)
 		{
-			if (USoundWave* SoundWave = Cast<USoundWave>(AssetData.GetAsset()))
+			USoundWave* SoundWave = Cast<USoundWave>(AssetData.GetAsset());
+			if (!SoundWave || SoundWave->GetFName() != ExpectedSoundWaveName)
 			{
-				ExistingSoundWaves.AddUnique(SoundWave);
-				ExistingPackage = SoundWave->GetOutermost();
+				UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("DeleteGeneratedSoundWavePackage: Refusing to replace unexpected asset in package '%s'."), *PackagePath);
+				return false;
 			}
+			ExistingSoundWaves.AddUnique(SoundWave);
+			ExistingPackage = SoundWave->GetOutermost();
 		}
 
 		for (USoundWave* SoundWave : ExistingSoundWaves)
 		{
 			AssetRegistryModule.AssetDeleted(SoundWave);
+		}
+	}
+
+	if (ExistingSoundWaves.Num() == 0)
+	{
+		FString ExistingPackageFilename;
+		if (FPackageName::DoesPackageExist(PackagePath, &ExistingPackageFilename))
+		{
+			UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("DeleteGeneratedSoundWavePackage: Refusing to delete an unindexed package '%s'."), *PackagePath);
+			return false;
 		}
 	}
 
@@ -191,14 +211,340 @@ static void DeleteGeneratedSoundWavePackage(const FString& PackagePath)
 	}
 	if (ExistingSoundWaves.Num() > 0 || ExistingPackage)
 	{
-		// Allow normal editor garbage collection to release deleted packages.
+		CollectGarbage(RF_NoFlags);
 	}
 
 	FString PackageFilename;
 	if (FPackageName::DoesPackageExist(PackagePath, &PackageFilename) && IFileManager::Get().FileExists(*PackageFilename))
 	{
-		IFileManager::Get().Delete(*PackageFilename);
+		return IFileManager::Get().Delete(*PackageFilename);
 	}
+	return true;
+}
+
+
+bool FCharacterVoiceAssetCustomization::IsGeneratedSoundWaveNameForVoiceLine(const FString& SoundWaveName, FName StringTableId, FName Key, const FString& LanguageCode)
+{
+	if (SoundWaveName.IsEmpty() || StringTableId.IsNone() || Key.IsNone() || LanguageCode.IsEmpty())
+	{
+		return false;
+	}
+
+	const FString Identity = StringTableId.ToString().ToLower() + TEXT("|") + Key.ToString().ToLower() + TEXT("|") + LanguageCode.ToUpper();
+	const FString HashSuffix = FString::Printf(TEXT("_%08X"), FCrc::StrCrc32(*Identity));
+	const FString TableComponent = TEXT("_") + MakeSafePackageComponent(StringTableId.ToString()) + TEXT("_");
+	const FString KeyComponent = TEXT("_") + MakeSafePackageComponent(Key.ToString()) + TEXT("_");
+	return SoundWaveName.StartsWith(TEXT("SW_"), ESearchCase::CaseSensitive)
+		&& SoundWaveName.Contains(TableComponent, ESearchCase::CaseSensitive)
+		&& SoundWaveName.Contains(KeyComponent, ESearchCase::CaseSensitive)
+		&& SoundWaveName.EndsWith(HashSuffix, ESearchCase::CaseSensitive);
+}
+
+struct FPrecachedSoundWaveCleanupResult
+{
+	int32 RemovedCount = 0;
+	int32 FailedCount = 0;
+};
+
+static FString GetConfiguredLanguageCode(const UCharacterVoiceAsset& VoiceAsset, const FCharacterLanguageData& LanguageData)
+{
+	FString LanguageCode = LanguageData.LanguageCode.TrimStartAndEnd().ToUpper();
+	if (LanguageCode.IsEmpty())
+	{
+		LanguageCode = VoiceAsset.DefaultLanguage.TrimStartAndEnd().ToUpper();
+	}
+	return LanguageCode.IsEmpty() ? TEXT("EN") : LanguageCode;
+}
+
+static bool IsGeneratedSoundWaveReferencedByAsset(USoundWave* SoundWave, const UCharacterVoiceAsset& VoiceAsset)
+{
+	if (!SoundWave)
+	{
+		return false;
+	}
+
+	const FString SoundWaveName = SoundWave->GetName();
+	if (UPackage* SoundWavePackage = SoundWave->GetOutermost())
+	{
+		if (const TSet<FString>* GeneratedPackages = GGeneratedPrecachedPackagesByAsset.Find(VoiceAsset.GetOutermost()->GetName()))
+		{
+			if (GeneratedPackages->Contains(SoundWavePackage->GetName()))
+			{
+				return true;
+			}
+		}
+	}
+
+	for (const FPlayVoiceLineEntry& Entry : VoiceAsset.VoiceLines)
+	{
+		const FName EntryTableId = Entry.StringTable ? Entry.StringTable->GetStringTableId() : Entry.StringTableId;
+		if (Entry.Key.IsNone() || EntryTableId.IsNone())
+		{
+			continue;
+		}
+
+		for (const FCharacterLanguageData& LanguageData : VoiceAsset.Languages)
+		{
+			const FString LanguageCode = GetConfiguredLanguageCode(VoiceAsset, LanguageData);
+			const FString HashedName = FString::Printf(
+				TEXT("SW_%s_%s_%s_%s_%08X"),
+				*MakeSafePackageComponent(VoiceAsset.CharacterName.ToString()),
+				*LanguageCode,
+				*MakeSafePackageComponent(EntryTableId.ToString()),
+				*MakeSafePackageComponent(Entry.Key.ToString()),
+				MakeVoiceLineIdentityHash(EntryTableId, Entry.Key, LanguageCode));
+			const FString LegacyName = FString::Printf(
+				TEXT("SW_%s_%s_%s"),
+				*MakeSafePackageComponent(VoiceAsset.CharacterName.ToString()),
+				*LanguageCode,
+				*MakeSafePackageComponent(Entry.Key.ToString()));
+
+			if (SoundWaveName.Equals(HashedName, ESearchCase::CaseSensitive)
+				|| SoundWaveName.Equals(LegacyName, ESearchCase::CaseSensitive)
+				|| FCharacterVoiceAssetCustomization::IsGeneratedSoundWaveNameForVoiceLine(SoundWaveName, EntryTableId, Entry.Key, LanguageCode))
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+static bool IsPackageInDirectory(const FString& PackageName, const FString& DirectoryName)
+{
+	FString NormalizedPackage = PackageName;
+	NormalizedPackage.ReplaceInline(TEXT("\\"), TEXT("/"));
+	NormalizedPackage.RemoveFromEnd(TEXT("/"));
+
+	FString NormalizedDirectory = DirectoryName;
+	NormalizedDirectory.ReplaceInline(TEXT("\\"), TEXT("/"));
+	NormalizedDirectory.RemoveFromEnd(TEXT("/"));
+	return !NormalizedDirectory.IsEmpty() && NormalizedPackage.StartsWith(NormalizedDirectory + TEXT("/"), ESearchCase::CaseSensitive);
+}
+
+static bool IsSoundWavePackageSafeToDelete(USoundWave* SoundWave, const TMap<FString, TArray<USoundWave*>>& SoundWavesByPackage)
+{
+	if (!SoundWave)
+	{
+		return false;
+	}
+
+	UPackage* Package = SoundWave->GetOutermost();
+	if (!Package || Package == GetTransientPackage())
+	{
+		return false;
+	}
+
+	const TArray<USoundWave*>* PackageWaves = SoundWavesByPackage.Find(Package->GetName());
+	if (!PackageWaves || PackageWaves->Num() == 0)
+	{
+		return false;
+	}
+
+	TArray<UObject*> Objects;
+	GetObjectsWithOuter(Package, Objects, EGetObjectsFlags::None);
+	for (UObject* Object : Objects)
+	{
+		USoundWave* PackageSoundWave = Cast<USoundWave>(Object);
+		if (!PackageSoundWave || !PackageWaves->Contains(PackageSoundWave))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+static FPrecachedSoundWaveCleanupResult PurgePrecachedSoundWaves(UCharacterVoiceAsset& VoiceAsset)
+{
+	FPrecachedSoundWaveCleanupResult Result;
+	UPackage* VoiceAssetPackage = VoiceAsset.GetOutermost();
+	if (!VoiceAssetPackage || VoiceAssetPackage == GetTransientPackage())
+	{
+		return Result;
+	}
+
+	const FString AssetFolder = FPaths::GetPath(VoiceAssetPackage->GetName());
+	TSet<USoundWave*> ReferencedWaves;
+	for (const FPlayVoiceLineEntry& Entry : VoiceAsset.VoiceLines)
+	{
+		if (USoundWave* SoundWave = Entry.PrecachedSoundWave.Get())
+		{
+			ReferencedWaves.Add(SoundWave);
+		}
+		for (const TPair<FString, TObjectPtr<USoundWave>>& CachedPair : Entry.PrecachedSoundWavesByLanguage)
+		{
+			if (USoundWave* SoundWave = CachedPair.Value.Get())
+			{
+				ReferencedWaves.Add(SoundWave);
+			}
+		}
+	}
+
+	if (!FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+	{
+		FModuleManager::Get().LoadModule("AssetRegistry");
+	}
+
+	TSet<USoundWave*> CandidateWaves;
+	for (USoundWave* SoundWave : ReferencedWaves)
+	{
+		if (IsGeneratedSoundWaveReferencedByAsset(SoundWave, VoiceAsset))
+		{
+			CandidateWaves.Add(SoundWave);
+		}
+	}
+
+	if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+	{
+		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+		TArray<FAssetData> AssetList;
+		AssetRegistryModule.Get().GetAssetsByPath(FName(*AssetFolder), AssetList, false);
+		for (const FAssetData& AssetData : AssetList)
+		{
+			USoundWave* SoundWave = Cast<USoundWave>(AssetData.GetAsset());
+			if (!SoundWave)
+			{
+				continue;
+			}
+
+			const TSet<FString>* GeneratedPackages = GGeneratedPrecachedPackagesByAsset.Find(VoiceAssetPackage->GetName());
+			if (GeneratedPackages && GeneratedPackages->Contains(AssetData.PackageName.ToString()))
+			{
+				CandidateWaves.Add(SoundWave);
+			}
+		}
+
+		const TSet<FString>* GeneratedPackages = GGeneratedPrecachedPackagesByAsset.Find(VoiceAssetPackage->GetName());
+		if (GeneratedPackages)
+		{
+			for (const FString& GeneratedPackageName : *GeneratedPackages)
+			{
+				TArray<FAssetData> PackageAssets;
+				AssetRegistryModule.Get().GetAssetsByPackageName(FName(*GeneratedPackageName), PackageAssets);
+				for (const FAssetData& PackageAsset : PackageAssets)
+				{
+					if (USoundWave* GeneratedSoundWave = Cast<USoundWave>(PackageAsset.GetAsset()))
+					{
+						CandidateWaves.Add(GeneratedSoundWave);
+					}
+				}
+			}
+		}
+	}
+
+	TMap<FString, TArray<USoundWave*>> SoundWavesByPackage;
+	for (USoundWave* SoundWave : CandidateWaves)
+	{
+		if (SoundWave)
+		{
+			UPackage* Package = SoundWave->GetOutermost();
+			if (Package && IsPackageInDirectory(Package->GetName(), AssetFolder))
+			{
+				SoundWavesByPackage.FindOrAdd(Package->GetName()).AddUnique(SoundWave);
+			}
+		}
+	}
+
+	TSet<USoundWave*> WavesToDelete;
+	for (const TPair<FString, TArray<USoundWave*>>& PackageWaves : SoundWavesByPackage)
+	{
+		for (USoundWave* SoundWave : PackageWaves.Value)
+		{
+			if (IsSoundWavePackageSafeToDelete(SoundWave, SoundWavesByPackage))
+			{
+				WavesToDelete.Add(SoundWave);
+			}
+		}
+	}
+
+	TSet<FString> PackagesToDelete;
+	for (USoundWave* SoundWave : WavesToDelete)
+	{
+		if (UPackage* Package = SoundWave ? SoundWave->GetOutermost() : nullptr)
+		{
+			PackagesToDelete.Add(Package->GetName());
+		}
+	}
+
+	for (FPlayVoiceLineEntry& Entry : VoiceAsset.VoiceLines)
+	{
+		if (Entry.PrecachedSoundWave && WavesToDelete.Contains(Entry.PrecachedSoundWave.Get()))
+		{
+			Entry.PrecachedSoundWave = nullptr;
+		}
+		for (auto It = Entry.PrecachedSoundWavesByLanguage.CreateIterator(); It; ++It)
+		{
+			if (WavesToDelete.Contains(It.Value().Get()))
+			{
+				It.RemoveCurrent();
+			}
+		}
+	}
+
+	for (USoundWave* SoundWave : WavesToDelete)
+	{
+		if (!SoundWave)
+		{
+			continue;
+		}
+
+		Result.RemovedCount++;
+		if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
+		{
+			FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+			AssetRegistryModule.AssetDeleted(SoundWave);
+		}
+
+		SoundWave->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional);
+		SoundWave->MarkAsGarbage();
+	}
+
+	for (const FString& PackageName : PackagesToDelete)
+	{
+		if (UPackage* Package = FindPackage(nullptr, *PackageName))
+		{
+			Package->MarkAsGarbage();
+		}
+	}
+
+	if (WavesToDelete.Num() > 0)
+	{
+		VoiceAsset.MarkPackageDirty();
+		CollectGarbage(RF_NoFlags);
+	}
+
+	for (const FString& PackageName : PackagesToDelete)
+	{
+		FString PackageFilename;
+		if (!FPackageName::DoesPackageExist(PackageName, &PackageFilename))
+		{
+			continue;
+		}
+
+		if (IFileManager::Get().FileExists(*PackageFilename) && !IFileManager::Get().Delete(*PackageFilename))
+		{
+			Result.FailedCount++;
+			UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("PurgePrecachedSoundWaves: Could not delete package file '%s'."), *PackageFilename);
+		}
+	}
+
+	return Result;
+}
+
+static bool SaveCharacterVoiceAsset(UCharacterVoiceAsset& VoiceAsset)
+{
+	UPackage* AssetPackage = VoiceAsset.GetOutermost();
+	if (!AssetPackage || AssetPackage == GetTransientPackage())
+	{
+		return false;
+	}
+
+	const FString AssetFilename = FPackageName::LongPackageNameToFilename(AssetPackage->GetName(), FPackageName::GetAssetPackageExtension());
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	return UPackage::SavePackage(AssetPackage, &VoiceAsset, *AssetFilename, SaveArgs);
 }
 
 TSharedRef<IDetailCustomization> FCharacterVoiceAssetCustomization::MakeInstance()
@@ -709,6 +1055,28 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 			return;
 		}
 
+		for (const FCharacterLanguageData& LanguageData : VoiceAsset->Languages)
+		{
+			if (!LanguageData.bIsModelGenerated || LanguageData.ToneColorEmbeddingData.IsEmpty())
+			{
+				FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(FString::Printf(TEXT("No valid model exists for language '%s'. Generate the model before rendering voice lines."), *LanguageData.LanguageCode)));
+				return;
+			}
+		}
+
+		FPrecachedSoundWaveCleanupResult CleanupResult = PurgePrecachedSoundWaves(*VoiceAsset);
+		if (CleanupResult.RemovedCount > 0 && !SaveCharacterVoiceAsset(*VoiceAsset))
+		{
+			CleanupResult.FailedCount++;
+			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Could not save the cleaned CharacterVoiceAsset before generating new sounds."));
+			return;
+		}
+		if (CleanupResult.FailedCount > 0)
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Could not remove all previous precached SoundWaves. Resolve the package file errors before generating new sounds."));
+			return;
+		}
+
 		const UPlayVoiceSettings* Settings = GetDefault<UPlayVoiceSettings>();
 		FString BaseUrl = Settings && !Settings->ServiceUrl.IsEmpty() ? Settings->ServiceUrl.TrimStartAndEnd() : TEXT("http://127.0.0.1:1983");
 		BaseUrl.RemoveFromEnd(TEXT("/"));
@@ -846,6 +1214,14 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 						}
 						else
 						{
+							if (!DeleteGeneratedSoundWavePackage(PackagePath, FName(*KeySanitized)))
+							{
+								(*FailedTasks)++;
+								UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnGenerateFromVoiceLinesClicked: Could not replace generated package '%s'."), *PackagePath);
+								StepTaskProgress();
+								return;
+							}
+
 							for (FPlayVoiceLineEntry& ExistingEntry : WeakTargetAsset->VoiceLines)
 							{
 								if (ExistingEntry.Key == EntryKey && (ExistingEntry.StringTable ? ExistingEntry.StringTable->GetStringTableId() : ExistingEntry.StringTableId) == EntryTableId)
@@ -860,7 +1236,6 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 								}
 							}
 
-							DeleteGeneratedSoundWavePackage(PackagePath);
 							UPackage* SoundWavePackage = CreatePackage(*PackagePath);
 							if (SoundWavePackage)
 							{
@@ -881,7 +1256,8 @@ FReply FCharacterVoiceAssetCustomization::OnGenerateFromVoiceLinesClicked()
 								}
 								else
 								{
-									WeakTargetAsset->CacheVoiceLineForStringTableIdAndKey(EntryTableId, EntryKey.ToString(), SoundWave, CurrentLangCode);
+									GGeneratedPrecachedPackagesByAsset.FindOrAdd(WeakTargetAsset->GetOutermost()->GetName()).Add(PackagePath);
+							WeakTargetAsset->CacheVoiceLineForStringTableIdAndKey(EntryTableId, EntryKey.ToString(), SoundWave, CurrentLangCode);
 									WeakTargetAsset->MarkPackageDirty();
 
 									UPackage* VoiceAssetPackage = WeakTargetAsset->GetOutermost();
@@ -1051,128 +1427,20 @@ FReply FCharacterVoiceAssetCustomization::OnCleanPrecachedSoundWavesClicked()
 	}
 
 	UCharacterVoiceAsset* Asset = TargetVoiceAsset.Get();
-	int32 RemovedCount = 0;
-	UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnCleanPrecachedSoundWavesClicked: Initiating precached sound wave cleanup for asset '%s'"), *Asset->GetName());
-
-	TArray<USoundWave*> SoundWavesToDelete;
-	TArray<FString> FilePathsToDelete;
-
-	for (FPlayVoiceLineEntry& Entry : Asset->VoiceLines)
+	FPrecachedSoundWaveCleanupResult CleanupResult = PurgePrecachedSoundWaves(*Asset);
+	if (CleanupResult.RemovedCount > 0 && !SaveCharacterVoiceAsset(*Asset))
 	{
-		TArray<USoundWave*> EntrySoundWaves;
-		if (USoundWave* SoundWave = Entry.PrecachedSoundWave.Get())
-		{
-			EntrySoundWaves.Add(SoundWave);
-		}
-		for (const TPair<FString, TObjectPtr<USoundWave>>& CachedPair : Entry.PrecachedSoundWavesByLanguage)
-		{
-			if (USoundWave* SoundWave = CachedPair.Value.Get())
-			{
-				EntrySoundWaves.AddUnique(SoundWave);
-			}
-		}
-
-		const FName EntryTableId = Entry.StringTable ? Entry.StringTable->GetStringTableId() : Entry.StringTableId;
-		for (USoundWave* SoundWave : EntrySoundWaves)
-		{
-			bool bMatchesGeneratedIdentity = false;
-			for (const FCharacterLanguageData& LanguageData : Asset->Languages)
-			{
-				FString LanguageCode = LanguageData.LanguageCode.TrimStartAndEnd().ToUpper();
-				if (LanguageCode.IsEmpty())
-				{
-					LanguageCode = Asset->DefaultLanguage.TrimStartAndEnd().ToUpper();
-				}
-				if (LanguageCode.IsEmpty())
-				{
-					LanguageCode = TEXT("EN");
-				}
-				const FString HashSuffix = FString::Printf(TEXT("_%08X"), MakeVoiceLineIdentityHash(EntryTableId, Entry.Key, LanguageCode));
-				if (SoundWave && SoundWave->GetName().EndsWith(HashSuffix))
-				{
-					bMatchesGeneratedIdentity = true;
-					break;
-				}
-			}
-			if (!bMatchesGeneratedIdentity || !SoundWave->GetOutermost()
-				|| !SoundWave->GetOutermost()->GetName().StartsWith(FPaths::GetPath(Asset->GetOutermost()->GetName())))
-			{
-				continue;
-			}
-			RemovedCount++;
-			SoundWavesToDelete.AddUnique(SoundWave);
-			UPackage* Pkg = SoundWave->GetOutermost();
-			if (Pkg && Pkg != GetTransientPackage())
-			{
-				FString PkgFilename;
-				if (FPackageName::DoesPackageExist(Pkg->GetName(), &PkgFilename))
-				{
-					FilePathsToDelete.AddUnique(PkgFilename);
-				}
-			}
-		}
-		if (SoundWavesToDelete.Contains(Entry.PrecachedSoundWave.Get()))
-		{
-			Entry.PrecachedSoundWave = nullptr;
-		}
-		for (auto CacheIt = Entry.PrecachedSoundWavesByLanguage.CreateIterator(); CacheIt; ++CacheIt)
-		{
-			if (SoundWavesToDelete.Contains(CacheIt.Value().Get()))
-			{
-				CacheIt.RemoveCurrent();
-			}
-		}
+		CleanupResult.FailedCount++;
+		UE_LOG(LogCharacterVoiceCustomization, Error, TEXT("OnCleanPrecachedSoundWavesClicked: Could not save CharacterVoiceAsset '%s' after cleanup."), *Asset->GetPathName());
 	}
 
-	Asset->MarkPackageDirty();
-
-	if (!FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
-	{
-		FModuleManager::Get().LoadModule("AssetRegistry");
-	}
-
-	if (FModuleManager::Get().IsModuleLoaded("AssetRegistry"))
-	{
-		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
-		for (USoundWave* SoundWave : SoundWavesToDelete)
-		{
-			if (SoundWave)
-			{
-				AssetRegistryModule.AssetDeleted(SoundWave);
-			}
-		}
-	}
-
-	// Detach objects and outer packages to transient package so open file locks are released
-	for (USoundWave* SoundWave : SoundWavesToDelete)
-	{
-		if (SoundWave)
-		{
-			UPackage* Pkg = SoundWave->GetOutermost();
-			SoundWave->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional);
-			SoundWave->MarkAsGarbage();
-			if (Pkg && Pkg != GetTransientPackage())
-			{
-				Pkg->MarkAsGarbage();
-			}
-		}
-	}
-
-	// Allow normal editor garbage collection to release deleted packages.
-
-	for (FString& FilePath : FilePathsToDelete)
-	{
-		if (IFileManager::Get().FileExists(*FilePath))
-		{
-			bool bDeleted = IFileManager::Get().Delete(*FilePath);
-			UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnCleanPrecachedSoundWavesClicked: Deleted package file '%s' (Success: %d)"), *FilePath, bDeleted);
-		}
-	}
-
-	FNotificationInfo NotificationInfo(FText::Format(FText::FromString("PlayVoice: Cleaned {0} precached sound wave assets."), FText::AsNumber(RemovedCount)));
+	FNotificationInfo NotificationInfo(FText::Format(
+		FText::FromString("PlayVoice: Cleaned {0} precached SoundWave assets ({1} failures)."),
+		FText::AsNumber(CleanupResult.RemovedCount),
+		FText::AsNumber(CleanupResult.FailedCount)));
 	NotificationInfo.ExpireDuration = 4.0f;
 	FSlateNotificationManager::Get().AddNotification(NotificationInfo);
-	UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnCleanPrecachedSoundWavesClicked: Cleaned %d precached sound wave entries."), RemovedCount);
+	UE_LOG(LogCharacterVoiceCustomization, Log, TEXT("OnCleanPrecachedSoundWavesClicked: Cleaned %d precached SoundWave assets (%d failures)."), CleanupResult.RemovedCount, CleanupResult.FailedCount);
 
 	return FReply::Handled();
 }
