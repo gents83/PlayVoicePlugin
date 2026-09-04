@@ -8,30 +8,14 @@ public class PlayVoicePlugin : ModuleRules
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
-		PublicIncludePaths.AddRange(
-			new string[] {
-				// ... add public include paths required here ...
-			}
-		);
-
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				// ... add private include paths required here ...
-			}
-		);
-
 		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{
 				"Core",
 				"CoreUObject",
 				"Engine",
-				"GameplayTags",
-				"AudioMixer",
 				"DeveloperSettings",
-				"HTTP",
-				"Json",
-				"JsonUtilities"
+				"GameplayTags"
 			}
 		);
 
@@ -39,18 +23,20 @@ public class PlayVoicePlugin : ModuleRules
 			new string[]
 			{
 				"Projects",
-				"InputCore",
-				"AudioCaptureCore",
-				"AudioExtensions",
 				"AssetRegistry"
 			}
 		);
 
-		DynamicallyLoadedModuleNames.AddRange(
-			new string[]
-			{
-				// ... add any modules that your module loads dynamically here ...
-			}
-		);
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.AddRange(
+				new string[]
+				{
+					"HTTP",
+					"Json",
+					"JsonUtilities"
+				}
+			);
+		}
 	}
 }

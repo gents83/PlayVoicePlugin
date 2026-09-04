@@ -22,8 +22,9 @@ PlayVoicePlugin is an Unreal Engine 5.8 plugin for editor-time OpenVoice-v2 voic
 
 ## Workflow
 
-1. Set **Python Executable Path** to the virtual-environment interpreter containing OpenVoice and MeloTTS.
-2. Install `Resources/OpenVoiceService/requirements.txt` with that same interpreter. Do not use `TargetInstallDir`; the launched service does not support a separate pip target.
+1. Set **Python Executable Path** to a Python **3.10.x** interpreter, or leave it empty for Windows `py.exe -3.10` discovery. Python 3.11+ is not supported by the current OpenVoice numpy pin.
+2. If Python 3.10 is not installed, use **Install Python 3.10** in Requirements Setup. The button opens the official Python 3.10.11 Windows installer download; run that installer, then return to the editor.
+3. **Launch Setup / Install Requirements** creates or reuses `Resources/OpenVoiceService/.venv`, verifies it, saves its absolute interpreter path, and installs `Resources/OpenVoiceService/requirements.txt` into that environment.
 3. Start the service from Project Settings or trigger a generation action; the service is started on demand. `/health` is ready only after OpenVoice-v2 imports and converter checkpoints load.
 4. Configure reference audio per language and click **Generate OpenVoice Model**.
 5. Configure String Table keys in `Voice Lines`; record optional guide tracks; click **Generate Precached Sounds from VoiceLines** before packaging.

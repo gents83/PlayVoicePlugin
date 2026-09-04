@@ -15,6 +15,10 @@ public:
 	virtual void ShutdownModule() override;
 
 	static bool StartOpenVoiceService(FProcHandle* OutProcHandle = nullptr);
+	static bool ResolvePython310(FString& OutPythonExecutable, FString& OutError);
+	static bool ValidatePython310(const FString& PythonExecutable, FString& OutResolvedExecutable, FString& OutError);
+	static FString GetPythonEnvironmentExecutable();
+	static bool SavePythonExecutable(const FString& PythonExecutable);
 	static EAssetTypeCategories::Type GetAssetCategoryBit() { return PlayVoiceAssetCategoryBit; }
 
 	/** Helper function to resolve relative resource paths using Plugin directory first, then Project and Engine directories. */

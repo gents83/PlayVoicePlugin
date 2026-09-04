@@ -12,8 +12,7 @@ DECLARE_DYNAMIC_DELEGATE_TwoParams(FOnVoiceSynthesized, bool, bSuccess, USoundWa
 DECLARE_DYNAMIC_DELEGATE_OneParam(FOnPrecacheFinished, int32, NumPrecachedLines);
 
 /**
- * PlayVoiceSubsystem manages real-time audio playback, background synthesis,
- * HTTP API requests to the OpenVoice TTS backend, and zero-delay precaching.
+ * PlayVoiceSubsystem manages authored SoundWave playback and editor-only voice authoring requests.
  */
 UCLASS()
 class PLAYVOICEPLUGIN_API UPlayVoiceSubsystem : public UGameInstanceSubsystem

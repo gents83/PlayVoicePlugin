@@ -3,15 +3,17 @@
 #include "PlayVoiceSubsystem.h"
 #include "PlayVoiceSettings.h"
 #include "PlayVoiceAudioUtils.h"
+#include "Kismet/GameplayStatics.h"
+#if WITH_EDITOR
 #include "HttpModule.h"
 #include "Interfaces/IHttpRequest.h"
 #include "Interfaces/IHttpResponse.h"
-#include "Kismet/GameplayStatics.h"
-#include "JsonObjectConverter.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonReader.h"
+#endif
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
+#include "Modules/ModuleManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogPlayVoice, Log, All);
@@ -48,6 +50,18 @@ UCharacterVoiceAsset* UPlayVoiceSubsystem::FindVoiceAssetByCharacterName(FName C
 	{
 		UE_LOG(LogPlayVoice, Warning, TEXT("FindVoiceAssetByCharacterName: CharacterName is None."));
 		return nullptr;
+	}
+
+	if (TArray<TWeakObjectPtr<UCharacterVoiceAsset>>* ExistingMatches = VoiceAssetsByCharacterName.Find(CharacterName))
+	{
+		ExistingMatches->RemoveAll([](const TWeakObjectPtr<UCharacterVoiceAsset>& Asset)
+		{
+			return !Asset.IsValid();
+		});
+		if (ExistingMatches->Num() == 0)
+		{
+			VoiceAssetsByCharacterName.Remove(CharacterName);
+		}
 	}
 
 	if (!VoiceAssetsByCharacterName.Contains(CharacterName))
@@ -102,7 +116,9 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCachedSoundWave(const UObject* WorldCo
 		UE_LOG(LogPlayVoice, Log, TEXT("PlayCachedSoundWave: Attached playback result=%s on '%s'."), Result ? TEXT("started") : TEXT("not started"), *AttachToActor->GetPathName());
 		return Result;
 	}
-	UWorld* World = WorldContextObject ? WorldContextObject->GetWorld() : GetWorld();
+	UWorld* World = WorldContextObject && GEngine
+		? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull)
+		: GetWorld();
 	if (!World)
 	{
 		UE_LOG(LogPlayVoice, Warning, TEXT("PlayCachedSoundWave: No world available for SoundWave '%s'."), *SoundWave->GetPathName());
@@ -230,8 +246,16 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoice(
 	bool bAttachToActor,
 	AActor* AttachToActor)
 {
-	if (!CharacterVoiceAsset || TextLine.IsEmpty())
+	if (!WorldContextObject || !CharacterVoiceAsset || TextLine.IsEmpty())
 	{
+		UE_LOG(LogPlayVoice, Warning, TEXT("PlayCharacterVoice: World context, voice asset, and text are required."));
+		return nullptr;
+	}
+
+	UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull) : nullptr;
+	if (!World)
+	{
+		UE_LOG(LogPlayVoice, Warning, TEXT("PlayCharacterVoice: World context has no valid world."));
 		return nullptr;
 	}
 
@@ -252,7 +276,7 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoice(
 		}
 		else
 		{
-			return UGameplayStatics::SpawnSoundAtLocation(WorldContextObject ? WorldContextObject : GetWorld(), CachedSound, Location);
+			return UGameplayStatics::SpawnSoundAtLocation(World, CachedSound, Location);
 		}
 	}
 
@@ -268,16 +292,16 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoice(
 	{
 		UE_LOG(LogPlayVoice, Log, TEXT("PlayCharacterVoice: Voice line '%s' (Lang: %s) is not precached in asset '%s'. Triggering on-the-fly OpenVoice synthesis..."), *TextLine, *TargetLang, *GetNameSafe(CharacterVoiceAsset));
 
-		UWorld* World = WorldContextObject ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull) : GetWorld();
-		if (!World && CharacterVoiceAsset)
+		UWorld* DynamicWorld = WorldContextObject ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull) : GetWorld();
+		if (!DynamicWorld && CharacterVoiceAsset)
 		{
-			World = GEngine->GetWorldFromContextObject(CharacterVoiceAsset, EGetWorldErrorMode::LogAndReturnNull);
+			DynamicWorld = GEngine->GetWorldFromContextObject(CharacterVoiceAsset, EGetWorldErrorMode::LogAndReturnNull);
 		}
 
 		UAudioComponent* AudioComp = TargetAudioComponent;
-		if (!AudioComp && World)
+		if (!AudioComp && DynamicWorld)
 		{
-			AudioComp = UGameplayStatics::CreateSound2D(World, nullptr, 1.0f, 1.0f, 0.0f, nullptr, false, false);
+			AudioComp = UGameplayStatics::CreateSound2D(DynamicWorld, nullptr, 1.0f, 1.0f, 0.0f, nullptr, false, false);
 			if (AudioComp)
 			{
 				if (bAttachToActor && AttachToActor && AttachToActor->IsValidLowLevel())
@@ -332,8 +356,16 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoiceFromKey(
 	bool bAttachToActor,
 	AActor* AttachToActor)
 {
-	if (!CharacterVoiceAsset || Key.IsNone())
+	if (!WorldContextObject || !CharacterVoiceAsset || Key.IsNone())
 	{
+		UE_LOG(LogPlayVoice, Warning, TEXT("PlayCharacterVoiceFromKey: World context, voice asset, and key are required."));
+		return nullptr;
+	}
+
+	UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull) : nullptr;
+	if (!World)
+	{
+		UE_LOG(LogPlayVoice, Warning, TEXT("PlayCharacterVoiceFromKey: World context has no valid world."));
 		return nullptr;
 	}
 
@@ -354,7 +386,7 @@ UAudioComponent* UPlayVoiceSubsystem::PlayCharacterVoiceFromKey(
 		}
 		else
 		{
-			return UGameplayStatics::SpawnSoundAtLocation(WorldContextObject ? WorldContextObject : GetWorld(), CachedSound, Location);
+			return UGameplayStatics::SpawnSoundAtLocation(World, CachedSound, Location);
 		}
 	}
 
@@ -396,9 +428,18 @@ void UPlayVoiceSubsystem::SynthesizeVoiceLineAsync(UCharacterVoiceAsset* Charact
 
 	FString TargetLang = LanguageCode.IsEmpty() ? CharacterVoiceAsset->DefaultLanguage : LanguageCode;
 	const FCharacterLanguageData* LangData = CharacterVoiceAsset->FindLanguageData(TargetLang);
+	if (!LangData)
+	{
+		UE_LOG(LogPlayVoice, Warning, TEXT("SynthesizeVoiceLineAsync: Language '%s' is not configured for asset '%s'."), *TargetLang, *CharacterVoiceAsset->GetPathName());
+		if (OnComplete)
+		{
+			OnComplete(false, nullptr);
+		}
+		return;
+	}
 
-	float Speed = LangData ? LangData->Speed : 1.0f;
-	FString EmbeddingData = LangData ? LangData->ToneColorEmbeddingData : TEXT("");
+	const float Speed = LangData->Speed;
+	const FString EmbeddingData = LangData->ToneColorEmbeddingData;
 
 	TSharedPtr<FJsonObject> JsonObj = MakeShared<FJsonObject>();
 	JsonObj->SetStringField(TEXT("character_name"), CharacterVoiceAsset->CharacterName.ToString());
@@ -424,8 +465,13 @@ void UPlayVoiceSubsystem::SynthesizeVoiceLineAsync(UCharacterVoiceAsset* Charact
 	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&PayloadStr);
 	FJsonSerializer::Serialize(JsonObj.ToSharedRef(), Writer);
 
-	SendTTSHttpRequest(TEXT("/synthesize"), PayloadStr, [OnComplete](bool bSuccess, const TArray<uint8>& ResponseBytes, const FString& ResponseString)
+	TWeakObjectPtr<UPlayVoiceSubsystem> WeakThis(this);
+	SendTTSHttpRequest(TEXT("/synthesize"), PayloadStr, [WeakThis, OnComplete](bool bSuccess, const TArray<uint8>& ResponseBytes, const FString& ResponseString)
 	{
+		if (!WeakThis.IsValid())
+		{
+			return;
+		}
 		if (!bSuccess || ResponseBytes.Num() == 0)
 		{
 			if (OnComplete)
@@ -471,6 +517,15 @@ void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* Chara
 	}
 
 	FString TargetLang = LanguageCode.IsEmpty() ? CharacterVoiceAsset->DefaultLanguage : LanguageCode;
+	if (!CharacterVoiceAsset->FindLanguageData(TargetLang))
+	{
+		UE_LOG(LogPlayVoice, Warning, TEXT("ExtractCharacterVoiceModel: Language '%s' is not configured for asset '%s'."), *TargetLang, *CharacterVoiceAsset->GetPathName());
+		if (OnComplete)
+		{
+			OnComplete(false, nullptr);
+		}
+		return;
+	}
 
 	TSharedPtr<FJsonObject> JsonObj = MakeShared<FJsonObject>();
 	JsonObj->SetStringField(TEXT("character_name"), CharacterVoiceAsset->CharacterName.ToString());
@@ -489,8 +544,13 @@ void UPlayVoiceSubsystem::ExtractCharacterVoiceModel(UCharacterVoiceAsset* Chara
 	FJsonSerializer::Serialize(JsonObj.ToSharedRef(), Writer);
 
 	TWeakObjectPtr<UCharacterVoiceAsset> WeakAsset = CharacterVoiceAsset;
-	SendTTSHttpRequest(TEXT("/extract"), PayloadStr, [WeakAsset, TargetLang, OnComplete](bool bSuccess, const TArray<uint8>& ResponseBytes, const FString& ResponseString)
+	TWeakObjectPtr<UPlayVoiceSubsystem> WeakThis(this);
+	SendTTSHttpRequest(TEXT("/extract"), PayloadStr, [WeakAsset, WeakThis, TargetLang, OnComplete](bool bSuccess, const TArray<uint8>& ResponseBytes, const FString& ResponseString)
 	{
+		if (!WeakThis.IsValid())
+		{
+			return;
+		}
 		if (bSuccess && !ResponseString.IsEmpty())
 		{
 			TSharedPtr<FJsonObject> ResponseObj;
@@ -568,7 +628,11 @@ void UPlayVoiceSubsystem::SendTTSHttpRequest(const FString& Endpoint, const FStr
 		}
 	});
 
-	HttpRequest->ProcessRequest();
+	if (!HttpRequest->ProcessRequest() && Callback)
+	{
+		UE_LOG(LogPlayVoice, Warning, TEXT("SendTTSHttpRequest: Failed to submit request to '%s'."), *FullUrl);
+		Callback(false, TArray<uint8>(), FString());
+	}
 #else
 	UE_LOG(LogPlayVoice, Warning, TEXT("SendTTSHttpRequest: HTTP requests to local TTS service are disabled at runtime."));
 	if (Callback)

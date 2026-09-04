@@ -5,6 +5,7 @@
 #include "Memory/SharedBuffer.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/Guid.h"
 #include "HAL/FileManager.h"
 
 #if WITH_EDITORONLY_DATA
@@ -13,6 +14,11 @@
 
 static TArray<uint8> BuildWAVHeaderAndPCMBuffer(const TArray<uint8>& PCMData, int32 SampleRate, int32 NumChannels)
 {
+	if (PCMData.Num() == 0 || SampleRate <= 0 || NumChannels <= 0 || (PCMData.Num() % (NumChannels * static_cast<int32>(sizeof(int16)))) != 0)
+	{
+		return TArray<uint8>();
+	}
+
 	uint32 DataSize = PCMData.Num();
 	uint32 ChunkSize = 36 + DataSize;
 	uint16 AudioFormat = 1; // Uncompressed PCM
@@ -66,6 +72,11 @@ int32 UPlayVoiceAudioUtils::GetPCM16Peak(const TArray<uint8>& PCMData)
 
 bool UPlayVoiceAudioUtils::NormalizePCM16ToPeak(TArray<uint8>& PCMData, int32 TargetPeak)
 {
+	if (PCMData.Num() == 0 || (PCMData.Num() % sizeof(int16)) != 0)
+	{
+		return false;
+	}
+
 	const int32 SourcePeak = GetPCM16Peak(PCMData);
 	if (SourcePeak <= 0 || TargetPeak <= 0)
 	{
@@ -88,13 +99,13 @@ bool UPlayVoiceAudioUtils::NormalizePCM16ToPeak(TArray<uint8>& PCMData, int32 Ta
 
 USoundWave* UPlayVoiceAudioUtils::CreateSoundWaveFromPCM(const TArray<uint8>& PCMData, int32 SampleRate, int32 NumChannels, UObject* Outer, FName Name)
 {
-	if (PCMData.Num() == 0 || SampleRate <= 0 || NumChannels <= 0)
+	if (PCMData.Num() == 0 || SampleRate <= 0 || NumChannels <= 0 || (PCMData.Num() % (NumChannels * static_cast<int32>(sizeof(int16)))) != 0)
 	{
 		return nullptr;
 	}
 
 	UObject* SoundOuter = Outer ? Outer : GetTransientPackage();
-	EObjectFlags ObjectFlags = Outer ? (RF_Public | RF_Standalone) : RF_Transient;
+	EObjectFlags ObjectFlags = Outer && Outer != GetTransientPackage() ? (RF_Public | RF_Standalone) : RF_Transient;
 	FName SoundName = Name.IsNone() ? NAME_None : Name;
 
 	USoundWave* SoundWave = nullptr;
@@ -138,8 +149,18 @@ USoundWave* UPlayVoiceAudioUtils::CreateSoundWaveFromPCM(const TArray<uint8>& PC
 #endif
 
 	// Populate RawPCMData for runtime sound wave playback
+	if (SoundWave->RawPCMData)
+	{
+		FMemory::Free(SoundWave->RawPCMData);
+		SoundWave->RawPCMData = nullptr;
+		SoundWave->RawPCMDataSize = 0;
+	}
+	SoundWave->RawPCMData = static_cast<uint8*>(FMemory::Malloc(PCMData.Num()));
+	if (!SoundWave->RawPCMData)
+	{
+		return nullptr;
+	}
 	SoundWave->RawPCMDataSize = PCMData.Num();
-	SoundWave->RawPCMData = (uint8*)FMemory::Malloc(PCMData.Num());
 	FMemory::Memcpy(SoundWave->RawPCMData, PCMData.GetData(), PCMData.Num());
 
 	return SoundWave;
@@ -147,37 +168,63 @@ USoundWave* UPlayVoiceAudioUtils::CreateSoundWaveFromPCM(const TArray<uint8>& PC
 
 USoundWave* UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(const TArray<uint8>& WAVData, UObject* Outer, FName Name)
 {
-	if (WAVData.Num() < 44) // Basic WAV header size
+	if (WAVData.Num() < 12 || FMemory::Memcmp(WAVData.GetData(), "RIFF", 4) != 0 || FMemory::Memcmp(WAVData.GetData() + 8, "WAVE", 4) != 0)
 	{
 		return nullptr;
 	}
 
-	// Parse basic WAV header
-	uint16 NumChannels = *reinterpret_cast<const uint16*>(&WAVData[22]);
-	uint32 SampleRate = *reinterpret_cast<const uint32*>(&WAVData[24]);
+	uint16 AudioFormat = 0;
+	uint16 NumChannels = 0;
+	uint16 BitsPerSample = 0;
+	uint32 SampleRate = 0;
+	int32 DataOffset = INDEX_NONE;
+	uint32 DataSize = 0;
+	int32 Offset = 12;
 
-	int32 DataOffset = 44;
-	for (int32 i = 12; i < WAVData.Num() - 8; ++i)
+	while (Offset <= WAVData.Num() - 8)
 	{
-		if (WAVData[i] == 'd' && WAVData[i + 1] == 'a' && WAVData[i + 2] == 't' && WAVData[i + 3] == 'a')
+		uint32 ChunkSize = 0;
+		FMemory::Memcpy(&ChunkSize, WAVData.GetData() + Offset + 4, sizeof(ChunkSize));
+		const int64 ChunkDataStart = static_cast<int64>(Offset) + 8;
+		const int64 ChunkDataEnd = ChunkDataStart + ChunkSize;
+		if (ChunkDataEnd > WAVData.Num())
 		{
-			DataOffset = i + 8;
-			break;
+			return nullptr;
 		}
+
+		const uint8* ChunkId = WAVData.GetData() + Offset;
+		if (FMemory::Memcmp(ChunkId, "fmt ", 4) == 0)
+		{
+			if (ChunkSize < 16)
+			{
+				return nullptr;
+			}
+			FMemory::Memcpy(&AudioFormat, WAVData.GetData() + ChunkDataStart, sizeof(AudioFormat));
+			FMemory::Memcpy(&NumChannels, WAVData.GetData() + ChunkDataStart + 2, sizeof(NumChannels));
+			FMemory::Memcpy(&SampleRate, WAVData.GetData() + ChunkDataStart + 4, sizeof(SampleRate));
+			FMemory::Memcpy(&BitsPerSample, WAVData.GetData() + ChunkDataStart + 14, sizeof(BitsPerSample));
+		}
+		else if (FMemory::Memcmp(ChunkId, "data", 4) == 0 && DataOffset == INDEX_NONE)
+		{
+			DataOffset = static_cast<int32>(ChunkDataStart);
+			DataSize = ChunkSize;
+		}
+
+		const int64 NextOffset = ChunkDataEnd + (ChunkSize & 1u);
+		if (NextOffset > MAX_int32)
+		{
+			return nullptr;
+		}
+		Offset = static_cast<int32>(NextOffset);
 	}
 
-	if (DataOffset >= WAVData.Num())
+	if (AudioFormat != 1 || NumChannels == 0 || SampleRate == 0 || BitsPerSample != 16 || DataOffset == INDEX_NONE || DataSize == 0 || (DataSize % (NumChannels * sizeof(int16))) != 0)
 	{
 		return nullptr;
 	}
-
-	int32 DataSize = WAVData.Num() - DataOffset;
-	TArray<uint8> PCMData;
-	PCMData.SetNumUninitialized(DataSize);
-	FMemory::Memcpy(PCMData.GetData(), WAVData.GetData() + DataOffset, DataSize);
 
 	UObject* SoundOuter = Outer ? Outer : GetTransientPackage();
-	EObjectFlags ObjectFlags = Outer ? (RF_Public | RF_Standalone) : RF_Transient;
+	EObjectFlags ObjectFlags = Outer && Outer != GetTransientPackage() ? (RF_Public | RF_Standalone) : RF_Transient;
 	FName SoundName = Name.IsNone() ? NAME_None : Name;
 
 	USoundWave* SoundWave = nullptr;
@@ -189,7 +236,6 @@ USoundWave* UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(const TArray<uint
 			SoundWave = Cast<USoundWave>(ExistingObj);
 			if (!SoundWave)
 			{
-				// Existing object is of a different class (e.g., UObjectRedirector). Rename out of the way.
 				ExistingObj->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional);
 				ExistingObj->MarkAsGarbage();
 			}
@@ -200,29 +246,37 @@ USoundWave* UPlayVoiceAudioUtils::CreateSoundWaveFromWAVBuffer(const TArray<uint
 	{
 		SoundWave = NewObject<USoundWave>(SoundOuter, SoundName, ObjectFlags);
 	}
-
 	if (!SoundWave)
 	{
 		return nullptr;
 	}
 
-	SoundWave->SetSampleRate(SampleRate);
+	if (SoundWave->RawPCMData)
+	{
+		FMemory::Free(SoundWave->RawPCMData);
+		SoundWave->RawPCMData = nullptr;
+		SoundWave->RawPCMDataSize = 0;
+	}
+
+	SoundWave->SetSampleRate(static_cast<int32>(SampleRate));
 	SoundWave->NumChannels = NumChannels;
-	SoundWave->Duration = (float)DataSize / (float)(SampleRate * NumChannels * sizeof(int16));
+	SoundWave->Duration = static_cast<float>(DataSize) / static_cast<float>(SampleRate * NumChannels * sizeof(int16));
 	SoundWave->TotalSamples = DataSize / (NumChannels * sizeof(int16));
 	SoundWave->bProcedural = false;
 	SoundWave->bStreaming = false;
 
 #if WITH_EDITORONLY_DATA
-	// Store complete WAV payload (including RIFF header) in RawData
 	const FSharedBuffer UpdatedBuffer = FSharedBuffer::Clone(WAVData.GetData(), WAVData.Num());
 	SoundWave->RawData.UpdatePayload(UpdatedBuffer);
 #endif
 
-	// Populate RawPCMData for runtime sound wave playback
+	SoundWave->RawPCMData = static_cast<uint8*>(FMemory::Malloc(DataSize));
+	if (!SoundWave->RawPCMData)
+	{
+		return nullptr;
+	}
 	SoundWave->RawPCMDataSize = DataSize;
-	SoundWave->RawPCMData = (uint8*)FMemory::Malloc(DataSize);
-	FMemory::Memcpy(SoundWave->RawPCMData, PCMData.GetData(), DataSize);
+	FMemory::Memcpy(SoundWave->RawPCMData, WAVData.GetData() + DataOffset, DataSize);
 
 	return SoundWave;
 }
@@ -298,7 +352,7 @@ FString UPlayVoiceAudioUtils::ExportSoundWaveToTempWAVFile(USoundWave* SoundWave
 	FString TempDir = FPaths::ProjectSavedDir() / TEXT("PlayVoiceTemp");
 	IFileManager::Get().MakeDirectory(*TempDir, true);
 
-	FString TempFilePath = TempDir / FString::Printf(TEXT("%s.wav"), *SoundWave->GetName());
+	FString TempFilePath = TempDir / FString::Printf(TEXT("%s_%s.wav"), *SoundWave->GetName(), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
 	if (FFileHelper::SaveArrayToFile(WAVBytes, *TempFilePath))
 	{
 		return FPaths::ConvertRelativePathToFull(TempFilePath);

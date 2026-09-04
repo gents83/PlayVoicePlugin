@@ -26,6 +26,26 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogPlayVoiceLineEntryCustomization, Log, All);
 
+FPlayVoiceLineEntryCustomization::~FPlayVoiceLineEntryCustomization()
+{
+	if (RecordingState.IsValid())
+	{
+		FScopeLock Lock(&RecordingState->Section);
+		RecordingState->bActive = false;
+	}
+	if (bIsRecording)
+	{
+		AudioCapture.StopStream();
+		AudioCapture.CloseStream();
+		bIsRecording = false;
+	}
+	if (bIsPlayingPreview && GEditor)
+	{
+		GEditor->ResetPreviewAudioComponent();
+		bIsPlayingPreview = false;
+	}
+}
+
 TSharedRef<IPropertyTypeCustomization> FPlayVoiceLineEntryCustomization::MakeInstance()
 {
 	return MakeShareable(new FPlayVoiceLineEntryCustomization());
@@ -295,14 +315,24 @@ FReply FPlayVoiceLineEntryCustomization::OnRecordGuideTrackClicked()
 	}
 
 	Audio::FAudioCaptureDeviceParams Params;
-	Audio::FOnAudioCaptureFunction CaptureCallback = [this](const void* InAudioData, int32 NumFrames, int32 NumChannels, int32 SampleRate, double SampleTime, bool bOverflow)
+	RecordingState = MakeShared<FRecordingState>();
+	TSharedPtr<FRecordingState> CurrentRecordingState = RecordingState;
+	Audio::FOnAudioCaptureFunction CaptureCallback = [CurrentRecordingState](const void* InAudioData, int32 NumFrames, int32 NumChannels, int32 SampleRate, double SampleTime, bool bOverflow)
 	{
+		if (!CurrentRecordingState.IsValid())
+		{
+			return;
+		}
 		const float* AudioData = static_cast<const float*>(InAudioData);
 		if (AudioData && NumFrames > 0 && NumChannels > 0)
 		{
-			FScopeLock Lock(&RecordedPCMSection);
-			CapturedSampleRate = SampleRate;
-			CapturedChannels = NumChannels;
+			FScopeLock Lock(&CurrentRecordingState->Section);
+			if (!CurrentRecordingState->bActive)
+			{
+				return;
+			}
+			CurrentRecordingState->SampleRate = SampleRate;
+			CurrentRecordingState->Channels = NumChannels;
 
 			for (int32 Frame = 0; Frame < NumFrames; ++Frame)
 			{
@@ -315,7 +345,7 @@ FReply FPlayVoiceLineEntryCustomization::OnRecordGuideTrackClicked()
 
 				float ClampedSample = FMath::Clamp(MonoSample, -1.0f, 1.0f);
 				int16 IntSample = static_cast<int16>(ClampedSample < 0.0f ? ClampedSample * 32768.0f : ClampedSample * 32767.0f);
-				RecordedPCMSamples.Add(IntSample);
+				CurrentRecordingState->Samples.Add(IntSample);
 			}
 		}
 	};
@@ -323,7 +353,21 @@ FReply FPlayVoiceLineEntryCustomization::OnRecordGuideTrackClicked()
 
 	if (bStreamOpened)
 	{
-		AudioCapture.StartStream();
+		const bool bStreamStarted = AudioCapture.StartStream();
+		if (!bStreamStarted)
+		{
+			{
+				FScopeLock Lock(&RecordingState->Section);
+				RecordingState->bActive = false;
+			}
+			AudioCapture.CloseStream();
+			RecordingState.Reset();
+			UE_LOG(LogPlayVoiceLineEntryCustomization, Warning, TEXT("Failed to start audio capture stream."));
+			FNotificationInfo NotificationInfo(FText::FromString("PlayVoice: Could not start audio capture."));
+			NotificationInfo.ExpireDuration = 4.0f;
+			FSlateNotificationManager::Get().AddNotification(NotificationInfo);
+			return FReply::Handled();
+		}
 		bIsRecording = true;
 
 		FNotificationInfo NotificationInfo(FText::FromString("PlayVoice: Recording microphone guide track... Click 'Stop & Save' when finished."));
@@ -333,8 +377,16 @@ FReply FPlayVoiceLineEntryCustomization::OnRecordGuideTrackClicked()
 	}
 	else
 	{
-		UE_LOG(LogPlayVoiceLineEntryCustomization, Warning, TEXT("Failed to open audio capture device. Falling back to synthetic guide buffer."));
-		bIsRecording = true;
+		{
+			FScopeLock Lock(&RecordingState->Section);
+			RecordingState->bActive = false;
+		}
+		RecordingState.Reset();
+		UE_LOG(LogPlayVoiceLineEntryCustomization, Warning, TEXT("Failed to open audio capture device."));
+		FNotificationInfo NotificationInfo(FText::FromString("PlayVoice: Could not open an audio capture device."));
+		NotificationInfo.ExpireDuration = 4.0f;
+		FSlateNotificationManager::Get().AddNotification(NotificationInfo);
+		bIsRecording = false;
 	}
 
 	return FReply::Handled();
@@ -492,9 +544,20 @@ FReply FPlayVoiceLineEntryCustomization::OnStopRecordingClicked()
 		AudioCapture.CloseStream();
 		bIsRecording = false;
 	}
-
 	TArray<int16> PCM16Data;
 	int32 SR = 24000;
+	TSharedPtr<FRecordingState> FinishedRecordingState = RecordingState;
+	if (FinishedRecordingState.IsValid())
+	{
+		{
+			FScopeLock Lock(&FinishedRecordingState->Section);
+			FinishedRecordingState->bActive = false;
+			PCM16Data = FinishedRecordingState->Samples;
+			SR = FinishedRecordingState->SampleRate > 0 ? FinishedRecordingState->SampleRate : 24000;
+		}
+		RecordingState.Reset();
+	}
+	else
 	{
 		FScopeLock Lock(&RecordedPCMSection);
 		PCM16Data = RecordedPCMSamples;
@@ -503,8 +566,10 @@ FReply FPlayVoiceLineEntryCustomization::OnStopRecordingClicked()
 
 	if (PCM16Data.Num() == 0)
 	{
-		PCM16Data.SetNumZeroed(24000);
-		SR = 24000;
+		FNotificationInfo NotificationInfo(FText::FromString("PlayVoice: No audio was captured."));
+		NotificationInfo.ExpireDuration = 4.0f;
+		FSlateNotificationManager::Get().AddNotification(NotificationInfo);
+		return FReply::Handled();
 	}
 
 	TArray<uint8> PCMBytes;
@@ -570,7 +635,8 @@ FReply FPlayVoiceLineEntryCustomization::OnStopRecordingClicked()
 		}
 	}
 
-	if (OldSoundWave)
+	if (OldSoundWave && OldSoundWave->GetName().StartsWith(TEXT("SW_")) && TargetVoiceAsset && OldSoundWave->GetOutermost()
+		&& OldSoundWave->GetOutermost()->GetName().StartsWith(FPaths::GetPath(TargetVoiceAsset->GetOutermost()->GetName())))
 	{
 		FString OldPkgFilename;
 		UPackage* OldPkg = OldSoundWave->GetOutermost();
@@ -591,7 +657,7 @@ FReply FPlayVoiceLineEntryCustomization::OnStopRecordingClicked()
 		{
 			OldPkg->MarkAsGarbage();
 		}
-		CollectGarbage(RF_NoFlags);
+		// Allow normal editor garbage collection to release the replaced package.
 
 		if (!OldPkgFilename.IsEmpty() && IFileManager::Get().FileExists(*OldPkgFilename))
 		{

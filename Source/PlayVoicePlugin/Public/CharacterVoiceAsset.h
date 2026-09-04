@@ -22,6 +22,10 @@ struct PLAYVOICEPLUGIN_API FPlayVoiceLineEntry
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	TObjectPtr<UStringTable> StringTable;
 
+	/** Persisted String Table identifier used for exact lookup after cooking or reload. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "PlayVoice")
+	FName StringTableId;
+
 	/** String Table key identifying this voice line entry */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PlayVoice")
 	FName Key;
@@ -191,8 +195,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")
 	bool HasPrecachedVoiceLineForKey(FName Key, const FString& LanguageCode = TEXT("")) const;
 
+	/** Register a precached SoundWave for an exact String Table ID, key, and language. */
+	void CacheVoiceLineForStringTableIdAndKey(FName StringTableId, const FString& Key, USoundWave* InSoundWave, const FString& LanguageCode = TEXT(""));
+
 	/** Makes a normalized lookup key for PrecachedKeySoundWaves map */
 	static FString MakeKeyCacheKey(FName Key, const FString& LanguageCode);
+
+	/** Makes a normalized cache key for an exact String Table ID, key, and language. */
+	static FString MakeStringTableKeyCacheKey(FName StringTableId, const FString& Key, const FString& LanguageCode);
 
 	/** Save extracted model embedding data to a file on disk for a specific language */
 	UFUNCTION(BlueprintCallable, Category = "PlayVoice")

@@ -79,6 +79,12 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+Saved/PlayVoiceTemp/
+Resources/OpenVoiceService/.venv/
+ci_test.wav
+sample1.wav
+sample2.wav
 CLAUDE.md
 .mcp.json
 tasks/todo.md
+tasks/lessons.md
