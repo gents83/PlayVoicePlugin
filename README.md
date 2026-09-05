@@ -1,31 +1,43 @@
 # PlayVoice Plugin for Unreal Engine 5.8
 
-## Bring Your Characters to Life
+## Bring characters to life, locally
 
-Give every character a voice that feels memorable, expressive, and truly their own. **PlayVoice** brings OpenVoice-v2 voice cloning into Unreal Engine authoring, so you can turn a short, clean reference recording into a reusable character voice and generate localized dialogue directly from your project.
+**PlayVoice is a local-first voice authoring workflow for Unreal Engine 5.8.** Turn a short, authorized reference recording into a reusable character voice, shape delivery with guide tracks, and ship localized dialogue as ordinary Unreal `USoundWave` assets.
 
-Create a gruff hero, a bright sidekick, a mysterious narrator, or an entire cast of original voices. You can also reproduce a recognizable or famous person's voice **only when you have their permission and the necessary rights**. PlayVoice is designed for authorized voice replication, character prototyping, localization, machinima, cinematics, and interactive storytelling.
+No runtime Python. No runtime HTTP. No last-minute synthesis surprises. Author in the editor, review the result, and package the audio your game will actually play.
 
-### From Voice Sample to In-Game Dialogue
+### From idea to playable dialogue
 
-1. Add a few reference recordings for a character.
-2. Extract a language-specific voice model in the Unreal Editor.
-3. Add your dialogue lines and optional guide tracks for timing, emotion, and delivery.
-4. Pre-render the lines into SoundWave assets.
-5. Play them instantly in gameplay through Blueprint.
+1. **Create a voice identity.** Add a `CharacterVoiceAsset` and define the character name, default language, and supported languages.
+2. **Capture tone color.** Provide clean reference audio, then extract an OpenVoice-v2 model for each language.
+3. **Direct the performance.** Add String Table keys and optional guide tracks for timing, cadence, emotion, and delivery.
+4. **Render the library.** Generate language-aware SoundWaves, normalize their levels when needed, and review them in the editor.
+5. **Connect gameplay.** Use the PlayVoice Blueprint nodes to resolve a character, String Table ID, key, and language into cached audio.
 
-The result is production-friendly dialogue that is authored ahead of time, packaged with your game, and ready to play without runtime synthesis or network calls.
+For the complete walkthrough, see [HOW_TO.md](HOW_TO.md).
 
-### Why Creators Use PlayVoice
+### A voice pipeline built for iteration
 
-- **Distinctive character voices:** Capture tone color from a short reference recording instead of commissioning a complete voice library for every iteration.
-- **Expressive delivery:** Use guide tracks to transfer the pacing, emotion, and prosody of a performance into generated dialogue.
-- **Localization at scale:** Build separate voice models and cached lines for each supported language.
-- **Fast iteration:** Rewrite a line, regenerate its SoundWave, and hear the result in the editor without rebuilding a voice pipeline.
-- **Gameplay-ready output:** Ship pre-rendered Unreal SoundWaves with predictable, zero-synthesis-latency playback.
-- **Local authoring:** Run the OpenVoice service locally during editor-time creation, keeping packaged builds independent from Python and HTTP.
+- **Prototype faster:** Rewrite a line, regenerate its matching SoundWave, and hear the change without rebuilding a separate voice pipeline.
+- **Localize with confidence:** Keep models, guide tracks, and cached lines organized by language instead of hiding localization in runtime logic.
+- **Preserve performance:** Package authored SoundWaves for predictable playback with no synthesis latency during gameplay.
+- **Direct delivery:** Use a recorded guide track to carry pacing and prosody into a generated line.
+- **Stay in Unreal:** Configure Python requirements, launch the local OpenVoice service, create assets, generate audio, and validate cache references from the editor workflow.
+- **Automate responsibly:** Use Blueprint playback nodes for fixed keys, localized text identifiers, or direct asset/key lookups.
 
-> **Responsible use:** Only clone or imitate voices when you have the speaker's consent and the rights to use the recordings. Do not use PlayVoice to impersonate people, mislead audiences, or create unauthorized replicas.
+### What you can build
+
+- Character barks and reactive dialogue for gameplay.
+- Localized conversations driven by String Tables.
+- Cinematic and machinima performances with repeatable delivery.
+- Temporary voices for narrative prototyping and previsualization.
+- A production-ready, pre-rendered cast that stays independent of network access at runtime.
+
+> **Responsible voice use:** Only clone or imitate voices when you have the speaker's consent and the rights required for your project. PlayVoice is intended for authorized voice replication, character prototyping, localization, machinima, cinematics, and interactive storytelling. Do not use it to impersonate people, mislead audiences, or create unauthorized replicas.
+
+### Start with one line
+
+Install the plugin, complete the Python 3.10 requirements setup, create `DA_HeroVoice`, add one clean reference recording, and generate a single `Hero_Greeting` line. Once that loop works, add languages, guide tracks, and the rest of the cast.
 
 ---
 
@@ -158,6 +170,8 @@ python openvoice_service.py --mode server --host 127.0.0.1 --port 1983
 ---
 
 ## Blueprint Usage & Workflow
+
+> **Complete authoring guide:** See [HOW_TO.md](HOW_TO.md) for the full CharacterVoiceAsset setup, parameter reference, button order, example, and visual walkthrough.
 
 ### 1. Create a `CharacterVoice` Asset
 1. In the Content Browser, right-click -> **Miscellaneous -> Data Asset**.

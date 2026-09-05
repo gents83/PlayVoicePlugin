@@ -42,7 +42,7 @@ Python tests:
 python -m unittest discover -s Resources/OpenVoiceService/tests -v
 ```
 
-Run Unreal automation tests from Session Frontend by filtering for `PlayVoice.UnitTests`. Build the Unreal Editor target with the normal Hurricane project build workflow.
+Run Unreal automation tests from Session Frontend by filtering for `PlayVoice.UnitTests`. Build the Unreal Editor target with the normal project workflow.
 
 ## Non-obvious rules
 
